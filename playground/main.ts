@@ -1,5 +1,6 @@
 import { DocxEditor } from '../src/api/index.js';
 import { FontRegistry } from '../src/index.js';
+import { exportPdf } from '../src/pdf/index.js';
 import { DocxViewer } from '../src/render/index.js';
 import { sampleDocx } from './sample.js';
 
@@ -101,6 +102,23 @@ function download(bytes: Uint8Array, name: string, type: string): void {
 
 const editor = () => new DocxEditor(viewer.document!);
 
+/** Show a PDF in the browser's own viewer, in an overlay. */
+function showPdf(bytes: Uint8Array): void {
+  document.getElementById('pdf-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'pdf-overlay';
+  overlay.style.cssText = 'position:fixed;inset:48px 0 0 0;background:#525659;z-index:10;display:flex;flex-direction:column';
+  const close = document.createElement('button');
+  close.textContent = 'Close PDF';
+  close.style.cssText = 'align-self:flex-end;margin:6px';
+  close.onclick = () => overlay.remove();
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'flex:1;border:0;width:100%';
+  frame.src = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/pdf' }));
+  overlay.append(close, frame);
+  document.body.appendChild(overlay);
+}
+
 button('Comment', async () => {
   const sel = viewer.getSelection();
   if (!sel) return status('Select some text first');
@@ -123,6 +141,13 @@ button('Bold', () => {
   if (!sel) return status('Select some text first');
   const ed = editor();
   ed.formatRange(ed.rangeFromSelection(sel), { bold: true });
+});
+button('Export PDF', async () => {
+  if (fonts.isEmpty) return status('PDF export needs font files');
+  const t0 = performance.now();
+  const bytes = await exportPdf(viewer.document!, { fonts, layout: viewer.layout });
+  status(`PDF: ${Math.round(bytes.length / 1024)} KB in ${Math.round(performance.now() - t0)} ms`);
+  showPdf(bytes);
 });
 button('Save .docx', async () => download(await viewer.document!.save(), 'edited.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'));
 

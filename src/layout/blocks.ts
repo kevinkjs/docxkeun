@@ -2,7 +2,7 @@
  * Blocks → boxes. A box is an unbreakable vertical slice (a line, some spacing, a table row)
  * with keep rules; the paginator stacks boxes into columns and pages.
  */
-import type { Block, DocParagraph, DocTable, NoteRefInline } from '../model/content.js';
+import { blocksToText, type Block, type DocParagraph, type DocTable, type NoteRefInline } from '../model/content.js';
 import type { NumberingCounter } from '../model/numbering.js';
 import { isVisibleBorder, mergeRunProps, shadingColor, type Border, type ParagraphBorders, type TableBorders } from '../model/props.js';
 import type { Theme } from '../model/theme.js';
@@ -188,6 +188,7 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
 
   const n = lines.length;
   const widow = props.widowControl ?? true;
+  const outline = props.outlineLevel !== undefined && props.outlineLevel < 9 ? { level: props.outlineLevel, title: blocksToText([para]).replace(/\s+/g, ' ').trim() } : undefined;
   lines.forEach((line, i) => {
     const { height, baseline } = lineHeight(line, spacing.line, spacing.lineRule);
     const notes: NoteRef[] = [];
@@ -204,6 +205,7 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
       notes: notes.length ? notes : undefined,
       paint: (p, x, y) => {
         decorate(p, x, y, height);
+        if (i === 0 && outline?.title) p.page.headings.push({ ...outline, x: x + line.left, y });
         paintLine(p, line, x, { top: y, height, baseline: y + baseline });
       },
     });

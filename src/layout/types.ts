@@ -137,6 +137,8 @@ export interface Page {
   perms: PermArea[];
   /** Bookmark name → position on this page. */
   anchors: Map<string, { x: number; y: number }>;
+  /** Paragraphs with an outline level (headings), for PDF outlines and navigation panes. */
+  headings: Array<{ level: number; title: string; x: number; y: number }>;
   /** Body content area (for viewers that draw margins). */
   content: Rect;
 }
