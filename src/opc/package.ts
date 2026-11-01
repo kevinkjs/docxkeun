@@ -114,6 +114,11 @@ export class OpcPackage {
     return part.xml;
   }
 
+  /** Parsed XML of a part that was already loaded with `getXml` (no I/O). */
+  cachedXml(name: string): XmlDocument | undefined {
+    return this.parts.get(partKey(name))?.xml;
+  }
+
   async tryGetXml(name: string | undefined): Promise<XmlDocument | undefined> {
     if (!name || !this.has(name)) return undefined;
     return this.getXml(name);
