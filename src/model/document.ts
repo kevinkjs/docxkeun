@@ -57,8 +57,11 @@ export interface OpenOptions {
   showDeletions?: boolean;
 }
 
-/** Hook used by the security module to decrypt password-protected files (set when it is imported). */
-export const decryptionHooks: { decrypt?: (bytes: Uint8Array, password: string | undefined) => Promise<Uint8Array> } = {};
+/** Hooks the security module installs (when imported) for password-to-open files. */
+export const decryptionHooks: {
+  decrypt?: (bytes: Uint8Array, password: string | undefined) => Promise<Uint8Array>;
+  encrypt?: (zip: Uint8Array, password: string) => Promise<Uint8Array>;
+} = {};
 
 export class DocxError extends Error {
   override name = 'DocxError';
@@ -299,9 +302,15 @@ export class DocxDocument {
     return () => this.listeners.delete(listener);
   }
 
-  /** Serialise to .docx bytes. */
-  async save(options: { modified?: Date } = {}): Promise<Uint8Array> {
-    return this.pkg.save(options);
+  /**
+   * Serialise to .docx bytes. With `password`, the file is encrypted (password to open);
+   * that needs docxkit/security to be imported.
+   */
+  async save(options: { modified?: Date; password?: string } = {}): Promise<Uint8Array> {
+    const zip = await this.pkg.save(options);
+    if (!options.password) return zip;
+    if (!decryptionHooks.encrypt) throw new DocxError('Import "docxkit/security" to save with a password');
+    return decryptionHooks.encrypt(zip, options.password);
   }
 }
 
