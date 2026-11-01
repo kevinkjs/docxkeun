@@ -344,12 +344,13 @@ export class InlineEditing {
     const page = this.pages()[index];
     if (!page) return;
     const s = this.viewer.scale;
-    const box = (cls: string, x: number, y: number, w: number, h: number) => {
+    const box = (cls: string, x: number, y: number, w: number | undefined, h: number) => {
       const el = document.createElement('div');
       el.className = cls;
       el.style.left = `${x * s}px`;
       el.style.top = `${y * s}px`;
-      el.style.width = `${w * s}px`;
+      // The caret's width comes from the stylesheet (it must not scale to zero).
+      if (w !== undefined) el.style.width = `${w * s}px`;
       el.style.height = `${h * s}px`;
       layer.appendChild(el);
     };
@@ -382,7 +383,7 @@ export class InlineEditing {
       }
     }
     const caret = this.screen(this.focusPos);
-    if (caret && caret.page === index) box('docxkit-caret', caret.x, caret.y, 0, caret.h);
+    if (caret && caret.page === index) box('docxkit-caret', caret.x, caret.y, undefined, caret.h);
   }
 
   // ---- mouse ---------------------------------------------------------------------------------

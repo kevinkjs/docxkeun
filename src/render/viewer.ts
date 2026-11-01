@@ -70,7 +70,7 @@ const CSS = `
 .docxkit-editing .docxkit-link{pointer-events:none}
 .docxkit-edit-layer{position:absolute;inset:0;pointer-events:none}
 .docxkit-selection{position:absolute;background:rgba(26,115,232,.28)}
-.docxkit-caret{position:absolute;width:1.5px;background:#202124;animation:docxkit-blink 1.06s steps(1) infinite}
+.docxkit-caret{position:absolute;width:2px;margin-left:-1px;background:#202124;animation:docxkit-blink 1.06s steps(1) infinite}
 .docxkit-viewer:not(.docxkit-focused) .docxkit-caret{display:none}
 @keyframes docxkit-blink{50%{opacity:0}}
 .docxkit-input{position:absolute;opacity:0;width:1px;height:1em;padding:0;border:0;margin:0;resize:none;overflow:hidden;white-space:pre;pointer-events:none;font-size:16px}
