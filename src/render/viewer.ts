@@ -12,6 +12,7 @@ import type { LinkTarget } from '../model/fields.js';
 import { extension } from '../opc/paths.js';
 import { CanvasFontProvider } from './canvas-fonts.js';
 import { InlineEditing, type EditingOptions } from './editing.js';
+import { collectNavTargets, nextTarget, type DocLocation, type NavKind, type NavTarget, type NavTargets } from './navigation.js';
 import { selectionPositions, type InlinePosition } from './selection.js';
 import { pageToSvg } from './svg.js';
 
@@ -44,6 +45,8 @@ export interface ViewerEvents {
   pagemount: { index: number; element: HTMLDivElement; page: Page };
   /** An edit typed on the page was refused (e.g. a PermissionError) or failed. */
   editerror: { error: Error };
+  /** The viewer jumped somewhere (a link, a bookmark, next/previous, back/forward). */
+  navigate: { location: DocLocation; target?: NavTarget };
 }
 
 type Listener<K extends keyof ViewerEvents> = (event: ViewerEvents[K]) => void;
@@ -51,7 +54,7 @@ type Listener<K extends keyof ViewerEvents> = (event: ViewerEvents[K]) => void;
 const STYLE_ID = 'docxkeun-viewer-style';
 const CSS = `
 .docxkeun-viewer{position:relative;overflow:auto;background:#e8eaed;height:100%;box-sizing:border-box;padding:16px 0}
-.docxkeun-row{display:flex;justify-content:center;align-items:flex-start;gap:12px;margin:0 auto 16px}
+.docxkeun-row{display:flex;justify-content:center;align-items:flex-start;gap:12px;margin:0 auto 16px;padding:0 16px;min-width:max-content;box-sizing:border-box}
 .docxkeun-page{position:relative;background:#fff;box-shadow:0 1px 3px rgba(60,64,67,.3),0 1px 4px rgba(60,64,67,.15);flex:none}
 .docxkeun-page svg{display:block;user-select:text}
 .docxkeun-overlay{position:absolute;inset:0;pointer-events:none}
@@ -73,6 +76,8 @@ const CSS = `
 .docxkeun-caret{position:absolute;width:2px;margin-left:-1px;background:#202124;animation:docxkeun-blink 1.06s steps(1) infinite}
 .docxkeun-viewer:not(.docxkeun-focused) .docxkeun-caret{display:none}
 @keyframes docxkeun-blink{50%{opacity:0}}
+.docxkeun-flash{position:absolute;pointer-events:none;border-radius:2px;background:rgba(251,188,4,.45);box-shadow:0 0 0 2px rgba(251,188,4,.8);animation:docxkeun-flash 1.6s ease-out forwards}
+@keyframes docxkeun-flash{0%,35%{opacity:1}100%{opacity:0}}
 .docxkeun-input{position:absolute;opacity:0;width:1px;height:1em;padding:0;border:0;margin:0;resize:none;overflow:hidden;white-space:pre;pointer-events:none;font-size:16px}
 `;
 
@@ -124,6 +129,10 @@ export class DocxViewer {
   private activeComment: string | undefined;
   private editingLayer: InlineEditing | undefined;
   private renderedShape = '';
+  private navTargets: NavTargets | undefined;
+  private navCursor: { kind: NavKind; index: number; scrollTop: number } | undefined;
+  private readonly past: DocLocation[] = [];
+  private readonly future: DocLocation[] = [];
 
   constructor(container: HTMLElement, private readonly options: ViewerOptions = {}) {
     ensureStyle();
@@ -206,6 +215,7 @@ export class DocxViewer {
   relayout(): void {
     if (!this.doc || !this.fonts) return;
     this.layoutResult = layoutDocument(this.doc, { fonts: this.fonts });
+    this.navTargets = undefined;
     this.comments = new Map(readComments(this.doc).map((c) => [c.id, c]));
     // Same pages and sizes (the usual case while typing): redraw the mounted pages in place.
     const shape = this.shapeKey();
@@ -405,7 +415,11 @@ export class DocxViewer {
     this.emit('linkclick', { target, url, preventDefault: () => (prevented = true) });
     if (prevented) return;
     if (url) window.open(url, '_blank', 'noopener,noreferrer');
-    else if (target.anchor) this.scrollToAnchor(target.anchor);
+    else if (target.anchor) {
+      const bookmark = this.navigation.bookmarks.find((b) => b.name === target.anchor);
+      // Remember where the link was, so back() returns to it.
+      if (bookmark) this.goTo(bookmark, { history: true });
+    }
   }
 
   private renderComments(page: Page, gutter: HTMLDivElement): void {
@@ -475,10 +489,125 @@ export class DocxViewer {
 
   /** Scroll to a bookmark. Returns false when the bookmark does not exist. */
   scrollToAnchor(name: string): boolean {
-    const anchor = this.layoutResult?.anchors.get(name);
-    if (!anchor) return false;
-    this.scrollToPage(anchor.page, anchor.y);
+    const bookmark = this.navigation.bookmarks.find((b) => b.name === name);
+    if (!bookmark) return false;
+    this.goTo(bookmark, { flash: false });
     return true;
+  }
+
+  // ---- navigation -----------------------------------------------------------------------------
+
+  /** Headings, bookmarks and hyperlinks of the current layout, each in document order. */
+  get navigation(): NavTargets {
+    if (!this.navTargets) this.navTargets = this.layoutResult ? collectNavTargets(this.layoutResult) : { headings: [], bookmarks: [], links: [] };
+    return this.navTargets;
+  }
+
+  /** The location at the top of the viewport. */
+  get location(): DocLocation {
+    const top = this.root.scrollTop + 16;
+    let page = 0;
+    for (let i = 0; i < this.rows.length; i++) {
+      if (this.rows[i]!.offsetTop <= top + 0.5) page = i;
+      else break;
+    }
+    const row = this.rows[page];
+    return { page, x: 0, y: row ? Math.max(0, (top - row.offsetTop) / this.scale) : 0 };
+  }
+
+  /**
+   * Jump to a target (or any location). The target briefly lights up. With `history`, back()
+   * returns to where the viewer was before the jump.
+   */
+  goTo(target: NavTarget | DocLocation, options: { history?: boolean; flash?: boolean } = {}): void {
+    if (options.history) {
+      this.past.push(this.location);
+      this.future.length = 0;
+    }
+    // Leave some room above the target so it is not glued to the edge.
+    this.scrollToPage(target.page, Math.max(0, target.y - 24));
+    const nav = 'kind' in target ? target : undefined;
+    if (nav) {
+      const list = this.navigation[`${nav.kind}s` as keyof NavTargets];
+      this.navCursor = { kind: nav.kind, index: list.indexOf(nav), scrollTop: this.root.scrollTop };
+      if (options.flash ?? true) this.flash(nav);
+    }
+    this.emit('navigate', { location: { page: target.page, x: target.x, y: target.y }, target: nav });
+  }
+
+  /** Jump to the next heading, bookmark or link after the current one (or the viewport top). */
+  next(kind: NavKind, options: { includeHidden?: boolean } = {}): NavTarget | undefined {
+    return this.step(kind, 1, options.includeHidden ?? false);
+  }
+
+  /** Jump to the previous heading, bookmark or link. */
+  previous(kind: NavKind, options: { includeHidden?: boolean } = {}): NavTarget | undefined {
+    return this.step(kind, -1, options.includeHidden ?? false);
+  }
+
+  private step(kind: NavKind, dir: 1 | -1, includeHidden: boolean): NavTarget | undefined {
+    const all = this.navigation[`${kind}s` as keyof NavTargets];
+    const list = includeHidden ? all : all.filter((t) => !t.hidden);
+    let target: NavTarget | undefined;
+    const cursor = this.navCursor;
+    if (cursor && cursor.kind === kind && Math.abs(this.root.scrollTop - cursor.scrollTop) < 2 && all[cursor.index]) {
+      // Not scrolled since the last jump: continue from that target, by index so that two
+      // links on the same line are both visited.
+      const from = all[cursor.index]!;
+      const i = list.indexOf(from);
+      target = i >= 0 ? list[i + dir] : nextTarget(list, from, dir, 0);
+    } else {
+      target = nextTarget(list, this.location, dir);
+    }
+    if (target) this.goTo(target);
+    return target;
+  }
+
+  get canGoBack(): boolean {
+    return this.past.length > 0;
+  }
+
+  get canGoForward(): boolean {
+    return this.future.length > 0;
+  }
+
+  /** Return to where the viewer was before the last jump (like a browser's Back). */
+  back(): boolean {
+    const to = this.past.pop();
+    if (!to) return false;
+    this.future.push(this.location);
+    this.scrollToPage(to.page, to.y);
+    this.navCursor = undefined;
+    this.emit('navigate', { location: to });
+    return true;
+  }
+
+  forward(): boolean {
+    const to = this.future.pop();
+    if (!to) return false;
+    this.past.push(this.location);
+    this.scrollToPage(to.page, to.y);
+    this.navCursor = undefined;
+    this.emit('navigate', { location: to });
+    return true;
+  }
+
+  /** Briefly highlight a target's areas. */
+  flash(target: Pick<NavTarget, 'page' | 'rects'>): void {
+    const pageEl = this.pageElement(target.page);
+    if (!pageEl) return;
+    const s = this.scale;
+    for (const r of target.rects) {
+      const el = document.createElement('div');
+      el.className = 'docxkeun-flash';
+      // Positioned in the scroll container so page re-renders do not remove it.
+      el.style.left = `${pageEl.offsetLeft + r.x * s - 2}px`;
+      el.style.top = `${pageEl.offsetTop + r.y * s - 1}px`;
+      el.style.width = `${Math.max(r.w, 2) * s + 4}px`;
+      el.style.height = `${r.h * s + 2}px`;
+      el.addEventListener('animationend', () => el.remove());
+      this.root.appendChild(el);
+    }
   }
 
   scrollToComment(id: string): boolean {

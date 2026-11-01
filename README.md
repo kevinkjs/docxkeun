@@ -27,6 +27,24 @@ viewer.scrollToAnchor('payment');                       // bookmarks
 
 Without registered fonts the viewer still works: it measures the viewer's system fonts with the canvas API. Exact layout and PDF export need font files.
 
+### Jumping between bookmarks, links and headings
+
+```ts
+const { headings, bookmarks, links } = viewer.navigation;   // each in document order, with page and position
+viewer.goTo(bookmarks[0], { history: true });                // scroll there; the target briefly lights up
+viewer.next('link');      viewer.previous('link');           // also 'bookmark' and 'heading'
+viewer.back();            viewer.forward();                  // like a browser, after following an internal link
+viewer.on('navigate', ({ target, location }) => highlightInMyPanel(target));
+```
+
+- Clicking an internal link jumps to its bookmark and records history, so `back()` returns to the link.
+- Each link target has its text (`label`), its `link` (URL or bookmark name) and, for internal links, its `destination`. A link that wraps onto two lines is one target.
+- Links in headers and footers are left out, since they repeat on every page.
+- Bookmarks whose names start with `_` (`_Toc…`, `_Hlk…`, `_GoBack`) are marked `hidden`, as Word hides them. `next`/`previous` skip them unless you pass `{ includeHidden: true }`.
+- `collectNavTargets(layout)` from `docxkeun/viewer` gives the same lists without a viewer (e.g. in Node).
+
+The playground shows these lists in a side panel, with ↑/↓ buttons per kind, Back/Forward, and Alt+←/→.
+
 ### Typing on the page
 
 ```ts
@@ -149,7 +167,7 @@ TrueType, OpenType (CFF) and `.ttc` collections are supported. PDF embedding res
 
 ## Status and limitations
 
-Working and tested (85 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
+Working and tested (89 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
 
 Verified against independent implementations so far:
 - Crypto primitives against FIPS/RFC test vectors and Node's crypto.

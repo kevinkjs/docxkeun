@@ -31,30 +31,39 @@ const num = (text: string, lvl = 0, id = 1) => p(text, `<w:numPr><w:ilvl w:val="
 const cell = (text: string, w = 3120) => `<w:tc><w:tcPr><w:tcW w:w="${w}" w:type="dxa"/></w:tcPr>${p(text)}</w:tc>`;
 
 export async function sampleDocx(): Promise<Uint8Array> {
+  const link = (text: string, anchor: string) => `<w:hyperlink w:anchor="${anchor}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t xml:space="preserve">${text}</w:t></w:r></w:hyperlink>`;
+  const heading = (text: string, bookmark: string, id: number) =>
+    `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:bookmarkStart w:id="${id}" w:name="${bookmark}"/><w:r><w:t>${text}</w:t></w:r><w:bookmarkEnd w:id="${id}"/></w:p>`;
+  const sep = '<w:r><w:t xml:space="preserve"> · </w:t></w:r>';
   const body = [
-    p('Mining Services Agreement', '<w:pStyle w:val="Title"/>'),
-    '<w:p><w:r><w:t xml:space="preserve">Draft for review · prepared with </w:t></w:r><w:hyperlink r:id="rIdSite"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>docxkeun</w:t></w:r></w:hyperlink><w:r><w:t xml:space="preserve">. Jump to </w:t></w:r><w:hyperlink w:anchor="payment"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>Payment terms</w:t></w:r></w:hyperlink><w:r><w:t>.</w:t></w:r></w:p>',
-    p('1. Scope of work', '<w:pStyle w:val="Heading1"/>'),
+    '<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:bookmarkStart w:id="9" w:name="top"/><w:r><w:t>Mining Services Agreement</w:t></w:r><w:bookmarkEnd w:id="9"/></w:p>',
+    '<w:p><w:r><w:t xml:space="preserve">Draft for review · prepared with </w:t></w:r><w:hyperlink r:id="rIdSite"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>docxkeun</w:t></w:r></w:hyperlink><w:r><w:t>.</w:t></w:r></w:p>',
+    `<w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">Contents: </w:t></w:r>${link('Scope', 'scope')}${sep}${link('Payment terms', 'payment')}${sep}${link('Editable section', 'editable')}${sep}${link('General', 'general')}${sep}${link('Signatures', 'signatures')}</w:p>`,
+    heading('1. Scope of work', 'scope', 11),
     p(LOREM, '<w:jc w:val="both"/>'),
     num('Exploration drilling and sampling'),
     num('Overburden removal', 0),
     num('Topsoil stockpiling', 1),
     num('Progressive rehabilitation', 1),
     num('Coal hauling to the port'),
-    '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:bookmarkStart w:id="10" w:name="payment"/><w:r><w:t>2. Payment terms</w:t></w:r><w:bookmarkEnd w:id="10"/></w:p>',
-    '<w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:t xml:space="preserve">The Company shall pay a royalty of </w:t></w:r><w:commentRangeStart w:id="0"/><w:r><w:rPr><w:b/></w:rPr><w:t>3.75% of the gross revenue</w:t></w:r><w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r><w:r><w:t xml:space="preserve"> within thirty (30) days after the end of each quarter. Late payments bear interest at the rate set out below.</w:t></w:r></w:p>',
+    heading('2. Payment terms', 'payment', 10),
+    '<w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:t xml:space="preserve">The Company shall pay a royalty of </w:t></w:r><w:commentRangeStart w:id="0"/><w:r><w:rPr><w:b/></w:rPr><w:t>3.75% of the gross revenue</w:t></w:r><w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r><w:r><w:t xml:space="preserve"> within thirty (30) days after the end of each quarter. Late payments bear interest at the rate set out below. See also </w:t></w:r>' + link('the general terms', 'general') + '<w:r><w:t>.</w:t></w:r></w:p>',
     `<w:tbl><w:tblPr><w:tblStyle w:val="GridTable"/><w:tblW w:w="0" w:type="auto"/><w:tblLook w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/></w:tblPr><w:tblGrid><w:gridCol w:w="3120"/><w:gridCol w:w="3120"/><w:gridCol w:w="3120"/></w:tblGrid>
       <w:tr><w:trPr><w:tblHeader/></w:trPr>${cell('Milestone')}${cell('Due')}${cell('Amount (USD)')}</w:tr>
       <w:tr>${cell('Mobilisation')}${cell('Signing + 30 days')}${cell('250,000')}</w:tr>
       <w:tr>${cell('First coal')}${cell('Q2 2027')}${cell('1,200,000')}</w:tr>
       <w:tr>${cell('Steady state')}${cell('Quarterly')}${cell('Per royalty schedule')}</w:tr></w:tbl>`,
     p(''),
-    p('3. Editable section', '<w:pStyle w:val="Heading1"/>'),
+    heading('3. Editable section', 'editable', 12),
     '<w:p><w:r><w:t xml:space="preserve">Counterparty notes: </w:t></w:r><w:permStart w:id="20" w:edGrp="everyone"/><w:r><w:t>[to be completed by the counterparty]</w:t></w:r><w:permEnd w:id="20"/></w:p>',
     num('Bulleted point one', 0, 2),
     num('Bulleted point two', 0, 2),
-    p('4. General', '<w:pStyle w:val="Heading1"/>'),
+    heading('4. General', 'general', 13),
     ...Array.from({ length: 14 }, (_, i) => p(`${i + 1}. ${LOREM}`, '<w:jc w:val="both"/>')),
+    `<w:p>${link('Back to the payment terms', 'payment')}${sep}${link('Back to top', 'top')}</w:p>`,
+    heading('5. Signatures', 'signatures', 14),
+    p('Signed for and on behalf of PT Contoh Tambang and the Contractor.'),
+    `<w:p>${link('Back to top', 'top')}</w:p>`,
   ].join('');
   const footer = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:color w:val="7F7F7F"/><w:sz w:val="18"/></w:rPr><w:t xml:space="preserve">Page </w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:rPr><w:color w:val="7F7F7F"/><w:sz w:val="18"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple><w:r><w:rPr><w:color w:val="7F7F7F"/><w:sz w:val="18"/></w:rPr><w:t xml:space="preserve"> of </w:t></w:r><w:fldSimple w:instr="NUMPAGES"><w:r><w:rPr><w:color w:val="7F7F7F"/><w:sz w:val="18"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple></w:p></w:ftr>`;
   const header = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="4" w:space="4" w:color="BFBFBF"/></w:pBdr><w:tabs><w:tab w:val="right" w:pos="9360"/></w:tabs></w:pPr><w:r><w:rPr><w:sz w:val="18"/><w:color w:val="7F7F7F"/></w:rPr><w:t>PT Contoh Tambang</w:t></w:r><w:r><w:rPr><w:sz w:val="18"/><w:color w:val="7F7F7F"/></w:rPr><w:tab/><w:t>CONFIDENTIAL</w:t></w:r></w:p></w:hdr>`;

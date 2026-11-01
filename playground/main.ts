@@ -3,6 +3,7 @@ import { FontRegistry, loadBundledFonts } from '../src/index.js';
 import { exportPdf } from '../src/pdf/index.js';
 import { pdfSecurity } from '../src/security/index.js';
 import { DocxViewer } from '../src/render/index.js';
+import { mountNavigation } from './navigation.js';
 import { sampleDocx } from './sample.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -23,6 +24,12 @@ const fonts = await loadFonts();
 const viewer = new DocxViewer($('viewer'), { fonts, highlightRange: () => true, editable: true });
 viewer.on('editerror', ({ error }) => status(`Not changed: ${error.message}`));
 (window as unknown as { viewer: DocxViewer }).viewer = viewer;
+mountNavigation($('nav'), viewer, (text) => status(text));
+$('navToggle').addEventListener('click', () => {
+  const nav = $('nav');
+  nav.hidden = !nav.hidden;
+  $('navToggle').setAttribute('aria-pressed', String(!nav.hidden));
+});
 
 async function show(bytes: Uint8Array | Blob, name: string) {
   const t0 = performance.now();
