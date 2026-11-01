@@ -1,3 +1,4 @@
+import { DocxEditor } from '../src/api/index.js';
 import { FontRegistry } from '../src/index.js';
 import { DocxViewer } from '../src/render/index.js';
 import { sampleDocx } from './sample.js';
@@ -74,5 +75,55 @@ $('zoomOut').addEventListener('click', () => setZoom(viewer.zoom / 1.25));
 viewer.on('selectionchange', (sel) => {
   if (sel) status(`Selected "${sel.start.inline.text.slice(sel.start.offset, sel.start.inline === sel.end.inline ? sel.end.offset : undefined)}"`);
 });
+
+function button(label: string, onClick: () => unknown): void {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.addEventListener('click', async () => {
+    try {
+      await onClick();
+    } catch (e) {
+      status((e as Error).message);
+      console.error(e);
+    }
+  });
+  $('actions').appendChild(b);
+}
+
+function download(bytes: Uint8Array, name: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const editor = () => new DocxEditor(viewer.document!);
+
+button('Comment', async () => {
+  const sel = viewer.getSelection();
+  if (!sel) return status('Select some text first');
+  const text = prompt('Comment');
+  if (!text) return;
+  await editor().addComment(editor().rangeFromSelection(sel), { author: 'Playground user', text });
+  status('Comment added');
+});
+button('Link', async () => {
+  const sel = viewer.getSelection();
+  if (!sel) return status('Select some text first');
+  const url = prompt('URL (https://...) or #bookmark');
+  if (!url) return;
+  const ed = editor();
+  await ed.addHyperlink(ed.rangeFromSelection(sel), url.startsWith('#') ? { bookmark: url.slice(1) } : { url });
+  status('Link added');
+});
+button('Bold', () => {
+  const sel = viewer.getSelection();
+  if (!sel) return status('Select some text first');
+  const ed = editor();
+  ed.formatRange(ed.rangeFromSelection(sel), { bold: true });
+});
+button('Save .docx', async () => download(await viewer.document!.save(), 'edited.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'));
 
 void show(await sampleDocx(), 'sample.docx');
