@@ -35,3 +35,4 @@ decryptionHooks.decrypt = async (bytes, password) => {
   return decryptPackage(bytes, password);
 };
 decryptionHooks.encrypt = async (zip, password) => encryptPackage(zip, password);
+export { pdfSecurity, permissionBits, hashR6, type PdfSecurityOptions, type PdfPermissions } from './pdf.js';

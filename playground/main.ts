@@ -1,6 +1,7 @@
 import { DocxEditor } from '../src/api/index.js';
 import { FontRegistry } from '../src/index.js';
 import { exportPdf } from '../src/pdf/index.js';
+import { pdfSecurity } from '../src/security/index.js';
 import { DocxViewer } from '../src/render/index.js';
 import { sampleDocx } from './sample.js';
 
@@ -147,6 +148,13 @@ button('Export PDF', async () => {
   const t0 = performance.now();
   const bytes = await exportPdf(viewer.document!, { fonts, layout: viewer.layout });
   status(`PDF: ${Math.round(bytes.length / 1024)} KB in ${Math.round(performance.now() - t0)} ms`);
+  showPdf(bytes);
+});
+button('Protected PDF', async () => {
+  if (fonts.isEmpty) return status('PDF export needs font files');
+  const password = prompt('Password to open (leave empty for none; copying and editing are still restricted)') ?? '';
+  const bytes = await exportPdf(viewer.document!, { fonts, layout: viewer.layout, encryption: pdfSecurity({ userPassword: password, permissions: { copy: false, modify: false } }) });
+  status(`Encrypted PDF (AES-256): ${Math.round(bytes.length / 1024)} KB`);
   showPdf(bytes);
 });
 button('Save .docx', async () => download(await viewer.document!.save(), 'edited.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'));
