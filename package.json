@@ -1,6 +1,6 @@
 {
   "name": "docxkeun",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Read, render, edit and convert .docx files in the browser, with zero runtime dependencies.",
   "author": "Kevin Jeremia (https://github.com/kevinkjs)",
   "license": "MIT",
