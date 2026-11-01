@@ -33,7 +33,7 @@ const cell = (text: string, w = 3120) => `<w:tc><w:tcPr><w:tcW w:w="${w}" w:type
 export async function sampleDocx(): Promise<Uint8Array> {
   const body = [
     p('Mining Services Agreement', '<w:pStyle w:val="Title"/>'),
-    '<w:p><w:r><w:t xml:space="preserve">Draft for review · prepared with </w:t></w:r><w:hyperlink r:id="rIdSite"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>docxkit</w:t></w:r></w:hyperlink><w:r><w:t xml:space="preserve">. Jump to </w:t></w:r><w:hyperlink w:anchor="payment"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>Payment terms</w:t></w:r></w:hyperlink><w:r><w:t>.</w:t></w:r></w:p>',
+    '<w:p><w:r><w:t xml:space="preserve">Draft for review · prepared with </w:t></w:r><w:hyperlink r:id="rIdSite"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>docxkeun</w:t></w:r></w:hyperlink><w:r><w:t xml:space="preserve">. Jump to </w:t></w:r><w:hyperlink w:anchor="payment"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>Payment terms</w:t></w:r></w:hyperlink><w:r><w:t>.</w:t></w:r></w:p>',
     p('1. Scope of work', '<w:pStyle w:val="Heading1"/>'),
     p(LOREM, '<w:jc w:val="both"/>'),
     num('Exploration drilling and sampling'),
@@ -68,7 +68,7 @@ export async function sampleDocx(): Promise<Uint8Array> {
     body,
     sectPr: sect,
     rels: [
-      ['rIdSite', 'hyperlink', 'https://example.com/docxkit', true],
+      ['rIdSite', 'hyperlink', 'https://example.com/docxkeun', true],
       ['rIdH', 'header', 'header1.xml'],
       ['rIdF', 'footer', 'footer1.xml'],
       ['rIdCx', 'http://schemas.microsoft.com/office/2011/relationships/commentsExtended', 'commentsExtended.xml'],

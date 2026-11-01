@@ -1,5 +1,5 @@
 /**
- * The open, metric-compatible fonts shipped in docxkit's `fonts/` folder
+ * The open, metric-compatible fonts shipped in docxkeun's `fonts/` folder
  * (Carlito, Caladea, Liberation Sans/Serif/Mono; SIL OFL 1.1).
  */
 import type { FontFace, FontRegistry } from './registry.js';
@@ -31,7 +31,7 @@ export const BUNDLED_FONTS: Array<{ file: string; family: BundledFamily; bold: b
 export interface LoadBundledFontsOptions {
   /**
    * URL of the `fonts/` folder, ending in "/". In a bundler, for example
-   * `new URL('docxkit/fonts/', import.meta.url)`; or wherever you host the files.
+   * `new URL('docxkeun/fonts/', import.meta.url)`; or wherever you host the files.
    */
   baseUrl?: string | URL;
   /** Custom loader instead of fetch, e.g. `(file) => readFile(join(fontsDir, file))` in Node. */

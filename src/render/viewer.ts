@@ -48,32 +48,32 @@ export interface ViewerEvents {
 
 type Listener<K extends keyof ViewerEvents> = (event: ViewerEvents[K]) => void;
 
-const STYLE_ID = 'docxkit-viewer-style';
+const STYLE_ID = 'docxkeun-viewer-style';
 const CSS = `
-.docxkit-viewer{position:relative;overflow:auto;background:#e8eaed;height:100%;box-sizing:border-box;padding:16px 0}
-.docxkit-row{display:flex;justify-content:center;align-items:flex-start;gap:12px;margin:0 auto 16px}
-.docxkit-page{position:relative;background:#fff;box-shadow:0 1px 3px rgba(60,64,67,.3),0 1px 4px rgba(60,64,67,.15);flex:none}
-.docxkit-page svg{display:block;user-select:text}
-.docxkit-overlay{position:absolute;inset:0;pointer-events:none}
-.docxkit-link{position:absolute;pointer-events:auto;cursor:pointer;display:block}
-.docxkit-link:focus-visible{outline:2px solid #1a73e8;outline-offset:1px}
-.docxkit-comment-hl{position:absolute;background:rgba(251,188,4,.28);border-bottom:2px solid rgba(251,188,4,.9);mix-blend-mode:multiply}
-.docxkit-comment-hl.active{background:rgba(251,188,4,.5)}
-.docxkit-perm{position:absolute;background:rgba(26,115,232,.12);border-bottom:1px dashed rgba(26,115,232,.7)}
-.docxkit-gutter{position:relative;width:260px;flex:none}
-.docxkit-card{position:absolute;left:0;right:0;background:#fff;border-radius:8px;padding:8px 10px;font:13px/1.4 system-ui,sans-serif;color:#202124;box-shadow:0 1px 2px rgba(60,64,67,.3);cursor:pointer;box-sizing:border-box}
-.docxkit-card.resolved{opacity:.6}
-.docxkit-card .who{font-weight:600}.docxkit-card .when{color:#5f6368;font-size:12px;margin-left:6px}
-.docxkit-card .body{white-space:pre-wrap;margin-top:2px;overflow-wrap:anywhere}
-.docxkit-card .reply{border-top:1px solid #e8eaed;margin-top:6px;padding-top:6px}
-.docxkit-editing .docxkit-page svg{user-select:none;cursor:text}
-.docxkit-editing .docxkit-link{pointer-events:none}
-.docxkit-edit-layer{position:absolute;inset:0;pointer-events:none}
-.docxkit-selection{position:absolute;background:rgba(26,115,232,.28)}
-.docxkit-caret{position:absolute;width:2px;margin-left:-1px;background:#202124;animation:docxkit-blink 1.06s steps(1) infinite}
-.docxkit-viewer:not(.docxkit-focused) .docxkit-caret{display:none}
-@keyframes docxkit-blink{50%{opacity:0}}
-.docxkit-input{position:absolute;opacity:0;width:1px;height:1em;padding:0;border:0;margin:0;resize:none;overflow:hidden;white-space:pre;pointer-events:none;font-size:16px}
+.docxkeun-viewer{position:relative;overflow:auto;background:#e8eaed;height:100%;box-sizing:border-box;padding:16px 0}
+.docxkeun-row{display:flex;justify-content:center;align-items:flex-start;gap:12px;margin:0 auto 16px}
+.docxkeun-page{position:relative;background:#fff;box-shadow:0 1px 3px rgba(60,64,67,.3),0 1px 4px rgba(60,64,67,.15);flex:none}
+.docxkeun-page svg{display:block;user-select:text}
+.docxkeun-overlay{position:absolute;inset:0;pointer-events:none}
+.docxkeun-link{position:absolute;pointer-events:auto;cursor:pointer;display:block}
+.docxkeun-link:focus-visible{outline:2px solid #1a73e8;outline-offset:1px}
+.docxkeun-comment-hl{position:absolute;background:rgba(251,188,4,.28);border-bottom:2px solid rgba(251,188,4,.9);mix-blend-mode:multiply}
+.docxkeun-comment-hl.active{background:rgba(251,188,4,.5)}
+.docxkeun-perm{position:absolute;background:rgba(26,115,232,.12);border-bottom:1px dashed rgba(26,115,232,.7)}
+.docxkeun-gutter{position:relative;width:260px;flex:none}
+.docxkeun-card{position:absolute;left:0;right:0;background:#fff;border-radius:8px;padding:8px 10px;font:13px/1.4 system-ui,sans-serif;color:#202124;box-shadow:0 1px 2px rgba(60,64,67,.3);cursor:pointer;box-sizing:border-box}
+.docxkeun-card.resolved{opacity:.6}
+.docxkeun-card .who{font-weight:600}.docxkeun-card .when{color:#5f6368;font-size:12px;margin-left:6px}
+.docxkeun-card .body{white-space:pre-wrap;margin-top:2px;overflow-wrap:anywhere}
+.docxkeun-card .reply{border-top:1px solid #e8eaed;margin-top:6px;padding-top:6px}
+.docxkeun-editing .docxkeun-page svg{user-select:none;cursor:text}
+.docxkeun-editing .docxkeun-link{pointer-events:none}
+.docxkeun-edit-layer{position:absolute;inset:0;pointer-events:none}
+.docxkeun-selection{position:absolute;background:rgba(26,115,232,.28)}
+.docxkeun-caret{position:absolute;width:2px;margin-left:-1px;background:#202124;animation:docxkeun-blink 1.06s steps(1) infinite}
+.docxkeun-viewer:not(.docxkeun-focused) .docxkeun-caret{display:none}
+@keyframes docxkeun-blink{50%{opacity:0}}
+.docxkeun-input{position:absolute;opacity:0;width:1px;height:1em;padding:0;border:0;margin:0;resize:none;overflow:hidden;white-space:pre;pointer-events:none;font-size:16px}
 `;
 
 function ensureStyle(): void {
@@ -129,7 +129,7 @@ export class DocxViewer {
     ensureStyle();
     this.zoomLevel = options.zoom ?? 1;
     this.root = document.createElement('div');
-    this.root.className = 'docxkit-viewer';
+    this.root.className = 'docxkeun-viewer';
     this.pagesEl = document.createElement('div');
     this.root.appendChild(this.pagesEl);
     container.appendChild(this.root);
@@ -193,14 +193,14 @@ export class DocxViewer {
       if (this.registeredFaces.has(face.id)) continue;
       this.registeredFaces.add(face.id);
       const data = standaloneFont(face.font);
-      const ff = new FontFace(`docxkit-${face.id}`, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer);
+      const ff = new FontFace(`docxkeun-${face.id}`, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer);
       document.fonts.add(ff);
       loads.push(ff.load().catch(() => undefined));
     }
     await Promise.all(loads);
   }
 
-  private fontFamily = (font: LayoutFont): string => (font.face ? `docxkit-${font.face.id}` : font.family);
+  private fontFamily = (font: LayoutFont): string => (font.face ? `docxkeun-${font.face.id}` : font.family);
 
   /** Re-run layout (after edits, zoom or option changes) and redraw. */
   relayout(): void {
@@ -266,9 +266,9 @@ export class DocxViewer {
     this.observer = new IntersectionObserver((entries) => this.onIntersect(entries), { root: this.root, rootMargin: '600px 0px' });
     result.pages.forEach((page, i) => {
       const row = document.createElement('div');
-      row.className = 'docxkit-row';
+      row.className = 'docxkeun-row';
       const pageEl = document.createElement('div');
-      pageEl.className = 'docxkit-page';
+      pageEl.className = 'docxkeun-page';
       pageEl.dataset.page = String(i);
       pageEl.style.width = `${page.width * this.scale}px`;
       pageEl.style.height = `${page.height * this.scale}px`;
@@ -276,7 +276,7 @@ export class DocxViewer {
       row.appendChild(pageEl);
       if (showComments) {
         const gutter = document.createElement('div');
-        gutter.className = 'docxkit-gutter';
+        gutter.className = 'docxkeun-gutter';
         gutter.style.height = pageEl.style.height;
         row.appendChild(gutter);
       }
@@ -349,7 +349,7 @@ export class DocxViewer {
   private overlay(page: Page): HTMLDivElement {
     const s = this.scale;
     const layer = document.createElement('div');
-    layer.className = 'docxkit-overlay';
+    layer.className = 'docxkeun-overlay';
     const place = (el: HTMLElement, r: { x: number; y: number; w: number; h: number }) => {
       el.style.left = `${r.x * s}px`;
       el.style.top = `${r.y * s}px`;
@@ -359,14 +359,14 @@ export class DocxViewer {
     for (const perm of page.perms) {
       if (!this.options.highlightRange?.(perm)) continue;
       const el = document.createElement('div');
-      el.className = 'docxkit-perm';
+      el.className = 'docxkeun-perm';
       place(el, perm);
       layer.appendChild(el);
     }
     for (const c of page.comments) {
       if (c.w <= 0 || !this.comments.has(c.id)) continue;
       const el = document.createElement('div');
-      el.className = 'docxkit-comment-hl' + (this.activeComment === c.id ? ' active' : '');
+      el.className = 'docxkeun-comment-hl' + (this.activeComment === c.id ? ' active' : '');
       el.dataset.comment = c.id;
       place(el, c);
       layer.appendChild(el);
@@ -377,7 +377,7 @@ export class DocxViewer {
 
   private linkElement(link: LinkArea, place: (el: HTMLElement, r: LinkArea) => void): HTMLAnchorElement {
     const a = document.createElement('a');
-    a.className = 'docxkit-link';
+    a.className = 'docxkeun-link';
     place(a, link);
     const allowed = this.options.allowedProtocols ?? ['http:', 'https:', 'mailto:', 'tel:'];
     const url = safeUrl(link.target.url, allowed);
@@ -425,7 +425,7 @@ export class DocxViewer {
     let nextFree = 0;
     for (const { comment, y } of roots) {
       const card = document.createElement('div');
-      card.className = 'docxkit-card' + (comment.resolved ? ' resolved' : '');
+      card.className = 'docxkeun-card' + (comment.resolved ? ' resolved' : '');
       card.dataset.comment = comment.id;
       card.appendChild(this.commentBody(comment));
       for (const reply of [...this.comments.values()].filter((c) => c.parentId === comment.id)) {
@@ -438,7 +438,7 @@ export class DocxViewer {
       card.addEventListener('click', () => {
         this.activeComment = comment.id;
         this.emit('commentclick', { comment });
-        for (const el of this.root.querySelectorAll('.docxkit-comment-hl')) el.classList.toggle('active', (el as HTMLElement).dataset.comment === comment.id);
+        for (const el of this.root.querySelectorAll('.docxkeun-comment-hl')) el.classList.toggle('active', (el as HTMLElement).dataset.comment === comment.id);
       });
       gutter.appendChild(card);
       nextFree = top + card.offsetHeight + 8;

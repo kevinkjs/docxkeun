@@ -1,5 +1,5 @@
 /**
- * docxkit: read, render, edit and convert .docx files in the browser (and Node),
+ * docxkeun: read, render, edit and convert .docx files in the browser (and Node),
  * with no runtime dependencies.
  */
 import { DocxDocument, type OpenOptions } from './model/document.js';
@@ -11,7 +11,7 @@ export { FontRegistry, Font, METRIC_COMPATIBLE, registerEmbeddedFonts, loadBundl
 export { layoutDocument, type LayoutOptions, type LayoutResult, type Page, type DisplayItem } from './layout/index.js';
 export { readComments, type CommentInfo } from './comments/read.js';
 
-/** Open a .docx (or a password-protected one, when docxkit/security is loaded). */
+/** Open a .docx (or a password-protected one, when docxkeun/security is loaded). */
 export function openDocx(input: Uint8Array | ArrayBuffer | Blob, options?: OpenOptions): Promise<DocxDocument> {
   return DocxDocument.open(input, options);
 }

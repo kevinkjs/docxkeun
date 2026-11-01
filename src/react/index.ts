@@ -2,7 +2,7 @@
  * React binding without a React dependency: pass your React in, get a component back.
  *
  *   import * as React from 'react';
- *   import { createDocxViewerComponent } from 'docxkit/react';
+ *   import { createDocxViewerComponent } from 'docxkeun/react';
  *   const DocxView = createDocxViewerComponent(React);
  *   <DocxView file={bytes} fonts={registry} onReady={(viewer) => ...} />
  */

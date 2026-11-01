@@ -1,4 +1,4 @@
-# docxkit
+# docxkeun
 
 Read, render, edit and convert `.docx` files in the browser (and Node), with **zero runtime dependencies**. Everything is implemented in this package: zip, XML, the document model, a page layout engine, an SVG viewer, a PDF writer, and the cryptography for password-protected files.
 
@@ -13,11 +13,11 @@ Read, render, edit and convert `.docx` files in the browser (and Node), with **z
 ## Quick start
 
 ```ts
-import { openDocx, FontRegistry, loadBundledFonts } from 'docxkit';
-import { DocxViewer } from 'docxkit/viewer';
+import { openDocx, FontRegistry, loadBundledFonts } from 'docxkeun';
+import { DocxViewer } from 'docxkeun/viewer';
 
 const fonts = new FontRegistry();
-await loadBundledFonts(fonts, { baseUrl: new URL('docxkit/fonts/', import.meta.url) });  // see "Fonts" below
+await loadBundledFonts(fonts, { baseUrl: new URL('docxkeun/fonts/', import.meta.url) });  // see "Fonts" below
 
 const viewer = new DocxViewer(document.getElementById('viewer')!, { fonts });
 await viewer.load(fileFromInput);                       // Uint8Array | ArrayBuffer | Blob
@@ -41,7 +41,7 @@ Click to place the caret and type. Supported: text and IME input, Backspace/Dele
 ### Editing from code
 
 ```ts
-import { DocxEditor } from 'docxkit/editor';
+import { DocxEditor } from 'docxkeun/editor';
 
 const editor = new DocxEditor(viewer.document!);       // the viewer re-renders on every change
 
@@ -66,8 +66,8 @@ Also available: `insertText`, `appendText`, `replaceRange`, `replaceAll`, `delet
 ### PDF
 
 ```ts
-import { exportPdf } from 'docxkit/pdf';
-import { pdfSecurity } from 'docxkit/security';
+import { exportPdf } from 'docxkeun/pdf';
+import { pdfSecurity } from 'docxkeun/security';
 
 const pdf = await exportPdf(doc, { fonts, layout: viewer.layout });   // reuse the on-screen layout
 
@@ -80,7 +80,7 @@ const locked = await exportPdf(doc, {
 ### Permissions
 
 ```ts
-import { AccessPolicy, setProtection, readProtection } from 'docxkit/security';
+import { AccessPolicy, setProtection, readProtection } from 'docxkeun/security';
 
 // Word's own protection (stored in the file, honoured by Word)
 await setProtection(doc, 'readOnly', { password: 'owner-secret' });
@@ -99,7 +99,7 @@ Roles: `viewer` (read, export), `commenter` (comments; edit/delete own), `editor
 ### Password-to-open `.docx`
 
 ```ts
-import 'docxkit/security';                         // enables encrypted files in open/save
+import 'docxkeun/security';                         // enables encrypted files in open/save
 
 const doc = await openDocx(bytes, { password });   // PasswordRequiredError / WrongPasswordError
 const encrypted = await doc.save({ password: 'new-password' });
@@ -111,8 +111,8 @@ Encryption is MS-OFFCRYPTO Agile (AES-256-CBC, SHA-512, 100,000 rounds, HMAC int
 
 ```tsx
 import * as React from 'react';
-import { createDocxViewerComponent } from 'docxkit/react';
-const DocxView = createDocxViewerComponent(React);  // no React dependency in docxkit itself
+import { createDocxViewerComponent } from 'docxkeun/react';
+const DocxView = createDocxViewerComponent(React);  // no React dependency in docxkeun itself
 
 <DocxView file={bytes} fonts={fonts} onReady={(viewer) => setViewer(viewer)} />
 ```
@@ -121,16 +121,16 @@ const DocxView = createDocxViewerComponent(React);  // no React dependency in do
 
 Word documents name fonts (Calibri, Times New Roman...) but rarely contain them, and browsers cannot read the system's font files. For exact layout and for PDF export, layout needs font files in a `FontRegistry`.
 
-docxkit ships open fonts with the same character widths as Office's defaults in its [`fonts/`](fonts/README.md) folder (SIL OFL 1.1, about 7 MB, 20 files): Carlito for Calibri, Caladea for Cambria, Liberation Sans for Arial, Liberation Serif for Times New Roman, Liberation Mono for Courier New. Those names map automatically.
+docxkeun ships open fonts with the same character widths as Office's defaults in its [`fonts/`](fonts/README.md) folder (SIL OFL 1.1, about 7 MB, 20 files): Carlito for Calibri, Caladea for Cambria, Liberation Sans for Arial, Liberation Serif for Times New Roman, Liberation Mono for Courier New. Those names map automatically.
 
 ```ts
-// Browser (bundler): serve or import the files from docxkit/fonts/
-await loadBundledFonts(fonts, { baseUrl: new URL('docxkit/fonts/', import.meta.url) });
-await loadBundledFonts(fonts, { baseUrl: 'https://cdn.example.com/docxkit-fonts/', families: ['Carlito'] });
+// Browser (bundler): serve or import the files from docxkeun/fonts/
+await loadBundledFonts(fonts, { baseUrl: new URL('docxkeun/fonts/', import.meta.url) });
+await loadBundledFonts(fonts, { baseUrl: 'https://cdn.example.com/docxkeun-fonts/', families: ['Carlito'] });
 
 // Node
 import { readFile } from 'node:fs/promises';
-const dir = new URL('./fonts/', import.meta.resolve('docxkit/package.json'));
+const dir = new URL('./fonts/', import.meta.resolve('docxkeun/package.json'));
 await loadBundledFonts(fonts, { load: (file) => readFile(new URL(file, dir)) });
 ```
 
@@ -155,7 +155,7 @@ Verified against independent implementations so far:
 - Crypto primitives against FIPS/RFC test vectors and Node's crypto.
 - PDF output and AES-256 PDF encryption opened by Chrome's PDF viewer (with and without an open password).
 
-**Still to verify against files made by Microsoft Word:** layout fidelity (line and page breaks), the Word protection password hash (the Excel-compatible low half is confirmed), and opening docxkit-encrypted files in Word / decrypting Word-encrypted files.
+**Still to verify against files made by Microsoft Word:** layout fidelity (line and page breaks), the Word protection password hash (the Excel-compatible low half is confirmed), and opening docxkeun-encrypted files in Word / decrypting Word-encrypted files.
 
 Not yet supported:
 - Text wrapping around floating images and text boxes. Floating images are placed but text does not flow around them; DrawingML shapes and text boxes are not drawn.

@@ -125,7 +125,7 @@ export function splitAt(index: TreeIndex, pos: DocPosition): Boundary {
   return { container, at: runIndex + 1 };
 }
 
-const SENTINEL = 'docxkit:mark';
+const SENTINEL = 'docxkeun:mark';
 
 /**
  * Split runs at both ends of a range and drop sentinel elements at the two boundaries, so the

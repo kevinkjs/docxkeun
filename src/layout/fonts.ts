@@ -57,7 +57,7 @@ export class RegistryFontProvider implements FontProvider {
   private readonly fonts = new Map<string, SfntLayoutFont>();
 
   constructor(private readonly registry: FontRegistry) {
-    if (registry.isEmpty) throw new Error('docxkit layout needs at least one registered font (FontRegistry.add).');
+    if (registry.isEmpty) throw new Error('docxkeun layout needs at least one registered font (FontRegistry.add).');
   }
 
   private wrap(resolved: ResolvedFace): SfntLayoutFont {

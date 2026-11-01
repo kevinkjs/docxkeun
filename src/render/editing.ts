@@ -14,7 +14,7 @@ import { cloneElement, type XmlElement } from '../xml/index.js';
 import type { DocxViewer } from './viewer.js';
 
 export interface EditingOptions {
-  /** Checks every change (e.g. an AccessPolicy from docxkit/security). */
+  /** Checks every change (e.g. an AccessPolicy from docxkeun/security). */
   guard?: EditGuard;
 }
 
@@ -64,13 +64,13 @@ export class InlineEditing {
   constructor(private readonly viewer: DocxViewer, private readonly options: EditingOptions = {}) {
     const root = viewer.root;
     this.input = document.createElement('textarea');
-    this.input.className = 'docxkit-input';
+    this.input.className = 'docxkeun-input';
     this.input.setAttribute('aria-label', 'Document text');
     this.input.setAttribute('autocapitalize', 'off');
     this.input.setAttribute('autocomplete', 'off');
     this.input.spellcheck = false;
     root.appendChild(this.input);
-    root.classList.add('docxkit-editing');
+    root.classList.add('docxkeun-editing');
 
     const listen = <K extends keyof HTMLElementEventMap>(target: HTMLElement | Document, type: K, fn: (e: HTMLElementEventMap[K]) => void) => {
       target.addEventListener(type, fn as EventListener);
@@ -91,8 +91,8 @@ export class InlineEditing {
     listen(this.input, 'copy', (e) => this.onCopy(e, false));
     listen(this.input, 'cut', (e) => this.onCopy(e, true));
     listen(this.input, 'paste', (e) => this.onPaste(e));
-    listen(this.input, 'focus', () => root.classList.add('docxkit-focused'));
-    listen(this.input, 'blur', () => root.classList.remove('docxkit-focused'));
+    listen(this.input, 'focus', () => root.classList.add('docxkeun-focused'));
+    listen(this.input, 'blur', () => root.classList.remove('docxkeun-focused'));
     this.cleanup.push(viewer.on('layout', () => this.onLayout()));
     this.cleanup.push(viewer.on('pagemount', ({ index, element }) => this.onPageMount(index, element)));
     if (viewer.layout) this.onLayout();
@@ -100,7 +100,7 @@ export class InlineEditing {
 
   setEnabled(on: boolean): void {
     this.enabled = on;
-    this.viewer.root.classList.toggle('docxkit-editing', on);
+    this.viewer.root.classList.toggle('docxkeun-editing', on);
     if (!on) {
       this.input.blur();
       this.hasCaret = false;
@@ -140,7 +140,7 @@ export class InlineEditing {
     for (const fn of this.cleanup) fn();
     this.input.remove();
     for (const layer of this.layers.values()) layer.remove();
-    this.viewer.root.classList.remove('docxkit-editing', 'docxkit-focused');
+    this.viewer.root.classList.remove('docxkeun-editing', 'docxkeun-focused');
   }
 
   // ---- model ---------------------------------------------------------------------------------
@@ -307,7 +307,7 @@ export class InlineEditing {
 
   private onPageMount(index: number, element: HTMLDivElement): void {
     const layer = document.createElement('div');
-    layer.className = 'docxkit-edit-layer';
+    layer.className = 'docxkeun-edit-layer';
     element.appendChild(layer);
     this.layers.set(index, layer);
     this.drawPage(index);
@@ -365,7 +365,7 @@ export class InlineEditing {
         const flush = (i: number) => {
           if (runStart < 0) return;
           const x = item.xs[runStart]!;
-          box('docxkit-selection', x, item.y - item.font.ascent * item.size, item.xs[i - 1]! + item.widths[i - 1]! - x, (item.font.ascent + item.font.descent) * item.size);
+          box('docxkeun-selection', x, item.y - item.font.ascent * item.size, item.xs[i - 1]! + item.widths[i - 1]! - x, (item.font.ascent + item.font.descent) * item.size);
           runStart = -1;
         };
         for (let i = 0; i < item.chars.length; i++) {
@@ -379,11 +379,11 @@ export class InlineEditing {
       // Empty paragraphs inside the selection.
       for (const line of this.bodyLines(page)) {
         const para = this.paraIndex.get(line.paragraph)!;
-        if (para >= start.para && para < end.para && this.textOf(para) === '') box('docxkit-selection', line.x, line.y, 4, line.h);
+        if (para >= start.para && para < end.para && this.textOf(para) === '') box('docxkeun-selection', line.x, line.y, 4, line.h);
       }
     }
     const caret = this.screen(this.focusPos);
-    if (caret && caret.page === index) box('docxkit-caret', caret.x, caret.y, undefined, caret.h);
+    if (caret && caret.page === index) box('docxkeun-caret', caret.x, caret.y, undefined, caret.h);
   }
 
   // ---- mouse ---------------------------------------------------------------------------------
@@ -403,7 +403,7 @@ export class InlineEditing {
 
   private onMouseDown(e: MouseEvent): void {
     if (!this.enabled || e.button !== 0) return;
-    if (!(e.target as Element).closest?.('.docxkit-page')) return;
+    if (!(e.target as Element).closest?.('.docxkeun-page')) return;
     const hit = this.pointToCaret(e);
     if (!hit) return;
     // Cmd/Ctrl-click follows links, as in Word.

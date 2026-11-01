@@ -26,7 +26,7 @@ export interface PdfExportOptions {
   /** URL schemes allowed in link annotations (default http, https, mailto, tel). */
   allowedProtocols?: string[];
   metadata?: { title?: string; author?: string; subject?: string; keywords?: string };
-  /** Applied while writing (see docxkit/security's pdfSecurity). */
+  /** Applied while writing (see docxkeun/security's pdfSecurity). */
   encryption?: PdfEncryption;
 }
 
@@ -152,8 +152,8 @@ export async function exportPdf(doc: DocxDocument, options: PdfExportOptions): P
     Author: text(meta.author ?? core.creator),
     Subject: text(meta.subject ?? core.subject),
     Keywords: text(meta.keywords ?? core.keywords),
-    Creator: str('docxkit'),
-    Producer: str('docxkit'),
+    Creator: str('docxkeun'),
+    Producer: str('docxkeun'),
     CreationDate: str(now),
     ModDate: str(now),
   });
@@ -270,7 +270,7 @@ function addComments(writer: PdfWriter, comments: CommentInfo[], layout: LayoutR
         T: str(c.author),
         M: date(c),
         CreationDate: date(c),
-        NM: str(`docxkit-comment-${c.id}-p${page.index}`),
+        NM: str(`docxkeun-comment-${c.id}-p${page.index}`),
         Subj: str('Comment'),
         Popup: popup,
       });
@@ -305,7 +305,7 @@ function addComments(writer: PdfWriter, comments: CommentInfo[], layout: LayoutR
         T: str(c.author),
         M: date(c),
         CreationDate: date(c),
-        NM: str(`docxkit-comment-${c.id}`),
+        NM: str(`docxkeun-comment-${c.id}`),
         Name: name('Comment'),
         Open: false,
       }),

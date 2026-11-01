@@ -1,6 +1,6 @@
 /**
  * DocxEditor: the code API for changing a document. Every change edits the XML directly (so
- * everything docxkit does not understand is preserved), passes through the access guard, and
+ * everything docxkeun does not understand is preserved), passes through the access guard, and
  * notifies listeners such as the viewer.
  */
 import { REL } from '../opc/index.js';
@@ -24,7 +24,7 @@ import {
 
 export type EditAction = 'edit' | 'format' | 'comment' | 'reply' | 'resolveComment' | 'editComment' | 'deleteComment' | 'link' | 'bookmark' | 'fillForm' | 'protect';
 
-/** Checks every edit (see docxkit/security's AccessPolicy). Throw to refuse. */
+/** Checks every edit (see docxkeun/security's AccessPolicy). Throw to refuse. */
 export interface EditGuard {
   assert(action: EditAction, range?: DocRange, detail?: { commentAuthor?: string }): void;
 }
@@ -342,7 +342,7 @@ export class DocxEditor {
     let idx: TreeIndex;
     if (at.node.name === 'w:p') {
       para = at.node;
-      mark = el('docxkit:split');
+      mark = el('docxkeun:split');
       const pPr = firstChild(para, 'w:pPr');
       para.children.splice(pPr ? para.children.indexOf(pPr) + 1 : 0, 0, mark);
       idx = this.index();

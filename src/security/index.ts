@@ -29,7 +29,7 @@ export class PasswordRequiredError extends EncryptionError {
   }
 }
 
-// Importing docxkit/security lets DocxDocument.open / save handle password-to-open files.
+// Importing docxkeun/security lets DocxDocument.open / save handle password-to-open files.
 decryptionHooks.decrypt = async (bytes, password) => {
   if (password === undefined || password === '') throw new PasswordRequiredError();
   return decryptPackage(bytes, password);

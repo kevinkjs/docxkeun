@@ -93,7 +93,7 @@ export class AccessPolicy implements EditGuard {
         return 'The document only allows comments outside its editable regions';
       case 'trackedChanges':
         if (isCommentAction) return undefined;
-        return 'The document requires tracked changes, which docxkit does not record yet';
+        return 'The document requires tracked changes, which docxkeun does not record yet';
       case 'forms':
         if (action === 'fillForm') return undefined;
         return 'The document only allows filling in forms';

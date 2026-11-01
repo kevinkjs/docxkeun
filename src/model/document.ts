@@ -97,7 +97,7 @@ export class DocxDocument {
     let password: string | undefined;
     if (isCompoundFile(bytes)) {
       if (!decryptionHooks.decrypt) {
-        throw new DocxError('This file is encrypted or is a legacy .doc. Import "docxkit/security" to open password-protected files.');
+        throw new DocxError('This file is encrypted or is a legacy .doc. Import "docxkeun/security" to open password-protected files.');
       }
       bytes = await decryptionHooks.decrypt(bytes, options.password);
       password = options.password;
@@ -304,12 +304,12 @@ export class DocxDocument {
 
   /**
    * Serialise to .docx bytes. With `password`, the file is encrypted (password to open);
-   * that needs docxkit/security to be imported.
+   * that needs docxkeun/security to be imported.
    */
   async save(options: { modified?: Date; password?: string } = {}): Promise<Uint8Array> {
     const zip = await this.pkg.save(options);
     if (!options.password) return zip;
-    if (!decryptionHooks.encrypt) throw new DocxError('Import "docxkit/security" to save with a password');
+    if (!decryptionHooks.encrypt) throw new DocxError('Import "docxkeun/security" to save with a password');
     return decryptionHooks.encrypt(zip, options.password);
   }
 }

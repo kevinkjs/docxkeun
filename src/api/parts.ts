@@ -21,7 +21,7 @@ export const PART_SPECS: Partial<Record<keyof WordParts, PartSpec>> = {
   styles: { name: 'word/styles.xml', rel: REL.styles, contentType: CONTENT_TYPE.styles, root: 'w:styles' },
 };
 
-/** Namespace declarations put on the roots of parts docxkit creates. */
+/** Namespace declarations put on the roots of parts docxkeun creates. */
 export const ROOT_NAMESPACES: Record<string, string> = {
   'xmlns:mc': NS.mc,
   'xmlns:r': NS.r,
@@ -33,7 +33,7 @@ export const ROOT_NAMESPACES: Record<string, string> = {
   'mc:Ignorable': 'w14 w15 w16cid w16cex',
 };
 
-/** Make sure a root element declares the namespaces docxkit writes into it. */
+/** Make sure a root element declares the namespaces docxkeun writes into it. */
 export function ensureNamespaces(doc: XmlDocument): void {
   const attrs = doc.root.attrs;
   for (const [k, v] of Object.entries(ROOT_NAMESPACES)) {
@@ -53,7 +53,7 @@ export async function ensurePart(doc: DocxDocument, kind: keyof WordParts): Prom
     return { name: existing, xml };
   }
   const spec = PART_SPECS[kind];
-  if (!spec) throw new Error(`docxkit cannot create a ${kind} part`);
+  if (!spec) throw new Error(`docxkeun cannot create a ${kind} part`);
   let name = spec.name;
   for (let n = 2; doc.pkg.has(name); n++) name = spec.name.replace(/\.xml$/, `${n}.xml`);
   const xml: XmlDocument = { declaration: null, prolog: [], root: el(spec.root, { ...ROOT_NAMESPACES }), epilog: [] };

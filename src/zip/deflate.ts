@@ -31,7 +31,7 @@ async function pump(data: Uint8Array, transform: TransformStream<Uint8Array, Uin
 
 function requireStreams(): void {
   if (typeof DecompressionStream === 'undefined' || typeof CompressionStream === 'undefined') {
-    throw new Error('docxkit needs the Compression Streams API (modern browsers, Node >= 20.12).');
+    throw new Error('docxkeun needs the Compression Streams API (modern browsers, Node >= 20.12).');
   }
 }
 
