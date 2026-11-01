@@ -22,7 +22,7 @@ import {
   type DocRange,
 } from './positions.js';
 
-export type EditAction = 'edit' | 'format' | 'comment' | 'reply' | 'resolveComment' | 'deleteComment' | 'link' | 'bookmark' | 'protect';
+export type EditAction = 'edit' | 'format' | 'comment' | 'reply' | 'resolveComment' | 'editComment' | 'deleteComment' | 'link' | 'bookmark' | 'fillForm' | 'protect';
 
 /** Checks every edit (see docxkit/security's AccessPolicy). Throw to refuse. */
 export interface EditGuard {
@@ -325,7 +325,7 @@ export class DocxEditor {
       if (key === undefined || !(key in data)) continue;
       const content = firstChild(sdt, 'w:sdtContent');
       if (!content) continue;
-      this.check('edit');
+      this.check('fillForm');
       const value = String(data[key] ?? '');
       const firstRun = findAll(content, 'w:r')[0];
       if (sdtPr) removeChildren(sdtPr, 'w:showingPlcHdr');
@@ -540,6 +540,37 @@ export class DocxEditor {
     this.changed();
   }
 
+  // ---- editable ranges (exceptions to document protection) ---------------------------------
+
+  /** Let a user (w:ed, e.g. an e-mail or DOMAIN\\user) or a group (w:edGrp, e.g. "everyone") edit a range. */
+  addEditableRange(range: DocRange, who: { editor?: string; group?: 'everyone' | 'editors' | 'owners' | 'administrators' | 'contributors' | 'current' | 'none' | string }): string {
+    this.check('protect', range);
+    if (!who.editor && !who.group) throw new EditError('An editable range needs an editor or a group');
+    const id = String(1 + Math.max(0, ...findAll(this.root, 'w:permStart').map((n) => Number(attr(n, 'w:id') ?? 0))));
+    const index = this.index();
+    const { startMark, endMark } = isolate(index, range);
+    const idx = this.index();
+    replaceMark(idx, startMark, [el('w:permStart', { 'w:id': id, 'w:ed': who.editor, 'w:edGrp': who.editor ? undefined : who.group })]);
+    replaceMark(idx, endMark, [el('w:permEnd', { 'w:id': id })]);
+    this.changed();
+    return id;
+  }
+
+  editableRanges(): Array<{ id: string; editor?: string; group?: string }> {
+    return findAll(this.root, 'w:permStart').map((n) => ({ id: attr(n, 'w:id') ?? '', editor: attr(n, 'w:ed'), group: attr(n, 'w:edGrp') }));
+  }
+
+  removeEditableRange(id: string): void {
+    this.check('protect');
+    const idx = this.index();
+    for (const node of [...findAll(this.root, 'w:permStart'), ...findAll(this.root, 'w:permEnd')]) {
+      if (attr(node, 'w:id') !== id) continue;
+      const parent = idx.parentOf(node);
+      parent.children.splice(indexOfChild(parent, node), 1);
+    }
+    this.changed();
+  }
+
   // ---- comments -----------------------------------------------------------------------------
 
   /** Add a comment anchored to a range. Returns the new comment id. */
@@ -599,7 +630,7 @@ export class DocxEditor {
   async editComment(id: string, text: string): Promise<void> {
     const comment = await this.commentElement(id);
     if (!comment) throw new EditError(`No comment with id ${id}`);
-    this.check('comment', undefined, { commentAuthor: attr(comment, 'w:author') });
+    this.check('editComment', undefined, { commentAuthor: attr(comment, 'w:author') });
     const paraId = this.ensureParaId(comment);
     comment.children = [commentParagraph(text, paraId)];
     this.doc.touch(this.doc.parts.comments!);
