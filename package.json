@@ -1,10 +1,13 @@
 {
   "name": "docxkit",
   "version": "0.1.0",
+  "private": true,
   "description": "Read, render, edit and convert .docx files in the browser, with zero runtime dependencies.",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/security/index.js"
+  ],
   "files": [
     "dist"
   ],
@@ -13,6 +16,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./editor": {
+      "types": "./dist/api/index.d.ts",
+      "import": "./dist/api/index.js"
+    },
     "./viewer": {
       "types": "./dist/render/index.d.ts",
       "import": "./dist/render/index.js"
@@ -20,6 +27,22 @@
     "./pdf": {
       "types": "./dist/pdf/index.d.ts",
       "import": "./dist/pdf/index.js"
+    },
+    "./security": {
+      "types": "./dist/security/index.d.ts",
+      "import": "./dist/security/index.js"
+    },
+    "./fonts": {
+      "types": "./dist/fonts/index.d.ts",
+      "import": "./dist/fonts/index.js"
+    },
+    "./layout": {
+      "types": "./dist/layout/index.d.ts",
+      "import": "./dist/layout/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
     }
   },
   "scripts": {
@@ -27,7 +50,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev": "vite"
+    "dev": "vite",
+    "prepublishOnly": "pnpm test && pnpm build"
   },
   "engines": {
     "node": ">=20.12"
@@ -37,5 +61,15 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
-  }
+  },
+  "keywords": [
+    "docx",
+    "word",
+    "ooxml",
+    "pdf",
+    "viewer",
+    "editor",
+    "comments",
+    "encryption"
+  ]
 }
