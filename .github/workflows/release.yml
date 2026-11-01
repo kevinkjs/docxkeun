@@ -33,6 +33,8 @@ jobs:
         env:
           # Only needed until trusted publishing is set up on npmjs.com (then delete the secret).
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # npm only accepts provenance from public repositories.
+          PROVENANCE: ${{ github.event.repository.private && '' || '--provenance' }}
         run: |
           publish() {
             name=$(node -p "require('$1/package.json').name")
@@ -40,7 +42,7 @@ jobs:
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "$name@$version is already on npm, skipping"
             else
-              npm publish "$1" --provenance --access public --ignore-scripts
+              npm publish "$1" $PROVENANCE --access public --ignore-scripts
             fi
           }
           publish ./packages/fonts
