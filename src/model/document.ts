@@ -1,6 +1,6 @@
 /** A loaded .docx: its package, parsed parts and readers for every story. */
 import { CONTENT_TYPE, OpcPackage, REL, isRelType, relTypeName } from '../opc/index.js';
-import { attr, elements, firstChild, parseXml, textContent, type XmlDocument } from '../xml/index.js';
+import { attr, elements, firstChild, parseXml, textContent, type XmlDocument, type XmlElement } from '../xml/index.js';
 import { StoryReader, type Block, type Story } from './content.js';
 import { NumberingDefs } from './numbering.js';
 import { StyleSheet } from './styles.js';
@@ -195,6 +195,11 @@ export class DocxDocument {
 
   private reader(part: string): StoryReader {
     return new StoryReader({ styles: this.styles, numbering: this.numbering, rels: this.rels(part), showDeletions: this.options.showDeletions });
+  }
+
+  /** Read block content of any container element (a comment, a note) from a part. */
+  readBlocks(part: string, container: XmlElement): Block[] {
+    return this.reader(part).readBlocks(container);
   }
 
   /** The main body, flattened for layout. Cached until `invalidate()`. */
