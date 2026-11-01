@@ -27,7 +27,18 @@ viewer.scrollToAnchor('payment');                       // bookmarks
 
 Without registered fonts the viewer still works: it measures the viewer's system fonts with the canvas API. Exact layout and PDF export need font files.
 
-### Editing
+### Typing on the page
+
+```ts
+const viewer = new DocxViewer(el, { fonts, editable: true });   // or { editable: { guard: policy } }
+viewer.on('editerror', ({ error }) => toast(error.message));     // e.g. PermissionError under read-only protection
+viewer.editing!.undo();
+viewer.setEditable(false);                                       // back to view-only
+```
+
+Click to place the caret and type. Supported: text and IME input, Backspace/Delete (Alt/Ctrl for words), Enter (new paragraph, following the style's "next" style), Shift+Enter (line break), Tab, arrow keys, Home/End, Shift to select, double-click a word, drag to select, Cmd/Ctrl+A, copy/cut/paste as plain text, Cmd/Ctrl+B/I/U on a selection, Cmd/Ctrl+Z / Shift+Z / Y for undo and redo, and Cmd/Ctrl-click to follow a link. Every change goes through `DocxEditor`, so the same access guard applies and everything the editor does not understand stays in the file.
+
+### Editing from code
 
 ```ts
 import { DocxEditor } from 'docxkit/editor';
@@ -138,7 +149,7 @@ TrueType, OpenType (CFF) and `.ttc` collections are supported. PDF embedding res
 
 ## Status and limitations
 
-Working and tested (78 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
+Working and tested (85 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
 
 Verified against independent implementations so far:
 - Crypto primitives against FIPS/RFC test vectors and Node's crypto.
@@ -152,6 +163,7 @@ Not yet supported:
 - EMF/WMF, GIF and BMP images (drawn as placeholders in PDF), charts, SmartArt, equations (shown as plain text).
 - Recording tracked changes. Existing insertions are shown and deletions hidden.
 - Column balancing on continuous section breaks.
+- In-page typing re-lays out the whole document on every keystroke (about 20–35 ms for a few pages), so very long documents will feel slow. Typing into headers, footers, footnotes and text boxes is not supported, there is no formatting toolbar beyond the shortcuts, pasting keeps text only, and the caret does not yet move through images.
 
 ## Development
 

@@ -20,7 +20,8 @@ async function loadFonts(): Promise<FontRegistry> {
 }
 
 const fonts = await loadFonts();
-const viewer = new DocxViewer($('viewer'), { fonts, highlightRange: () => true });
+const viewer = new DocxViewer($('viewer'), { fonts, highlightRange: () => true, editable: true });
+viewer.on('editerror', ({ error }) => status(`Not changed: ${error.message}`));
 (window as unknown as { viewer: DocxViewer }).viewer = viewer;
 
 async function show(bytes: Uint8Array | Blob, name: string) {
@@ -81,6 +82,17 @@ function download(bytes: Uint8Array, name: string, type: string): void {
 
 const editor = () => new DocxEditor(viewer.document!);
 
+/** The current selection as an editor range, from in-page editing or the browser selection. */
+function selectionRange() {
+  const ed = editor();
+  const sel = viewer.editing?.isEnabled ? viewer.editing.selection : undefined;
+  if (sel && (sel.anchor.para !== sel.focus.para || sel.anchor.char !== sel.focus.char)) {
+    return viewer.editing!.rangeOf(sel.anchor, sel.focus);
+  }
+  const native = viewer.getSelection();
+  return native ? ed.rangeFromSelection(native) : undefined;
+}
+
 /** Show a PDF in the browser's own viewer, in an overlay. */
 function showPdf(bytes: Uint8Array): void {
   document.getElementById('pdf-overlay')?.remove();
@@ -98,28 +110,35 @@ function showPdf(bytes: Uint8Array): void {
   document.body.appendChild(overlay);
 }
 
+button('Editing: on', function (this: void) {
+  const on = !viewer.editing?.isEnabled;
+  viewer.setEditable(on);
+  const b = [...document.querySelectorAll('#actions button')].find((x) => x.textContent?.startsWith('Editing'));
+  if (b) b.textContent = `Editing: ${on ? 'on' : 'off'}`;
+  status(on ? 'Click in the text and type' : 'View only: select text to copy or comment');
+});
+button('Undo', () => viewer.editing?.undo());
+button('Redo', () => viewer.editing?.redo());
 button('Comment', async () => {
-  const sel = viewer.getSelection();
-  if (!sel) return status('Select some text first');
+  const range = selectionRange();
+  if (!range) return status('Select some text first');
   const text = prompt('Comment');
   if (!text) return;
-  await editor().addComment(editor().rangeFromSelection(sel), { author: 'Playground user', text });
+  await editor().addComment(range, { author: 'Playground user', text });
   status('Comment added');
 });
 button('Link', async () => {
-  const sel = viewer.getSelection();
-  if (!sel) return status('Select some text first');
+  const range = selectionRange();
+  if (!range) return status('Select some text first');
   const url = prompt('URL (https://...) or #bookmark');
   if (!url) return;
-  const ed = editor();
-  await ed.addHyperlink(ed.rangeFromSelection(sel), url.startsWith('#') ? { bookmark: url.slice(1) } : { url });
+  await editor().addHyperlink(range, url.startsWith('#') ? { bookmark: url.slice(1) } : { url });
   status('Link added');
 });
 button('Bold', () => {
-  const sel = viewer.getSelection();
-  if (!sel) return status('Select some text first');
-  const ed = editor();
-  ed.formatRange(ed.rangeFromSelection(sel), { bold: true });
+  const range = selectionRange();
+  if (!range) return status('Select some text first');
+  editor().formatRange(range, { bold: true });
 });
 button('Export PDF', async () => {
   if (fonts.isEmpty) return status('PDF export needs font files');

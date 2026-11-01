@@ -45,9 +45,13 @@ export interface TextInline extends RunRef {
 }
 export interface TabInline extends RunRef {
   kind: 'tab';
+  /** The w:tab / w:ptab element. */
+  node: XmlElement;
 }
 export interface BreakInline extends RunRef {
   kind: 'break';
+  /** The w:br / w:cr element. */
+  node: XmlElement;
   type: 'line' | 'page' | 'column';
 }
 export interface FloatInfo {
@@ -448,15 +452,15 @@ export class StoryReader {
           break;
         case 'w:tab':
         case 'w:ptab':
-          out.push({ kind: 'tab', run, props: getProps() });
+          out.push({ kind: 'tab', run, node, props: getProps() });
           break;
         case 'w:br': {
           const type = attr(node, 'w:type');
-          out.push({ kind: 'break', type: type === 'page' ? 'page' : type === 'column' ? 'column' : 'line', run, props: getProps() });
+          out.push({ kind: 'break', type: type === 'page' ? 'page' : type === 'column' ? 'column' : 'line', run, node, props: getProps() });
           break;
         }
         case 'w:cr':
-          out.push({ kind: 'break', type: 'line', run, props: getProps() });
+          out.push({ kind: 'break', type: 'line', run, node, props: getProps() });
           break;
         case 'w:noBreakHyphen':
           out.push({ kind: 'text', text: '‑', node, run, props: getProps() });

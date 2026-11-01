@@ -13,6 +13,8 @@ export interface Painter {
   column: { x: number; width: number };
   /** Text of a page-number field at this position. */
   fieldValue(field: string, format?: string): string;
+  /** Which story is being painted; only body lines are recorded for editing. */
+  story: 'body' | 'other';
 }
 
 export function colorOf(c: string | undefined, fallback = '000000'): string {

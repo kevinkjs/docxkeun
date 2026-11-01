@@ -206,6 +206,7 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
       paint: (p, x, y) => {
         decorate(p, x, y, height);
         if (i === 0 && outline?.title) p.page.headings.push({ ...outline, x: x + line.left, y });
+        if (p.story === 'body') p.page.lines.push({ x: x + line.left, w: line.right - line.left, y, h: height, baseline: y + baseline, paragraph: para.el });
         paintLine(p, line, x, { top: y, height, baseline: y + baseline });
       },
     });

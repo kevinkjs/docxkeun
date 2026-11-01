@@ -137,10 +137,23 @@ export interface Page {
   perms: PermArea[];
   /** Bookmark name → position on this page. */
   anchors: Map<string, { x: number; y: number }>;
+  /** Every body line (not headers, footers or notes), for caret placement and hit-testing. */
+  lines: BodyLine[];
   /** Paragraphs with an outline level (headings), for PDF outlines and navigation panes. */
   headings: Array<{ level: number; title: string; x: number; y: number }>;
   /** Body content area (for viewers that draw margins). */
   content: Rect;
+}
+
+export interface BodyLine {
+  /** Left edge of the line's content box and its width (between the paragraph's indents). */
+  x: number;
+  w: number;
+  y: number;
+  h: number;
+  baseline: number;
+  /** The w:p this line belongs to. */
+  paragraph: import('../xml/dom.js').XmlElement;
 }
 
 export interface LayoutResult {

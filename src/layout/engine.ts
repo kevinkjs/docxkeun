@@ -157,6 +157,7 @@ class Paginator {
       comments: [],
       perms: [],
       anchors: new Map(),
+      lines: [],
       headings: [],
       content: { x: 0, y: 0, w: 0, h: 0 },
     };
@@ -306,6 +307,7 @@ class Paginator {
       pl.box.paint(p, pl.x, pl.y);
     }
     if (this.notes.length) {
+      p.story = 'other';
       const column = this.columns[0]!;
       let y = this.bottom - this.notesHeight;
       p.page.items.push({ type: 'line', x1: column.x, y1: y + NOTE_SEPARATOR_SPACE / 2, x2: column.x + Math.min(144, column.width / 3), y2: y + NOTE_SEPARATOR_SPACE / 2, width: 0.5, color: '000000', style: 'solid' });
@@ -317,6 +319,7 @@ class Paginator {
         }
       }
     }
+    p.story = 'body';
     if (p.behind.length) p.page.items.unshift(...p.behind);
     this.placements = [];
   }
@@ -366,6 +369,7 @@ class LayoutEngine {
       page,
       behind: [],
       column,
+      story: 'body',
       fieldValue: (field) => {
         if (field === 'PAGE') return page.label;
         return this.numPagesPlaceholder;
@@ -408,6 +412,7 @@ class LayoutEngine {
     };
     const saved = p.column;
     p.column = { x, width };
+    p.story = 'other';
     let y = m.header;
     for (const b of story(pick(s.headers))) {
       b.paint(p, x, y);
@@ -423,6 +428,7 @@ class LayoutEngine {
       fy += b.height;
     }
     p.column = saved;
+    p.story = 'body';
     return { headerBottom, footerTop: Math.min(footerTop, s.pageHeight - m.footer) };
   }
 

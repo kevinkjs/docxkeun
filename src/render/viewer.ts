@@ -11,6 +11,7 @@ import { DocxDocument, type OpenOptions } from '../model/document.js';
 import type { LinkTarget } from '../model/fields.js';
 import { extension } from '../opc/paths.js';
 import { CanvasFontProvider } from './canvas-fonts.js';
+import { InlineEditing, type EditingOptions } from './editing.js';
 import { selectionPositions, type InlinePosition } from './selection.js';
 import { pageToSvg } from './svg.js';
 
@@ -26,6 +27,11 @@ export interface ViewerOptions {
   allowExternalImages?: boolean;
   /** Which permission ranges to shade (e.g. the ones the current user may edit). */
   highlightRange?(area: PermArea): boolean;
+  /**
+   * Let users type directly on the pages. Pass `{ guard }` (e.g. an AccessPolicy) to restrict
+   * what they may change; refused edits are reported through the `editerror` event.
+   */
+  editable?: boolean | EditingOptions;
 }
 
 export interface ViewerEvents {
@@ -34,6 +40,10 @@ export interface ViewerEvents {
   commentclick: { comment: CommentInfo };
   selectionchange: { start: InlinePosition; end: InlinePosition } | undefined;
   layout: { pages: Page[] };
+  /** A page's SVG was (re)drawn into its element. */
+  pagemount: { index: number; element: HTMLDivElement; page: Page };
+  /** An edit typed on the page was refused (e.g. a PermissionError) or failed. */
+  editerror: { error: Error };
 }
 
 type Listener<K extends keyof ViewerEvents> = (event: ViewerEvents[K]) => void;
@@ -56,6 +66,14 @@ const CSS = `
 .docxkit-card .who{font-weight:600}.docxkit-card .when{color:#5f6368;font-size:12px;margin-left:6px}
 .docxkit-card .body{white-space:pre-wrap;margin-top:2px;overflow-wrap:anywhere}
 .docxkit-card .reply{border-top:1px solid #e8eaed;margin-top:6px;padding-top:6px}
+.docxkit-editing .docxkit-page svg{user-select:none;cursor:text}
+.docxkit-editing .docxkit-link{pointer-events:none}
+.docxkit-edit-layer{position:absolute;inset:0;pointer-events:none}
+.docxkit-selection{position:absolute;background:rgba(26,115,232,.28)}
+.docxkit-caret{position:absolute;width:1.5px;background:#202124;animation:docxkit-blink 1.06s steps(1) infinite}
+.docxkit-viewer:not(.docxkit-focused) .docxkit-caret{display:none}
+@keyframes docxkit-blink{50%{opacity:0}}
+.docxkit-input{position:absolute;opacity:0;width:1px;height:1em;padding:0;border:0;margin:0;resize:none;overflow:hidden;white-space:pre;pointer-events:none;font-size:16px}
 `;
 
 function ensureStyle(): void {
@@ -94,6 +112,7 @@ export class DocxViewer {
   private fonts: FontProvider | undefined;
   private readonly registeredFaces = new Set<string>();
   private readonly imageUrls = new Map<string, string | null>();
+  private readonly pagesEl: HTMLDivElement;
   private readonly rows: HTMLDivElement[] = [];
   private readonly mounted = new Set<number>();
   private observer: IntersectionObserver | undefined;
@@ -103,14 +122,30 @@ export class DocxViewer {
   private relayoutScheduled = false;
   private zoomLevel: number;
   private activeComment: string | undefined;
+  private editingLayer: InlineEditing | undefined;
+  private renderedShape = '';
 
   constructor(container: HTMLElement, private readonly options: ViewerOptions = {}) {
     ensureStyle();
     this.zoomLevel = options.zoom ?? 1;
     this.root = document.createElement('div');
     this.root.className = 'docxkit-viewer';
+    this.pagesEl = document.createElement('div');
+    this.root.appendChild(this.pagesEl);
     container.appendChild(this.root);
     document.addEventListener('selectionchange', this.onSelectionChange);
+    if (options.editable) this.editingLayer = new InlineEditing(this, options.editable === true ? {} : options.editable);
+  }
+
+  /** In-page editing (present when the viewer was created with `editable`). */
+  get editing(): InlineEditing | undefined {
+    return this.editingLayer;
+  }
+
+  /** Turn typing on the pages on or off. */
+  setEditable(on: boolean, options: EditingOptions = {}): void {
+    if (on && !this.editingLayer) this.editingLayer = new InlineEditing(this, options);
+    this.editingLayer?.setEnabled(on);
   }
 
   get document(): DocxDocument | undefined {
@@ -128,7 +163,8 @@ export class DocxViewer {
     return () => set!.delete(listener as Listener<never>);
   }
 
-  private emit<K extends keyof ViewerEvents>(event: K, payload: ViewerEvents[K]): void {
+  /** @internal Used by the editing layer. */
+  emit<K extends keyof ViewerEvents>(event: K, payload: ViewerEvents[K]): void {
     for (const l of this.listeners.get(event) ?? []) (l as Listener<K>)(payload);
   }
 
@@ -171,8 +207,17 @@ export class DocxViewer {
     if (!this.doc || !this.fonts) return;
     this.layoutResult = layoutDocument(this.doc, { fonts: this.fonts });
     this.comments = new Map(readComments(this.doc).map((c) => [c.id, c]));
-    this.buildRows();
+    // Same pages and sizes (the usual case while typing): redraw the mounted pages in place.
+    const shape = this.shapeKey();
+    if (shape === this.renderedShape && this.rows.length) {
+      for (const i of [...this.mounted]) this.mountPage(i);
+    } else this.buildRows();
     this.emit('layout', { pages: this.layoutResult.pages });
+  }
+
+  private shapeKey(): string {
+    const showComments = (this.options.showComments ?? true) && this.comments.size > 0;
+    return `${this.scale}|${showComments}|` + (this.layoutResult?.pages.map((p) => `${p.width}x${p.height}`).join(',') ?? '');
   }
 
   private scheduleRelayout(): void {
@@ -193,9 +238,19 @@ export class DocxViewer {
     this.buildRows();
   }
 
-  /** CSS pixels per point. */
-  private get scale(): number {
+  /** CSS pixels per point at the current zoom. */
+  get scale(): number {
     return (this.zoomLevel * 96) / 72;
+  }
+
+  /** The element of a page (undefined before the first layout). */
+  pageElement(index: number): HTMLDivElement | undefined {
+    return this.rows[index]?.firstElementChild as HTMLDivElement | undefined;
+  }
+
+  /** Indexes of the pages currently drawn. */
+  get mountedPages(): number[] {
+    return [...this.mounted];
   }
 
   private buildRows(): void {
@@ -203,8 +258,9 @@ export class DocxViewer {
     if (!result) return;
     const scrollRatio = this.root.scrollHeight ? this.root.scrollTop / this.root.scrollHeight : 0;
     this.observer?.disconnect();
-    this.root.replaceChildren();
+    this.pagesEl.replaceChildren();
     this.rows.length = 0;
+    this.renderedShape = this.shapeKey();
     this.mounted.clear();
     const showComments = (this.options.showComments ?? true) && this.comments.size > 0;
     this.observer = new IntersectionObserver((entries) => this.onIntersect(entries), { root: this.root, rootMargin: '600px 0px' });
@@ -224,7 +280,7 @@ export class DocxViewer {
         gutter.style.height = pageEl.style.height;
         row.appendChild(gutter);
       }
-      this.root.appendChild(row);
+      this.pagesEl.appendChild(row);
       this.rows.push(row);
       this.observer!.observe(row);
     });
@@ -250,6 +306,7 @@ export class DocxViewer {
     pageEl.appendChild(this.overlay(page));
     const gutter = row.children[1] as HTMLDivElement | undefined;
     if (gutter) this.renderComments(page, gutter);
+    this.emit('pagemount', { index: i, element: pageEl, page });
     if (missing.length) {
       void this.loadImages(missing).then(() => {
         if (this.layoutResult?.pages[i] === page) {
@@ -335,18 +392,20 @@ export class DocxViewer {
     if (title) a.title = title;
     a.setAttribute('aria-label', title ?? 'Link');
     a.addEventListener('click', (e) => {
-      let prevented = false;
-      this.emit('linkclick', { target: link.target, url, preventDefault: () => (prevented = true) });
-      if (prevented) {
-        e.preventDefault();
-        return;
-      }
-      if (!url) {
-        e.preventDefault();
-        if (link.target.anchor) this.scrollToAnchor(link.target.anchor);
-      }
+      e.preventDefault();
+      this.followLink(link.target);
     });
     return a;
+  }
+
+  /** Follow a link the way a click does: emit `linkclick`, then open it or jump to the bookmark. */
+  followLink(target: LinkTarget): void {
+    const url = safeUrl(target.url, this.options.allowedProtocols ?? ['http:', 'https:', 'mailto:', 'tel:']);
+    let prevented = false;
+    this.emit('linkclick', { target, url, preventDefault: () => (prevented = true) });
+    if (prevented) return;
+    if (url) window.open(url, '_blank', 'noopener,noreferrer');
+    else if (target.anchor) this.scrollToAnchor(target.anchor);
   }
 
   private renderComments(page: Page, gutter: HTMLDivElement): void {
@@ -444,6 +503,7 @@ export class DocxViewer {
   };
 
   destroy(): void {
+    this.editingLayer?.destroy();
     this.observer?.disconnect();
     this.unsubscribe?.();
     document.removeEventListener('selectionchange', this.onSelectionChange);

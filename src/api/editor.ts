@@ -60,20 +60,22 @@ export interface Match extends DocRange {
   paragraph: XmlElement;
 }
 
-interface TextSegment {
+export interface TextSegment {
   start: number;
   end: number;
+  /** w:t, or a one-character item such as w:tab, w:br or w:sym. */
   node: XmlElement;
 }
 
 /** Concatenated text of a paragraph and where each character lives in the XML. */
-interface ParagraphText {
+export interface ParagraphText {
   paragraph: XmlElement;
   text: string;
   segments: TextSegment[];
 }
 
-function paragraphsOf(blocks: Block[], out: DocParagraph[] = []): DocParagraph[] {
+/** Every paragraph of a block list (including table cells), in document order. */
+export function paragraphsOf(blocks: Block[], out: DocParagraph[] = []): DocParagraph[] {
   for (const b of blocks) {
     if (b.kind === 'paragraph') out.push(b);
     else for (const row of b.rows) for (const cell of row.cells) paragraphsOf(cell.blocks, out);
@@ -81,20 +83,27 @@ function paragraphsOf(blocks: Block[], out: DocParagraph[] = []): DocParagraph[]
   return out;
 }
 
-function paragraphText(para: DocParagraph): ParagraphText {
+export function paragraphText(para: DocParagraph): ParagraphText {
   let text = '';
   const segments: TextSegment[] = [];
+  const add = (value: string, node: XmlElement) => {
+    segments.push({ start: text.length, end: text.length + value.length, node });
+    text += value;
+  };
   for (const inline of para.inlines as Inline[]) {
-    if (inline.kind === 'text') {
-      segments.push({ start: text.length, end: text.length + inline.text.length, node: inline.node });
-      text += inline.text;
-    } else if (inline.kind === 'tab') text += '\t';
-    else if (inline.kind === 'break' && inline.type === 'line') text += '\n';
+    if (inline.kind === 'text') add(inline.text, inline.node);
+    else if (inline.kind === 'tab') add('\t', inline.node);
+    else if (inline.kind === 'break' && inline.type === 'line') add('\n', inline.node);
   }
   return { paragraph: para.el, text, segments };
 }
 
-function positionAt(pt: ParagraphText, k: number, side: 'start' | 'end'): DocPosition | undefined {
+/**
+ * XML position of character offset `k` in a paragraph. With side 'start' the position is at the
+ * start of the segment holding character k; with 'end' it is at the end of the segment holding
+ * character k-1 (so insertions there inherit the formatting of the text before).
+ */
+export function positionAt(pt: ParagraphText, k: number, side: 'start' | 'end'): DocPosition | undefined {
   for (const s of pt.segments) {
     const inside = side === 'start' ? k >= s.start && k < s.end : k > s.start && k <= s.end;
     if (inside) {
@@ -152,6 +161,14 @@ export function applyFormat(run: XmlElement, format: TextFormat): void {
   if (format.style !== undefined) set('w:rStyle', { 'w:val': format.style });
   if (format.vertAlign !== undefined) set('w:vertAlign', { 'w:val': format.vertAlign });
   if (rPr.children.length === 0) run.children.splice(run.children.indexOf(rPr), 1);
+}
+
+/** Position just after a run's content (its last text node, or after its last item). */
+function endOfRun(run: XmlElement, fallback: XmlElement): DocPosition {
+  const items = run.children.filter((c): c is XmlElement => c.type === 'element' && c.name !== 'w:rPr');
+  const last = items[items.length - 1];
+  if (!last) return { node: fallback, offset: 0 };
+  return last.name === 'w:t' ? { node: last, offset: textContent(last).length } : { node: last, offset: 1 };
 }
 
 function newRun(text: string, template?: XmlElement, format?: TextFormat): XmlElement {
@@ -248,16 +265,125 @@ export class DocxEditor {
 
   // ---- text edits ---------------------------------------------------------------------------
 
-  /** Insert text at a position, formatted like the run it lands in (plus optional format). */
-  insertText(at: DocPosition, text: string, format?: TextFormat): void {
+  /**
+   * Insert text at a position, formatted like the run it lands in (plus optional format).
+   * Returns the position right after the inserted text. A position whose node is a w:p means
+   * "inside this (empty) paragraph".
+   */
+  insertText(at: DocPosition, text: string, format?: TextFormat): DocPosition {
     this.check('edit', { start: at, end: at });
+    const plain = !format && !/[\t\r\n]/.test(text);
+    // Typing into existing text: change the text node itself instead of adding a run per keystroke.
+    if (plain && at.node.name === 'w:t') {
+      const current = textContent(at.node);
+      const offset = Math.max(0, Math.min(at.offset, current.length));
+      const value = current.slice(0, offset) + text + current.slice(offset);
+      at.node.children = [{ type: 'text', value }];
+      if (/^\s|\s$/.test(value)) at.node.attrs['xml:space'] = 'preserve';
+      this.changed();
+      return { node: at.node, offset: offset + text.length };
+    }
+    if (at.node.name === 'w:p') {
+      // An empty paragraph: the new run takes the paragraph mark's formatting.
+      const markRPr = firstChild(firstChild(at.node, 'w:pPr'), 'w:rPr');
+      const run = el('w:r', {}, [...(markRPr ? [structuredClone(markRPr)] : []), ...runContent(text)]);
+      if (format) applyFormat(run, format);
+      const pPr = firstChild(at.node, 'w:pPr');
+      at.node.children.splice(pPr ? at.node.children.indexOf(pPr) + 1 : 0, 0, run);
+      this.changed();
+      return endOfRun(run, at.node);
+    }
     const index = this.index();
     const template = index.parentOf(at.node);
     const { startMark, endMark } = isolate(index, { start: at, end: at });
     const idx = this.index();
-    replaceMark(idx, startMark, [newRun(text, template, format)]);
+    const run = newRun(text, template, format);
+    replaceMark(idx, startMark, [run]);
     replaceMark(idx, endMark, []);
     this.changed();
+    return endOfRun(run, run);
+  }
+
+  /** Join a paragraph with the one right after it (Backspace at the start of the second). */
+  mergeParagraphs(first: XmlElement, second: XmlElement): void {
+    const firstRange = this.paragraphRange(first);
+    const secondRange = this.paragraphRange(second);
+    this.check('edit', { start: firstRange?.end ?? { node: first, offset: 0 }, end: secondRange?.start ?? { node: second, offset: 0 } });
+    const idx = this.index();
+    const parent = idx.parentOf(first);
+    if (idx.parentOf(second) !== parent) throw new EditError('Cannot join paragraphs in different table cells');
+    const a = indexOfChild(parent, first);
+    const b = indexOfChild(parent, second);
+    if (parent.children.slice(a + 1, b).some((n) => n.type === 'element' && (n.name === 'w:p' || n.name === 'w:tbl' || n.name === 'w:sdt'))) {
+      throw new EditError('The paragraphs are not next to each other');
+    }
+    const secondPPr = firstChild(second, 'w:pPr');
+    const sectPr = firstChild(secondPPr, 'w:sectPr');
+    if (sectPr) {
+      // Keep the section break that ended at the second paragraph.
+      const pPr = ensureChild(first, 'w:pPr');
+      if (first.children[0] !== pPr) {
+        first.children.splice(first.children.indexOf(pPr), 1);
+        first.children.unshift(pPr);
+      }
+      removeChildren(pPr, 'w:sectPr');
+      insertOrdered(pPr, sectPr, PPR_ORDER);
+    }
+    first.children.push(...second.children.filter((n) => !(n.type === 'element' && n.name === 'w:pPr')));
+    parent.children.splice(indexOfChild(parent, second), 1);
+    this.changed();
+  }
+
+  /** Split a paragraph at a position (Enter). Returns the new, second paragraph. */
+  splitParagraph(at: DocPosition): XmlElement {
+    this.check('edit', { start: at, end: at });
+    let para: XmlElement;
+    let mark: XmlElement;
+    let idx: TreeIndex;
+    if (at.node.name === 'w:p') {
+      para = at.node;
+      mark = el('docxkit:split');
+      const pPr = firstChild(para, 'w:pPr');
+      para.children.splice(pPr ? para.children.indexOf(pPr) + 1 : 0, 0, mark);
+      idx = this.index();
+    } else {
+      const index = this.index();
+      const marks = isolate(index, { start: at, end: at });
+      idx = this.index();
+      replaceMark(idx, marks.endMark, []);
+      mark = marks.startMark;
+      idx = this.index();
+      para = idx.ancestor(mark, 'w:p')!;
+      // A split inside a hyperlink or content control happens after it.
+      for (let container = idx.parentOf(mark); container !== para; container = idx.parentOf(mark)) {
+        container.children.splice(indexOfChild(container, mark), 1);
+        const outer = idx.parentOf(container);
+        outer.children.splice(indexOfChild(outer, container) + 1, 0, mark);
+        idx = this.index();
+      }
+    }
+    const tail = para.children.splice(indexOfChild(para, mark));
+    tail.shift();
+    const pPr = firstChild(para, 'w:pPr');
+    const newPPr = pPr ? structuredClone(pPr) : undefined;
+    // The section break stays with the paragraph that now ends the section.
+    if (pPr && firstChild(pPr, 'w:sectPr')) removeChildren(pPr, 'w:sectPr');
+    const tailHasContent = tail.some((n) => n.type === 'element' && (findAll(n, 'w:t').some((t) => textContent(t) !== '') || findAll(n, 'w:tab').length > 0 || findAll(n, 'w:drawing').length > 0));
+    if (newPPr && !tailHasContent) {
+      // Enter at the end of a heading continues with the style's "next" style.
+      const styleId = attr(firstChild(newPPr, 'w:pStyle'), 'w:val');
+      const next = this.doc.styles.get(styleId)?.next;
+      if (styleId && next && next !== styleId) {
+        removeChildren(newPPr, 'w:pStyle');
+        if (this.doc.styles.get(next)) insertOrdered(newPPr, el('w:pStyle', { 'w:val': next }), PPR_ORDER);
+        removeChildren(newPPr, 'w:numPr');
+      }
+    }
+    const newPara = el('w:p', {}, [...(newPPr ? [newPPr] : []), ...tail]);
+    const parent = idx.parentOf(para);
+    parent.children.splice(indexOfChild(parent, para) + 1, 0, newPara);
+    this.changed();
+    return newPara;
   }
 
   /** Append text at the end of a paragraph. */
@@ -274,6 +400,15 @@ export class DocxEditor {
   /** Delete a range (it may span paragraphs, but not table cells). */
   deleteRange(range: DocRange): void {
     this.check('edit', range);
+    // Deleting inside one text node (backspace): edit it in place.
+    if (range.start.node === range.end.node && range.start.node.name === 'w:t') {
+      const current = textContent(range.start.node);
+      const a = Math.min(range.start.offset, range.end.offset);
+      const b = Math.max(range.start.offset, range.end.offset);
+      range.start.node.children = [{ type: 'text', value: current.slice(0, a) + current.slice(b) }];
+      this.changed();
+      return;
+    }
     this.removeRange(range);
     this.changed();
   }
