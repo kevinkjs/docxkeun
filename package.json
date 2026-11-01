@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "description": "Read, render, edit and convert .docx files in the browser, with zero runtime dependencies.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevinkjs/docxkeun.git"
+  },
+  "homepage": "https://github.com/kevinkjs/docxkeun#readme",
+  "bugs": {
+    "url": "https://github.com/kevinkjs/docxkeun/issues"
+  },
   "license": "UNLICENSED",
   "type": "module",
   "sideEffects": [
