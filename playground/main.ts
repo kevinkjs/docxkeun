@@ -1,5 +1,5 @@
 import { DocxEditor } from '../src/api/index.js';
-import { FontRegistry } from '../src/index.js';
+import { FontRegistry, loadBundledFonts } from '../src/index.js';
 import { exportPdf } from '../src/pdf/index.js';
 import { pdfSecurity } from '../src/security/index.js';
 import { DocxViewer } from '../src/render/index.js';
@@ -8,35 +8,13 @@ import { sampleDocx } from './sample.js';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const status = (text: string) => ($('status').textContent = text);
 
-/** Load whatever system fonts the dev server can serve; fall back to canvas metrics if none. */
+/** The bundled open fonts (Carlito, Caladea, Liberation), served from the site root. */
 async function loadFonts(): Promise<FontRegistry> {
   const registry = new FontRegistry();
-  const files: Array<[string, string, boolean, boolean]> = [
-    ['Arial.ttf', 'Arial', false, false],
-    ['Arial Bold.ttf', 'Arial', true, false],
-    ['Arial Italic.ttf', 'Arial', false, true],
-    ['Arial Bold Italic.ttf', 'Arial', true, true],
-    ['Times New Roman.ttf', 'Times New Roman', false, false],
-    ['Times New Roman Bold.ttf', 'Times New Roman', true, false],
-    ['Times New Roman Italic.ttf', 'Times New Roman', false, true],
-    ['Courier New.ttf', 'Courier New', false, false],
-    ['Georgia.ttf', 'Georgia', false, false],
-    ['Verdana.ttf', 'Verdana', false, false],
-  ];
-  await Promise.all(
-    files.map(async ([file, family, bold, italic]) => {
-      try {
-        await registry.addFromUrl(`/__fonts/${encodeURIComponent(file)}`, { family, bold, italic });
-      } catch {
-        // not available on this machine
-      }
-    }),
-  );
-  if (!registry.isEmpty) {
-    registry.alias('Calibri', 'Arial');
-    registry.alias('Calibri Light', 'Arial');
-    registry.alias('Cambria', 'Times New Roman');
-    registry.fallbacks = ['Arial'];
+  try {
+    await loadBundledFonts(registry, { baseUrl: '/' });
+  } catch (e) {
+    console.warn('Bundled fonts unavailable, using system font metrics', e);
   }
   return registry;
 }

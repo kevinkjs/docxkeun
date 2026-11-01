@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { deobfuscateFont, Font, obfuscateFont, subsetTrueType } from '../src/fonts/index.js';
+import { deobfuscateFont, Font, FontRegistry, loadBundledFonts, obfuscateFont, subsetTrueType } from '../src/fonts/index.js';
 import { bytesEqual } from '../src/util/bytes.js';
-import { SYSTEM_FONTS, haveSystemFonts, readFont, testRegistry } from './helpers/fonts.js';
+import { FONTS_DIR, SYSTEM_FONTS, haveSystemFonts, readFont } from './helpers/fonts.js';
 
 function sfntChecksum(bytes: Uint8Array): number {
   let sum = 0;
@@ -54,16 +54,34 @@ describe.skipIf(!haveSystemFonts)('TrueType parser', () => {
     }
     expect(parsed.glyphRange(font.glyphId(0x5a))!.length).toBe(0); // 'Z' not kept
   });
+});
 
-  it('resolves families, aliases, styles and fallbacks', () => {
-    const registry = testRegistry();
-    expect(registry.resolve('Arial', true, false)?.face.bold).toBe(true);
-    const calibri = registry.resolve('Calibri', false, false)!;
-    expect(calibri.face.family).toBe('Arial');
-    const unknown = registry.resolve('Some Corporate Font', false, false)!;
-    expect(unknown.face.family).toBe('Arial');
-    const timesItalic = registry.resolve('Times New Roman', false, true)!;
-    expect(timesItalic.syntheticItalic).toBe(true);
+describe('bundled fonts', () => {
+  it('load through loadBundledFonts and stand in for Office fonts', async () => {
+    const registry = new FontRegistry();
+    const faces = await loadBundledFonts(registry, { load: async (file) => readFont(new URL(file, FONTS_DIR)) });
+    expect(faces).toHaveLength(20);
+    expect(faces.every((f) => f.font.embeddingAllowed)).toBe(true);
+    expect(registry.resolve('Calibri', false, false)!.face.family).toBe('Carlito');
+    expect(registry.resolve('Calibri Light', true, true)!.face).toMatchObject({ family: 'Carlito', bold: true, italic: true });
+    expect(registry.resolve('Cambria', false, true)!.face.family).toBe('Caladea');
+    expect(registry.resolve('Times New Roman', true, false)!.face.family).toBe('Liberation Serif');
+    expect(registry.resolve('Courier New', false, false)!.face.family).toBe('Liberation Mono');
+    expect(registry.resolve('Some Corporate Font', false, false)!.face.family).toBe('Carlito');
+  });
+
+  it.skipIf(!haveSystemFonts)('Liberation Sans and Serif match Arial and Times New Roman widths', () => {
+    const pairs: Array<[string, string]> = [
+      ['LiberationSans-Regular.ttf', SYSTEM_FONTS.arial],
+      ['LiberationSerif-Regular.ttf', SYSTEM_FONTS.times],
+    ];
+    for (const [bundled, system] of pairs) {
+      const a = Font.parse(readFont(new URL(bundled, FONTS_DIR)));
+      const b = Font.parse(readFont(system));
+      expect(a.unitsPerEm).toBe(b.unitsPerEm);
+      expect([a.winAscent, a.winDescent]).toEqual([b.winAscent, b.winDescent]);
+      for (let cp = 0x20; cp < 0x7f; cp++) expect(a.advance(a.glyphId(cp)), String.fromCharCode(cp)).toBe(b.advance(b.glyphId(cp)));
+    }
   });
 });
 

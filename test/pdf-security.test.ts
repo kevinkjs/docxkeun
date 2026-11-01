@@ -7,7 +7,7 @@ import { hashR6, pdfSecurity, permissionBits } from '../src/security/index.js';
 import { bytesEqual } from '../src/util/bytes.js';
 import { utf8Encode } from '../src/util/text.js';
 import { buildDocx, p } from './helpers/docx.js';
-import { haveSystemFonts, testRegistry } from './helpers/fonts.js';
+import { testRegistry } from './helpers/fonts.js';
 import { dictOf, latin1, pages, parsePdf, resolve, type PdfDictObj, type PdfStr } from './helpers/pdf.js';
 
 describe('PDF permission bits', () => {
@@ -23,7 +23,7 @@ describe('PDF permission bits', () => {
   });
 });
 
-describe.skipIf(!haveSystemFonts)('PDF encryption (R6, AES-256)', () => {
+describe('PDF encryption (R6, AES-256)', () => {
   it('encrypts strings and streams so only the right passwords unlock them', async () => {
     const doc = await DocxDocument.open(await buildDocx({ body: p('Top secret pricing') }));
     const bytes = await exportPdf(doc, {

@@ -5,7 +5,7 @@ import { DocxDocument } from '../src/model/index.js';
 import { exportPdf } from '../src/pdf/index.js';
 import { crc32 } from '../src/util/crc32.js';
 import { buildDocx, p } from './helpers/docx.js';
-import { haveSystemFonts, testRegistry } from './helpers/fonts.js';
+import { testRegistry } from './helpers/fonts.js';
 import { dictOf, pages, pageText, parsePdf, resolve, streamData, type PdfDictObj, type PdfNameObj, type PdfObj, type PdfStr } from './helpers/pdf.js';
 
 const STYLES = `<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
@@ -39,7 +39,7 @@ function rgbaPng(): Uint8Array {
   return out;
 }
 
-describe.skipIf(!haveSystemFonts)('PDF export', () => {
+describe('PDF export', () => {
   it('writes a structurally valid PDF with searchable text, links, outline and comments', async () => {
     const image = `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="914400"/><wp:docPr id="1" name="dot"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:blipFill><a:blip r:embed="rIdImg"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
     const body =

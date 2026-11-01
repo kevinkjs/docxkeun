@@ -7,7 +7,7 @@ import { DocxDocument, type OpenOptions } from './model/document.js';
 export { DocxDocument, DocxError, type OpenOptions, type CoreProperties } from './model/document.js';
 export type { Block, DocParagraph, DocTable, Inline, TextInline, Story } from './model/content.js';
 export { blocksToText } from './model/content.js';
-export { FontRegistry, Font, METRIC_COMPATIBLE, registerEmbeddedFonts, type FontFace } from './fonts/index.js';
+export { FontRegistry, Font, METRIC_COMPATIBLE, registerEmbeddedFonts, loadBundledFonts, BUNDLED_FONTS, type FontFace, type BundledFamily } from './fonts/index.js';
 export { layoutDocument, type LayoutOptions, type LayoutResult, type Page, type DisplayItem } from './layout/index.js';
 export { readComments, type CommentInfo } from './comments/read.js';
 

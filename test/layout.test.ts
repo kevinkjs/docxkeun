@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { layoutDocument, type Page, type TextItem } from '../src/layout/index.js';
 import { DocxDocument } from '../src/model/index.js';
 import { buildDocx, p } from './helpers/docx.js';
-import { haveSystemFonts, testRegistry } from './helpers/fonts.js';
+import { testRegistry } from './helpers/fonts.js';
 
 const STYLES = `
 <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="22"/></w:rPr></w:rPrDefault>
@@ -27,7 +27,7 @@ function lineYs(page: Page): number[] {
   return [...new Set(texts(page).map((t) => Math.round(t.y * 100) / 100))].sort((a, b) => a - b);
 }
 
-describe.skipIf(!haveSystemFonts)('layout', () => {
+describe('layout', () => {
   it('places the first baseline at the top margin plus the ascent', async () => {
     const { result } = await layout(p('Hello world'));
     expect(result.pages).toHaveLength(1);

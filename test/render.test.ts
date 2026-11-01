@@ -5,7 +5,7 @@ import { pageToSvg } from '../src/render/svg.js';
 import { safeUrl } from '../src/render/viewer.js';
 import { readComments } from '../src/comments/read.js';
 import { buildDocx, p } from './helpers/docx.js';
-import { haveSystemFonts, testRegistry } from './helpers/fonts.js';
+import { testRegistry } from './helpers/fonts.js';
 
 describe('rendering safety', () => {
   it('allows only listed link schemes', () => {
@@ -19,7 +19,7 @@ describe('rendering safety', () => {
     expect(safeUrl('relative/path.docx', allowed)).toBeUndefined();
   });
 
-  it.skipIf(!haveSystemFonts)('escapes document text in SVG output', async () => {
+  it('escapes document text in SVG output', async () => {
     const doc = await DocxDocument.open(await buildDocx({ body: p('&lt;script&gt;alert("x")&lt;/script&gt; &amp; "quotes"') }));
     const { pages } = layoutDocument(doc, { fonts: testRegistry() });
     const svg = pageToSvg(pages[0]!, { fontFamily: () => 'x"><script>', imageUrl: () => undefined });

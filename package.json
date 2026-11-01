@@ -9,7 +9,8 @@
     "./dist/security/index.js"
   ],
   "files": [
-    "dist"
+    "dist",
+    "fonts"
   ],
   "exports": {
     ".": {
@@ -43,7 +44,9 @@
     "./react": {
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js"
-    }
+    },
+    "./fonts/*": "./fonts/*",
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -13,12 +13,11 @@ Read, render, edit and convert `.docx` files in the browser (and Node), with **z
 ## Quick start
 
 ```ts
-import { openDocx, FontRegistry } from 'docxkit';
+import { openDocx, FontRegistry, loadBundledFonts } from 'docxkit';
 import { DocxViewer } from 'docxkit/viewer';
 
 const fonts = new FontRegistry();
-await fonts.addFromUrl('/fonts/Carlito-Regular.ttf');   // see "Fonts" below
-await fonts.addFromUrl('/fonts/Carlito-Bold.ttf');
+await loadBundledFonts(fonts, { baseUrl: new URL('docxkit/fonts/', import.meta.url) });  // see "Fonts" below
 
 const viewer = new DocxViewer(document.getElementById('viewer')!, { fonts });
 await viewer.load(fileFromInput);                       // Uint8Array | ArrayBuffer | Blob
@@ -109,9 +108,22 @@ const DocxView = createDocxViewerComponent(React);  // no React dependency in do
 
 ## Fonts
 
-Word documents name fonts (Calibri, Times New Roman...) but rarely contain them, and browsers cannot read the system's font files. For exact layout and for PDF export, register font files with a `FontRegistry`:
+Word documents name fonts (Calibri, Times New Roman...) but rarely contain them, and browsers cannot read the system's font files. For exact layout and for PDF export, layout needs font files in a `FontRegistry`.
 
-- Office fonts map automatically to open, metric-compatible substitutes when those are registered: Calibri → Carlito, Cambria → Caladea, Arial → Liberation Sans, Times New Roman → Liberation Serif, Courier New → Liberation Mono (all SIL OFL).
+docxkit ships open fonts with the same character widths as Office's defaults in its [`fonts/`](fonts/README.md) folder (SIL OFL 1.1, about 7 MB, 20 files): Carlito for Calibri, Caladea for Cambria, Liberation Sans for Arial, Liberation Serif for Times New Roman, Liberation Mono for Courier New. Those names map automatically.
+
+```ts
+// Browser (bundler): serve or import the files from docxkit/fonts/
+await loadBundledFonts(fonts, { baseUrl: new URL('docxkit/fonts/', import.meta.url) });
+await loadBundledFonts(fonts, { baseUrl: 'https://cdn.example.com/docxkit-fonts/', families: ['Carlito'] });
+
+// Node
+import { readFile } from 'node:fs/promises';
+const dir = new URL('./fonts/', import.meta.resolve('docxkit/package.json'));
+await loadBundledFonts(fonts, { load: (file) => readFile(new URL(file, dir)) });
+```
+
+Load only the families you need with `families` to save bandwidth (Carlito alone is 2.7 MB; Caladea is 330 KB). Other options:
 - `registry.alias('Corporate Sans', 'Liberation Sans')` maps any other name.
 - Fonts embedded in the document are supported: `await registerEmbeddedFonts(doc, registry)`.
 - `registry.fallbacks = ['Carlito']` sets what unknown fonts use.
@@ -126,7 +138,7 @@ TrueType, OpenType (CFF) and `.ttc` collections are supported. PDF embedding res
 
 ## Status and limitations
 
-Working and tested (77 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
+Working and tested (78 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
 
 Verified against independent implementations so far:
 - Crypto primitives against FIPS/RFC test vectors and Node's crypto.
@@ -146,8 +158,8 @@ Not yet supported:
 ```bash
 pnpm install
 pnpm test        # vitest
-pnpm dev         # playground at http://localhost:5199 (serves this Mac's system fonts in dev only)
+pnpm dev         # playground at http://localhost:5199 (uses the bundled fonts)
 pnpm build       # dist/
 ```
 
-Tests that need fonts use the fonts installed on the machine (never committed) and are skipped when they are missing.
+Tests use the bundled fonts; two optional checks compare them with Arial / Times New Roman when those are installed.
