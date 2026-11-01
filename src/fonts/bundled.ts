@@ -1,5 +1,5 @@
 /**
- * The open, metric-compatible fonts shipped in docxkeun's `fonts/` folder
+ * The open, metric-compatible fonts of the docxkeun-fonts package
  * (Carlito, Caladea, Liberation Sans/Serif/Mono; SIL OFL 1.1).
  */
 import type { FontFace, FontRegistry } from './registry.js';
@@ -29,10 +29,9 @@ export const BUNDLED_FONTS: Array<{ file: string; family: BundledFamily; bold: b
 );
 
 export interface LoadBundledFontsOptions {
-  /**
-   * URL of the `fonts/` folder, ending in "/". In a bundler, for example
-   * `new URL('docxkeun/fonts/', import.meta.url)`; or wherever you host the files.
-   */
+  /** File name → URL, e.g. `fontUrls` from the docxkeun-fonts package. */
+  urls?: Readonly<Record<string, string | URL>>;
+  /** URL of a folder that holds the font files (ending in "/"), when you host them yourself. */
   baseUrl?: string | URL;
   /** Custom loader instead of fetch, e.g. `(file) => readFile(join(fontsDir, file))` in Node. */
   load?: (file: string) => Promise<Uint8Array | ArrayBuffer>;
@@ -46,8 +45,10 @@ export async function loadBundledFonts(registry: FontRegistry, options: LoadBund
   const load =
     options.load ??
     (async (file: string) => {
-      if (options.baseUrl === undefined) throw new Error('loadBundledFonts needs a baseUrl or a load function');
-      const url = new URL(file, typeof options.baseUrl === 'string' ? new URL(options.baseUrl, globalThis.location?.href ?? 'file:///') : options.baseUrl);
+      const base = typeof options.baseUrl === 'string' ? new URL(options.baseUrl, globalThis.location?.href ?? 'file:///') : options.baseUrl;
+      const given = options.urls?.[file];
+      if (given === undefined && base === undefined) throw new Error(`loadBundledFonts needs urls, a baseUrl or a load function (missing ${file})`);
+      const url = given !== undefined ? new URL(given, globalThis.location?.href ?? 'file:///') : new URL(file, base);
       const response = await fetch(url);
       if (!response.ok) throw new Error(`Could not load ${url}: ${response.status}`);
       return response.arrayBuffer();

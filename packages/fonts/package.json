@@ -1,0 +1,45 @@
+{
+  "name": "docxkeun-fonts",
+  "version": "0.1.0",
+  "description": "Open fonts with the same widths as Calibri, Cambria, Arial, Times New Roman and Courier New, for exact .docx layout and PDF export with docxkeun.",
+  "license": "OFL-1.1",
+  "author": "Kevin Jeremia (https://github.com/kevinkjs)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevinkjs/docxkeun.git",
+    "directory": "packages/fonts"
+  },
+  "homepage": "https://github.com/kevinkjs/docxkeun/tree/main/packages/fonts#readme",
+  "bugs": {
+    "url": "https://github.com/kevinkjs/docxkeun/issues"
+  },
+  "keywords": [
+    "docxkeun",
+    "fonts",
+    "carlito",
+    "caladea",
+    "liberation",
+    "calibri",
+    "metric-compatible"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
+    "./*.ttf": "./*.ttf",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.ttf",
+    "LICENSE-*.txt",
+    "AUTHORS-*.txt"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

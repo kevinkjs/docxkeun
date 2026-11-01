@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   root: 'playground',
-  // The bundled open fonts are served from the site root (/Carlito-Regular.ttf, ...).
-  publicDir: '../fonts',
+  // The docxkeun-fonts files are served from the site root (/Carlito-Regular.ttf, ...).
+  publicDir: '../packages/fonts',
   server: { port: 5199 },
 });

@@ -1,6 +1,12 @@
 # docxkeun
 
+[![CI](https://github.com/kevinkjs/docxkeun/actions/workflows/ci.yml/badge.svg)](https://github.com/kevinkjs/docxkeun/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/docxkeun)](https://www.npmjs.com/package/docxkeun)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Read, render, edit and convert `.docx` files in the browser (and Node), with **zero runtime dependencies**. Everything is implemented in this package: zip, XML, the document model, a page layout engine, an SVG viewer, a PDF writer, and the cryptography for password-protected files.
+
+> **Beta.** docxkeun is new. It is tested against its own test suite and independent implementations, but not yet broadly against files made by Microsoft Word. See [Status and limitations](#status-and-limitations), and please [report](https://github.com/kevinkjs/docxkeun/issues) documents that render or save wrongly.
 
 | Area | What you get |
 |---|---|
@@ -10,14 +16,34 @@ Read, render, edit and convert `.docx` files in the browser (and Node), with **z
 | Permissions | Word protection (read-only / comments / tracked changes / forms) with editable ranges, an app-level `AccessPolicy`, password-to-open `.docx` encryption, PDF passwords and permission flags. |
 | Comments, anchors, links | Threaded comments (all five Word comment parts), bookmarks, internal and external hyperlinks, field-code links. |
 
+## Install
+
+```bash
+npm install docxkeun docxkeun-fonts
+```
+
+`docxkeun-fonts` is optional (about 7 MB of open fonts, see [Fonts](#fonts)); without it the viewer measures the browser's own fonts, and PDF export needs font files you provide.
+
+| Import | What it contains |
+|---|---|
+| `docxkeun` | Open, create and save documents; fonts; layout; comments |
+| `docxkeun/editor` | `DocxEditor`: the code API for changes |
+| `docxkeun/viewer` | `DocxViewer`, typing on the page, navigation |
+| `docxkeun/pdf` | `exportPdf` |
+| `docxkeun/security` | Protection, `AccessPolicy`, password-to-open, PDF security |
+| `docxkeun/react` | React binding (bring your own React) |
+
+**Runtime support:** current Chrome, Edge, Firefox and Safari (16.4+), and Node 20.12+. docxkeun is ESM-only; Node 22.12+ can also `require()` it.
+
 ## Quick start
 
 ```ts
 import { openDocx, FontRegistry, loadBundledFonts } from 'docxkeun';
 import { DocxViewer } from 'docxkeun/viewer';
+import { fontUrls } from 'docxkeun-fonts';
 
 const fonts = new FontRegistry();
-await loadBundledFonts(fonts, { baseUrl: new URL('docxkeun/fonts/', import.meta.url) });  // see "Fonts" below
+await loadBundledFonts(fonts, { urls: fontUrls });       // see "Fonts" below
 
 const viewer = new DocxViewer(document.getElementById('viewer')!, { fonts });
 await viewer.load(fileFromInput);                       // Uint8Array | ArrayBuffer | Blob
@@ -163,17 +189,21 @@ const DocxView = createDocxViewerComponent(React);  // no React dependency in do
 
 Word documents name fonts (Calibri, Times New Roman...) but rarely contain them, and browsers cannot read the system's font files. For exact layout and for PDF export, layout needs font files in a `FontRegistry`.
 
-docxkeun ships open fonts with the same character widths as Office's defaults in its [`fonts/`](fonts/README.md) folder (SIL OFL 1.1, about 7 MB, 20 files): Carlito for Calibri, Caladea for Cambria, Liberation Sans for Arial, Liberation Serif for Times New Roman, Liberation Mono for Courier New. Those names map automatically.
+The companion package [`docxkeun-fonts`](packages/fonts/README.md) has open fonts with the same character widths as Office's defaults (SIL OFL 1.1, about 7 MB, 20 files): Carlito for Calibri, Caladea for Cambria, Liberation Sans for Arial, Liberation Serif for Times New Roman, Liberation Mono for Courier New. Those names map automatically.
 
 ```ts
-// Browser (bundler): serve or import the files from docxkeun/fonts/
-await loadBundledFonts(fonts, { baseUrl: new URL('docxkeun/fonts/', import.meta.url) });
-await loadBundledFonts(fonts, { baseUrl: 'https://cdn.example.com/docxkeun-fonts/', families: ['Carlito'] });
+import { fontUrls } from 'docxkeun-fonts';
+
+// Browser: bundlers (Vite, webpack 5, Rollup) copy the font files into your build
+await loadBundledFonts(fonts, { urls: fontUrls });
+await loadBundledFonts(fonts, { urls: fontUrls, families: ['Carlito'] });
+
+// Hosting the .ttf files yourself
+await loadBundledFonts(fonts, { baseUrl: 'https://cdn.example.com/docxkeun-fonts/' });
 
 // Node
 import { readFile } from 'node:fs/promises';
-const dir = new URL('./fonts/', import.meta.resolve('docxkeun/package.json'));
-await loadBundledFonts(fonts, { load: (file) => readFile(new URL(file, dir)) });
+await loadBundledFonts(fonts, { load: (file) => readFile(fontUrls[file]) });
 ```
 
 Load only the families you need with `families` to save bandwidth (Carlito alone is 2.7 MB; Caladea is 330 KB). Other options:
@@ -191,7 +221,7 @@ TrueType, OpenType (CFF) and `.ttc` collections are supported. PDF embedding res
 
 ## Status and limitations
 
-Working and tested (97 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
+Working and tested (98 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
 
 Verified against independent implementations so far:
 - Crypto primitives against FIPS/RFC test vectors and Node's crypto.
@@ -212,8 +242,12 @@ Not yet supported:
 ```bash
 pnpm install
 pnpm test        # vitest
-pnpm dev         # playground at http://localhost:5199 (uses the bundled fonts)
+pnpm dev         # playground at http://localhost:5199
 pnpm build       # dist/
 ```
 
-Tests use the bundled fonts; two optional checks compare them with Arial / Times New Roman when those are installed.
+Tests and the playground use the fonts in `packages/fonts`. Two optional checks compare them with Arial and Times New Roman when those are installed. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and release, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+## License
+
+[MIT](LICENSE) © Kevin Jeremia. The fonts in `docxkeun-fonts` are under the SIL Open Font License 1.1.

@@ -4,3 +4,5 @@ coverage/
 .DS_Store
 *.log
 test/.out/
+.idea/
+.claude/

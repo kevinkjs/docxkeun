@@ -4,8 +4,10 @@
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true,
-    "sourceMap": true,
+    "sourceMap": false,
     "types": []
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ]
 }

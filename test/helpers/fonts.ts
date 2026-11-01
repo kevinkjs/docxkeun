@@ -1,5 +1,5 @@
 /**
- * Test fonts: the bundled open fonts from the repo's fonts/ folder, plus (for a few parser
+ * Test fonts: the open fonts of packages/fonts (docxkeun-fonts), plus (for a few parser
  * tests) fonts installed on this Mac, which are never committed and are skipped when missing.
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -17,7 +17,7 @@ export const SYSTEM_FONTS = {
 
 export const haveSystemFonts = existsSync(SYSTEM_FONTS.arial) && existsSync(SYSTEM_FONTS.times);
 
-export const FONTS_DIR = new URL('../../fonts/', import.meta.url);
+export const FONTS_DIR = new URL('../../packages/fonts/', import.meta.url);
 
 export function readFont(path: string | URL): Uint8Array {
   return new Uint8Array(readFileSync(path));

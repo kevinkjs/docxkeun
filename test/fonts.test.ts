@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { deobfuscateFont, Font, FontRegistry, loadBundledFonts, obfuscateFont, subsetTrueType } from '../src/fonts/index.js';
+import { existsSync } from 'node:fs';
+import { BUNDLED_FONTS, deobfuscateFont, Font, FontRegistry, loadBundledFonts, obfuscateFont, subsetTrueType } from '../src/fonts/index.js';
 import { bytesEqual } from '../src/util/bytes.js';
 import { FONTS_DIR, SYSTEM_FONTS, haveSystemFonts, readFont } from './helpers/fonts.js';
 
@@ -68,6 +69,15 @@ describe('bundled fonts', () => {
     expect(registry.resolve('Times New Roman', true, false)!.face.family).toBe('Liberation Serif');
     expect(registry.resolve('Courier New', false, false)!.face.family).toBe('Liberation Mono');
     expect(registry.resolve('Some Corporate Font', false, false)!.face.family).toBe('Carlito');
+  });
+
+  it('are all listed by the docxkeun-fonts package, as files that exist', async () => {
+    const { fontUrls } = (await import('../packages/fonts/index.js')) as { fontUrls: Record<string, URL> };
+    expect(Object.keys(fontUrls).sort()).toEqual(BUNDLED_FONTS.map((f) => f.file).sort());
+    for (const url of Object.values(fontUrls)) expect(existsSync(url), url.href).toBe(true);
+    // In Node the URLs are file: URLs, read with fs (fetch cannot read file: URLs).
+    const loaded = await loadBundledFonts(new FontRegistry(), { load: async (file) => readFont(fontUrls[file]!), families: ['Caladea'] });
+    expect(loaded.map((f) => f.family)).toEqual(['Caladea', 'Caladea', 'Caladea', 'Caladea']);
   });
 
   it.skipIf(!haveSystemFonts)('Liberation Sans and Serif match Arial and Times New Roman widths', () => {

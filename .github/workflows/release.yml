@@ -1,0 +1,47 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish. Each package is published only if its version
+# is not on npm yet, so the fonts package is skipped when it did not change.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write # npm provenance and trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Use an npm that supports trusted publishing
+        run: npm install -g npm@latest
+      - run: pnpm install --frozen-lockfile
+      - name: Tag must match the package version
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - name: Publish
+        env:
+          # Only needed until trusted publishing is set up on npmjs.com (then delete the secret).
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          publish() {
+            name=$(node -p "require('$1/package.json').name")
+            version=$(node -p "require('$1/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already on npm, skipping"
+            else
+              npm publish "$1" --provenance --access public --ignore-scripts
+            fi
+          }
+          publish ./packages/fonts
+          publish .
