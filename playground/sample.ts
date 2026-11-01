@@ -47,7 +47,7 @@ export async function sampleDocx(): Promise<Uint8Array> {
     num('Progressive rehabilitation', 1),
     num('Coal hauling to the port'),
     heading('2. Payment terms', 'payment', 10),
-    '<w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:t xml:space="preserve">The Company shall pay a royalty of </w:t></w:r><w:commentRangeStart w:id="0"/><w:r><w:rPr><w:b/></w:rPr><w:t>3.75% of the gross revenue</w:t></w:r><w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r><w:r><w:t xml:space="preserve"> within thirty (30) days after the end of each quarter. Late payments bear interest at the rate set out below. See also </w:t></w:r>' + link('the general terms', 'general') + '<w:r><w:t>.</w:t></w:r></w:p>',
+    '<w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:t xml:space="preserve">The Company shall pay a royalty of </w:t></w:r><w:commentRangeStart w:id="0"/><w:sdt><w:sdtPr><w:alias w:val="Agreed royalty rate"/><w:tag w:val="docxkeun-lock"/><w:id w:val="501"/><w:lock w:val="contentLocked"/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>3.75% of the gross revenue</w:t></w:r></w:sdtContent></w:sdt><w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r><w:r><w:t xml:space="preserve"> within thirty (30) days after the end of each quarter. Late payments bear interest at the rate set out below. See also </w:t></w:r>' + link('the general terms', 'general') + '<w:r><w:t>.</w:t></w:r></w:p>',
     `<w:tbl><w:tblPr><w:tblStyle w:val="GridTable"/><w:tblW w:w="0" w:type="auto"/><w:tblLook w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/></w:tblPr><w:tblGrid><w:gridCol w:w="3120"/><w:gridCol w:w="3120"/><w:gridCol w:w="3120"/></w:tblGrid>
       <w:tr><w:trPr><w:tblHeader/></w:trPr>${cell('Milestone')}${cell('Due')}${cell('Amount (USD)')}</w:tr>
       <w:tr>${cell('Mobilisation')}${cell('Signing + 30 days')}${cell('250,000')}</w:tr>
@@ -62,7 +62,10 @@ export async function sampleDocx(): Promise<Uint8Array> {
     ...Array.from({ length: 14 }, (_, i) => p(`${i + 1}. ${LOREM}`, '<w:jc w:val="both"/>')),
     `<w:p>${link('Back to the payment terms', 'payment')}${sep}${link('Back to top', 'top')}</w:p>`,
     heading('5. Signatures', 'signatures', 14),
-    p('Signed for and on behalf of PT Contoh Tambang and the Contractor.'),
+    '<w:sdt><w:sdtPr><w:alias w:val="Signature clause"/><w:tag w:val="docxkeun-lock"/><w:id w:val="502"/><w:lock w:val="sdtContentLocked"/></w:sdtPr><w:sdtContent>' +
+      p('Signed for and on behalf of PT Contoh Tambang and the Contractor.') +
+      p('This clause is locked: it cannot be edited or deleted.') +
+      '</w:sdtContent></w:sdt>',
     `<w:p>${link('Back to top', 'top')}</w:p>`,
   ].join('');
   const footer = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:color w:val="7F7F7F"/><w:sz w:val="18"/></w:rPr><w:t xml:space="preserve">Page </w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:rPr><w:color w:val="7F7F7F"/><w:sz w:val="18"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple><w:r><w:rPr><w:color w:val="7F7F7F"/><w:sz w:val="18"/></w:rPr><w:t xml:space="preserve"> of </w:t></w:r><w:fldSimple w:instr="NUMPAGES"><w:r><w:rPr><w:color w:val="7F7F7F"/><w:sz w:val="18"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple></w:p></w:ftr>`;

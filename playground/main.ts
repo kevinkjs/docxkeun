@@ -147,6 +147,25 @@ button('Bold', () => {
   if (!range) return status('Select some text first');
   editor().formatRange(range, { bold: true });
 });
+button('Lock', () => {
+  const range = selectionRange();
+  if (!range) return status('Select the text to lock first');
+  const title = prompt('Name of the locked region (optional)') ?? undefined;
+  const id = editor().lockRange(range, { title: title || undefined });
+  status(`Locked region ${id}${title ? ` "${title}"` : ''}: it can no longer be edited`);
+});
+button('Unlock', () => {
+  const ed = editor();
+  const sel = viewer.editing?.selection;
+  const range = selectionRange() ?? (sel ? viewer.editing!.rangeOf(sel.anchor, sel.anchor) : undefined);
+  if (!range) return status('Click inside a locked region first');
+  const contains = (root: { children: unknown[] }, node: unknown): boolean =>
+    root.children.some((c) => c === node || (typeof c === 'object' && c !== null && 'children' in c && contains(c as { children: unknown[] }, node)));
+  const region = ed.lockedRegions().find((r) => contains(r.el, range.start.node));
+  if (!region) return status('The caret is not inside a locked region');
+  ed.unlock(region.id);
+  status(`Unlocked${region.title ? ` "${region.title}"` : ''}`);
+});
 button('Export PDF', async () => {
   if (fonts.isEmpty) return status('PDF export needs font files');
   const t0 = performance.now();

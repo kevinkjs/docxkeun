@@ -116,6 +116,12 @@ export interface CommentArea extends Rect {
   id: string;
 }
 
+export interface LockArea extends Rect {
+  /** Content control id of the locked region. */
+  id: string;
+  title?: string;
+}
+
 export interface PermArea extends Rect {
   id: string;
   editor?: string;
@@ -135,6 +141,8 @@ export interface Page {
   links: LinkArea[];
   comments: CommentArea[];
   perms: PermArea[];
+  /** Text in locked regions (content controls that cannot be edited). */
+  locks: LockArea[];
   /** Bookmark name → position on this page. */
   anchors: Map<string, { x: number; y: number }>;
   /** Every body line (not headers, footers or notes), for caret placement and hit-testing. */

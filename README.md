@@ -114,6 +114,30 @@ new DocxViewer(el, { fonts, highlightRange: policy.highlightRange }); // shade w
 
 Roles: `viewer` (read, export), `commenter` (comments; edit/delete own), `editor` (edits, subject to document protection and editable ranges), `owner` (everything, including protection).
 
+### Locked regions
+
+Lock specific text against editing while the rest of the document stays editable (the opposite of editable ranges). Locks are Word content controls marked "contents cannot be edited", so Word enforces them too, without turning on document protection.
+
+```ts
+const id = editor.lockRange(editor.find('3.75% of the gross revenue')[0], { title: 'Agreed royalty rate' });
+editor.lockParagraphs(firstPara, lastPara, { title: 'Signature clause', mode: 'contentAndControl' });
+editor.lockedRegions();    // [{ id, mode, title, text, block, el }], including locks Word wrote
+editor.unlock(id);
+```
+
+- Any edit that touches locked text throws `LockedRegionError`: typing, delete, replace, formatting, links, splitting or joining paragraphs. So does deleting a range that contains a whole locked region. Typing on the page reports it through the viewer's `editerror` event.
+- Comments, bookmarks and reading are still allowed.
+- Typing right at the edge of a locked region goes just outside it, and Enter at the start or end of a locked block adds a paragraph outside it, as in Word.
+- `mode`:
+  - `'content'` (default): the text can't be edited.
+  - `'contentAndControl'`: it also can't be deleted.
+  - `'control'`: it can't be deleted, but its text can be edited.
+- Inside one paragraph the exact text is locked. A range across paragraphs locks those whole paragraphs.
+- `fillTemplate` and `fillContentControls` skip locked placeholders unless you pass `{ includeLocked: true }`.
+- With an `AccessPolicy`, only owners can lock or unlock.
+- The viewer shades locked text with a light hatch; turn that off with `showLockedRegions: false`.
+- Like Word's own locks, this stops edits in Word and docxkeun, but anyone with Word can still change a control's properties. To make that impossible as well, also turn on document protection.
+
 ### Password-to-open `.docx`
 
 ```ts
@@ -167,7 +191,7 @@ TrueType, OpenType (CFF) and `.ttc` collections are supported. PDF embedding res
 
 ## Status and limitations
 
-Working and tested (89 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
+Working and tested (97 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
 
 Verified against independent implementations so far:
 - Crypto primitives against FIPS/RFC test vectors and Node's crypto.

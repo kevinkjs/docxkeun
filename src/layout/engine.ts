@@ -156,6 +156,7 @@ class Paginator {
       links: [],
       comments: [],
       perms: [],
+      locks: [],
       anchors: new Map(),
       lines: [],
       headings: [],

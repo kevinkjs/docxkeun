@@ -699,9 +699,9 @@ export class InlineEditing {
       const lines = text.split('\n');
       lines.forEach((line, i) => {
         if (i > 0) {
-          editor.splitParagraph(this.toDoc(caret, caret.char === 0 ? 'start' : 'end'));
+          const para = editor.splitParagraph(this.toDoc(caret, caret.char === 0 ? 'start' : 'end'));
           this.refreshModel();
-          caret = { para: caret.para + 1, char: 0 };
+          caret = { para: this.paraIndex.get(para) ?? caret.para + 1, char: 0 };
         }
         if (!line) return;
         editor.insertText(this.toDoc(caret, caret.char === 0 ? 'start' : 'end'), line);
@@ -725,8 +725,10 @@ export class InlineEditing {
     this.apply('enter', () => {
       const caret = this.deleteSelectionRaw();
       const len = this.textOf(caret.para).length;
-      this.editor().splitParagraph(this.toDoc(caret, caret.char === 0 ? 'start' : caret.char >= len ? 'end' : 'start'));
-      return { para: caret.para + 1, char: 0 };
+      const para = this.editor().splitParagraph(this.toDoc(caret, caret.char === 0 ? 'start' : caret.char >= len ? 'end' : 'start'));
+      this.refreshModel();
+      // Usually the paragraph after the caret; before it when Enter was pressed in front of a locked block.
+      return { para: this.paraIndex.get(para) ?? caret.para + 1, char: 0 };
     });
   }
 

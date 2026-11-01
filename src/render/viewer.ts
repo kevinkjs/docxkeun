@@ -28,6 +28,8 @@ export interface ViewerOptions {
   allowExternalImages?: boolean;
   /** Which permission ranges to shade (e.g. the ones the current user may edit). */
   highlightRange?(area: PermArea): boolean;
+  /** Shade text in locked regions (default true). */
+  showLockedRegions?: boolean;
   /**
    * Let users type directly on the pages. Pass `{ guard }` (e.g. an AccessPolicy) to restrict
    * what they may change; refused edits are reported through the `editerror` event.
@@ -63,6 +65,7 @@ const CSS = `
 .docxkeun-comment-hl{position:absolute;background:rgba(251,188,4,.28);border-bottom:2px solid rgba(251,188,4,.9);mix-blend-mode:multiply}
 .docxkeun-comment-hl.active{background:rgba(251,188,4,.5)}
 .docxkeun-perm{position:absolute;background:rgba(26,115,232,.12);border-bottom:1px dashed rgba(26,115,232,.7)}
+.docxkeun-locked{position:absolute;background:repeating-linear-gradient(135deg,rgba(95,99,104,.10) 0 3px,rgba(95,99,104,.03) 3px 7px);box-shadow:inset 0 -1px 0 rgba(95,99,104,.55)}
 .docxkeun-gutter{position:relative;width:260px;flex:none}
 .docxkeun-card{position:absolute;left:0;right:0;background:#fff;border-radius:8px;padding:8px 10px;font:13px/1.4 system-ui,sans-serif;color:#202124;box-shadow:0 1px 2px rgba(60,64,67,.3);cursor:pointer;box-sizing:border-box}
 .docxkeun-card.resolved{opacity:.6}
@@ -366,6 +369,15 @@ export class DocxViewer {
       el.style.width = `${Math.max(r.w, 1) * s}px`;
       el.style.height = `${r.h * s}px`;
     };
+    if (this.options.showLockedRegions ?? true) {
+      for (const lock of page.locks) {
+        const el = document.createElement('div');
+        el.className = 'docxkeun-locked';
+        el.dataset.lock = lock.id;
+        place(el, lock);
+        layer.appendChild(el);
+      }
+    }
     for (const perm of page.perms) {
       if (!this.options.highlightRange?.(perm)) continue;
       const el = document.createElement('div');

@@ -18,13 +18,19 @@ export interface PermInfo {
   group?: string;
 }
 
+export interface LockInfo {
+  id: string;
+  title?: string;
+}
+
 export interface RangeCtx {
   readonly link?: LinkTarget;
   readonly comments: readonly string[];
   readonly perms: readonly PermInfo[];
+  readonly locks: readonly LockInfo[];
 }
 
-export const EMPTY_CTX: RangeCtx = Object.freeze({ comments: [], perms: [] });
+export const EMPTY_CTX: RangeCtx = Object.freeze({ comments: [], perms: [], locks: [] });
 
 export class RangeTracker {
   ctx: RangeCtx = EMPTY_CTX;
@@ -51,6 +57,15 @@ export class RangeTracker {
       case 'permEnd':
         this.ctx = { ...c, perms: c.perms.filter((p) => p.id !== inline.id) };
         return true;
+      case 'lockStart':
+        this.ctx = { ...c, locks: [...c.locks, { id: inline.id, title: inline.title }] };
+        return true;
+      case 'lockEnd': {
+        // Remove one level (nested controls may share an id when ids are missing).
+        const i = c.locks.map((l) => l.id).lastIndexOf(inline.id);
+        if (i >= 0) this.ctx = { ...c, locks: c.locks.filter((_, j) => j !== i) };
+        return true;
+      }
       case 'bookmarkStart':
       case 'bookmarkEnd':
       case 'commentRef':

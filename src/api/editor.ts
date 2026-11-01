@@ -24,6 +24,53 @@ import {
 
 export type EditAction = 'edit' | 'format' | 'comment' | 'reply' | 'resolveComment' | 'editComment' | 'deleteComment' | 'link' | 'bookmark' | 'fillForm' | 'protect';
 
+/**
+ * How a locked region is locked (Word's content-control locking, w:sdtPr/w:lock):
+ * 'content' = the text cannot be edited; 'contentAndControl' = and the region cannot be deleted;
+ * 'control' = the region cannot be deleted, but its text can be edited.
+ */
+export type LockMode = 'content' | 'contentAndControl' | 'control';
+
+const LOCK_VALUES: Record<LockMode, string> = { content: 'contentLocked', contentAndControl: 'sdtContentLocked', control: 'sdtLocked' };
+const LOCK_MODES: Record<string, LockMode> = { contentLocked: 'content', sdtContentLocked: 'contentAndControl', sdtLocked: 'control' };
+
+/** Tag docxkeun puts on the content controls it creates to lock text. */
+export const LOCK_TAG = 'docxkeun-lock';
+
+export interface LockedRegion {
+  /** The content control's w:id. */
+  id: string;
+  mode: LockMode;
+  title?: string;
+  tag?: string;
+  text: string;
+  /** Whether it wraps whole paragraphs (block) or text inside a paragraph (inline). */
+  block: boolean;
+  el: XmlElement;
+}
+
+/** An edit touched text inside a locked region. */
+export class LockedRegionError extends EditError {
+  override name = 'LockedRegionError';
+  constructor(readonly region: XmlElement, title: string | undefined) {
+    super(title ? `"${title}" is locked against editing` : 'This text is locked against editing');
+  }
+}
+
+/** The lock mode of a content control, if it is locked. */
+export function lockModeOf(sdt: XmlElement): LockMode | undefined {
+  const v = attr(firstChild(firstChild(sdt, 'w:sdtPr'), 'w:lock'), 'w:val');
+  return v ? LOCK_MODES[v] : undefined;
+}
+
+function sdtTitle(sdt: XmlElement): string | undefined {
+  return attr(firstChild(firstChild(sdt, 'w:sdtPr'), 'w:alias'), 'w:val');
+}
+
+function locksContent(mode: LockMode | undefined): boolean {
+  return mode === 'content' || mode === 'contentAndControl';
+}
+
 /** Checks every edit (see docxkeun/security's AccessPolicy). Throw to refuse. */
 export interface EditGuard {
   assert(action: EditAction, range?: DocRange, detail?: { commentAuthor?: string }): void;
@@ -203,7 +250,49 @@ export class DocxEditor {
 
   private check(action: EditAction, range?: DocRange, detail?: { commentAuthor?: string }): void {
     this.guard?.assert(action, range, detail);
+    if (range && (action === 'edit' || action === 'format' || action === 'link')) this.assertUnlocked(range);
   }
+
+  /** The locked content control around a node, if any. */
+  private lockAround(idx: TreeIndex, node: XmlElement): XmlElement | undefined {
+    for (let cur = idx.parent.get(node); cur; cur = idx.parent.get(cur)) {
+      if (cur.name === 'w:sdt' && locksContent(lockModeOf(cur))) return cur;
+    }
+    return undefined;
+  }
+
+  /** Throw LockedRegionError when a range touches a locked region (or would delete one). */
+  private assertUnlocked(range: DocRange): void {
+    if (this.bypassLocks) return;
+    const idx = this.index();
+    for (const pos of [range.start, range.end]) {
+      if (!idx.contains(pos.node)) continue;
+      const lock = this.lockAround(idx, pos.node);
+      if (lock) throw new LockedRegionError(lock, sdtTitle(lock));
+    }
+    const a = idx.order.get(range.start.node);
+    const b = idx.order.get(range.end.node);
+    if (a === undefined || b === undefined || (a === b && range.start.offset === range.end.offset)) return;
+    const [lo, hi] = a <= b ? [a, b] : [b, a];
+    for (const sdt of findAll(this.root, 'w:sdt')) {
+      const o = idx.order.get(sdt)!;
+      if (o > lo && o < hi && lockModeOf(sdt)) throw new LockedRegionError(sdt, sdtTitle(sdt));
+    }
+  }
+
+  /** Whether a range touches a locked region. */
+  isLocked(range: DocRange): boolean {
+    try {
+      this.assertUnlocked(range);
+      return false;
+    } catch (e) {
+      if (e instanceof LockedRegionError) return true;
+      throw e;
+    }
+  }
+
+  /** Set while filling locked content on purpose (fillTemplate with includeLocked). */
+  private bypassLocks = false;
 
   // ---- reading ------------------------------------------------------------------------------
 
@@ -271,6 +360,17 @@ export class DocxEditor {
    * "inside this (empty) paragraph".
    */
   insertText(at: DocPosition, text: string, format?: TextFormat): DocPosition {
+    const edge = this.bypassLocks ? undefined : this.lockEdge(at);
+    if (edge) {
+      // Typing at the very edge of a locked region goes just outside it, as in Word.
+      this.guard?.assert('edit', { start: at, end: at });
+      const idx = this.index();
+      const run = newRun(text, idx.parentOf(at.node), format);
+      const parent = idx.parentOf(edge.sdt);
+      parent.children.splice(indexOfChild(parent, edge.sdt) + (edge.after ? 1 : 0), 0, run);
+      this.changed();
+      return endOfRun(run, run);
+    }
     this.check('edit', { start: at, end: at });
     const plain = !format && !/[\t\r\n]/.test(text);
     // Typing into existing text: change the text node itself instead of adding a run per keystroke.
@@ -336,6 +436,20 @@ export class DocxEditor {
 
   /** Split a paragraph at a position (Enter). Returns the new, second paragraph. */
   splitParagraph(at: DocPosition): XmlElement {
+    const blockEdge = this.bypassLocks ? undefined : this.blockLockEdge(at);
+    if (blockEdge) {
+      // Enter at the start or end of a locked block adds a paragraph outside it.
+      this.guard?.assert('edit', { start: at, end: at });
+      const idx = this.index();
+      const pPr = firstChild(blockEdge.paragraph, 'w:pPr');
+      const newPPr = pPr ? structuredClone(pPr) : undefined;
+      if (newPPr) removeChildren(newPPr, 'w:sectPr');
+      const para = el('w:p', {}, newPPr ? [newPPr] : []);
+      const parent = idx.parentOf(blockEdge.sdt);
+      parent.children.splice(indexOfChild(parent, blockEdge.sdt) + (blockEdge.after ? 1 : 0), 0, para);
+      this.changed();
+      return para;
+    }
     this.check('edit', { start: at, end: at });
     let para: XmlElement;
     let mark: XmlElement;
@@ -439,27 +553,45 @@ export class DocxEditor {
    * Fill `{{name}}` placeholders (and content controls whose tag or title is a key).
    * Returns the keys that were found.
    */
-  fillTemplate(data: Record<string, string | number | boolean | null | undefined>, pattern = /\{\{\s*([\w.-]+)\s*\}\}/g): string[] {
+  fillTemplate(
+    data: Record<string, string | number | boolean | null | undefined>,
+    pattern = /\{\{\s*([\w.-]+)\s*\}\}/g,
+    options: { includeLocked?: boolean } = {},
+  ): string[] {
     const used = new Set<string>();
-    this.replaceAll(pattern, (m) => {
+    // Back to front, so earlier positions stay valid.
+    for (const m of this.find(pattern).reverse()) {
       const key = m.groups[0] ?? '';
-      if (!(key in data)) return m.text;
+      if (!(key in data)) continue;
+      if (!options.includeLocked && this.isLocked(m)) continue;
+      this.withLocks(!!options.includeLocked, () => this.replaceRange(m, String(data[key] ?? '')));
       used.add(key);
-      return String(data[key] ?? '');
-    });
-    for (const key of this.fillContentControls(data)) used.add(key);
+    }
+    for (const key of this.fillContentControls(data, options)) used.add(key);
     return [...used];
   }
 
-  /** Set the text of content controls (w:sdt) by tag or title. */
-  fillContentControls(data: Record<string, string | number | boolean | null | undefined>): string[] {
+  private withLocks<T>(bypass: boolean, fn: () => T): T {
+    const saved = this.bypassLocks;
+    this.bypassLocks = saved || bypass;
+    try {
+      return fn();
+    } finally {
+      this.bypassLocks = saved;
+    }
+  }
+
+  /** Set the text of content controls (w:sdt) by tag or title. Locked ones are skipped unless `includeLocked`. */
+  fillContentControls(data: Record<string, string | number | boolean | null | undefined>, options: { includeLocked?: boolean } = {}): string[] {
     const used: string[] = [];
+    const idx = this.index();
     for (const sdt of findAll(this.body, 'w:sdt')) {
       const sdtPr = firstChild(sdt, 'w:sdtPr');
       const key = attr(firstChild(sdtPr, 'w:tag'), 'w:val') ?? attr(firstChild(sdtPr, 'w:alias'), 'w:val');
       if (key === undefined || !(key in data)) continue;
       const content = firstChild(sdt, 'w:sdtContent');
       if (!content) continue;
+      if (!options.includeLocked && !this.bypassLocks && (locksContent(lockModeOf(sdt)) || this.lockAround(idx, sdt))) continue;
       this.check('fillForm');
       const value = String(data[key] ?? '');
       const firstRun = findAll(content, 'w:r')[0];
@@ -542,7 +674,8 @@ export class DocxEditor {
 
   /** Insert a paragraph before or after a block (or at the start/end of the body). */
   insertParagraph(where: { before?: XmlElement; after?: XmlElement } | 'start' | 'end', text = '', options: { style?: string; format?: TextFormat } = {}): XmlElement {
-    this.check('edit');
+    const ref = typeof where === 'object' ? (where.before ?? where.after) : undefined;
+    this.check('edit', ref ? { start: { node: ref, offset: 0 }, end: { node: ref, offset: 0 } } : undefined);
     const pPr = options.style ? [el('w:pPr', {}, [el('w:pStyle', { 'w:val': options.style })])] : [];
     const para = el('w:p', {}, [...pPr, ...(text ? [newRun(text, undefined, options.format)] : [])]);
     const body = this.body;
@@ -562,7 +695,7 @@ export class DocxEditor {
   }
 
   deleteParagraph(paragraph: XmlElement): void {
-    this.check('edit', this.paragraphRange(paragraph));
+    this.check('edit', this.paragraphRange(paragraph) ?? { start: { node: paragraph, offset: 0 }, end: { node: paragraph, offset: 0 } });
     const idx = this.index();
     const parent = idx.parentOf(paragraph);
     // A table cell must keep at least one paragraph.
@@ -702,6 +835,137 @@ export class DocxEditor {
       if (attr(node, 'w:id') !== id) continue;
       const parent = idx.parentOf(node);
       parent.children.splice(indexOfChild(parent, node), 1);
+    }
+    this.changed();
+  }
+
+  // ---- locked regions (content controls that cannot be edited) ------------------------------
+
+  /** The locked inline region whose first or last character is at `pos`. */
+  private lockEdge(pos: DocPosition): { sdt: XmlElement; after: boolean } | undefined {
+    const idx = this.index();
+    if (!idx.contains(pos.node) || pos.node.name === 'w:p') return undefined;
+    const sdt = this.lockAround(idx, pos.node);
+    const content = firstChild(sdt, 'w:sdtContent');
+    if (!sdt || !content || firstChild(content, 'w:p')) return undefined;
+    const items = findAll(content, 'w:r').flatMap((r) => elements(r).filter((c) => c.name !== 'w:rPr'));
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (pos.node === first && pos.offset === 0) return { sdt, after: false };
+    const end = last?.name === 'w:t' ? textContent(last).length : 1;
+    if (pos.node === last && pos.offset >= end) return { sdt, after: true };
+    return undefined;
+  }
+
+  /** A locked block of paragraphs that `pos` sits at the very start or end of. */
+  private blockLockEdge(pos: DocPosition): { sdt: XmlElement; paragraph: XmlElement; after: boolean } | undefined {
+    const idx = this.index();
+    if (!idx.contains(pos.node)) return undefined;
+    const paragraph = pos.node.name === 'w:p' ? pos.node : idx.ancestor(pos.node, 'w:p');
+    if (!paragraph) return undefined;
+    const content = idx.parent.get(paragraph);
+    const sdt = content?.name === 'w:sdtContent' ? idx.parent.get(content) : undefined;
+    if (!sdt || !locksContent(lockModeOf(sdt))) return undefined;
+    const paras = elements(content!, 'w:p');
+    const range = this.paragraphRange(paragraph);
+    const atStart = !range || (pos.node === range.start.node && pos.offset === range.start.offset);
+    const atEnd = !range || (pos.node === range.end.node && pos.offset === range.end.offset);
+    if (atEnd && paragraph === paras[paras.length - 1]) return { sdt, paragraph, after: true };
+    if (atStart && paragraph === paras[0]) return { sdt, paragraph, after: false };
+    return undefined;
+  }
+
+  /**
+   * Lock a range against editing. Inside one paragraph the exact text is locked; a range that
+   * spans paragraphs locks those whole paragraphs. Stored as a Word content control, so Word
+   * enforces the lock too. Returns the region's id.
+   */
+  lockRange(range: DocRange, options: { title?: string; tag?: string; mode?: LockMode } = {}): string {
+    this.check('protect', range);
+    const mode = options.mode ?? 'content';
+    const used = new Set(findAll(this.root, 'w:id').map((n) => attr(n, 'w:val')));
+    let id: string;
+    do id = String(1 + Math.floor(Math.random() * 0x7ffffffe));
+    while (used.has(id));
+    const sdtPr = el('w:sdtPr', {}, [
+      ...(options.title ? [el('w:alias', { 'w:val': options.title })] : []),
+      el('w:tag', { 'w:val': options.tag ?? LOCK_TAG }),
+      el('w:id', { 'w:val': id }),
+      el('w:lock', { 'w:val': LOCK_VALUES[mode] }),
+    ]);
+    let idx = this.index();
+    const paraOf = (node: XmlElement) => (node.name === 'w:p' ? node : idx.ancestor(node, 'w:p'));
+    const startPara = paraOf(range.start.node);
+    const endPara = paraOf(range.end.node);
+    if (!startPara || !endPara) throw new EditError('The range is not inside a paragraph');
+    if (startPara === endPara && range.start.node.name !== 'w:p') {
+      const { startMark, endMark } = isolate(idx, range);
+      idx = this.index();
+      const container = idx.parentOf(startMark);
+      if (idx.parentOf(endMark) !== container) {
+        replaceMark(idx, startMark, []);
+        replaceMark(idx, endMark, []);
+        throw new EditError('A locked region inside a paragraph must not cut across a link or field');
+      }
+      const a = indexOfChild(container, startMark);
+      const b = indexOfChild(container, endMark);
+      const inner = container.children.slice(a + 1, b);
+      if (!inner.length) {
+        container.children.splice(a, b - a + 1);
+        throw new EditError('Select some text to lock');
+      }
+      container.children.splice(a, b - a + 1, el('w:sdt', {}, [sdtPr, el('w:sdtContent', {}, inner)]));
+    } else {
+      const parent = idx.parentOf(startPara);
+      if (idx.parentOf(endPara) !== parent) throw new EditError('A locked region must not cross table cells');
+      const a = indexOfChild(parent, startPara);
+      const b = indexOfChild(parent, endPara);
+      const [lo, hi] = a <= b ? [a, b] : [b, a];
+      const blocks = parent.children.slice(lo, hi + 1);
+      parent.children.splice(lo, hi - lo + 1, el('w:sdt', {}, [sdtPr, el('w:sdtContent', {}, blocks)]));
+    }
+    this.changed();
+    return id;
+  }
+
+  /** Lock whole paragraphs (from `first` to `last`). */
+  lockParagraphs(first: XmlElement, last: XmlElement = first, options: { title?: string; tag?: string; mode?: LockMode } = {}): string {
+    return this.lockRange({ start: { node: first, offset: 0 }, end: { node: last, offset: 0 } }, options);
+  }
+
+  /** Every locked content control in the body. */
+  lockedRegions(): LockedRegion[] {
+    return findAll(this.body, 'w:sdt')
+      .filter((sdt) => lockModeOf(sdt))
+      .map((sdt) => {
+        const sdtPr = firstChild(sdt, 'w:sdtPr');
+        const content = firstChild(sdt, 'w:sdtContent');
+        return {
+          id: attr(firstChild(sdtPr, 'w:id'), 'w:val') ?? '',
+          mode: lockModeOf(sdt)!,
+          title: sdtTitle(sdt),
+          tag: attr(firstChild(sdtPr, 'w:tag'), 'w:val'),
+          text: content ? findAll(content, 'w:p').length ? findAll(content, 'w:p').map((p) => textContent(p)).join('\n') : textContent(content) : '',
+          block: !!firstChild(content, 'w:p'),
+          el: sdt,
+        };
+      });
+  }
+
+  /**
+   * Remove a lock. Regions docxkeun created are unwrapped completely; other content controls
+   * keep their control and only lose the lock.
+   */
+  unlock(id: string): void {
+    this.check('protect');
+    const region = this.lockedRegions().find((r) => r.id === id);
+    if (!region) throw new EditError(`No locked region with id ${id}`);
+    if (region.tag === LOCK_TAG) {
+      const idx = this.index();
+      const parent = idx.parentOf(region.el);
+      parent.children.splice(indexOfChild(parent, region.el), 1, ...(firstChild(region.el, 'w:sdtContent')?.children ?? []));
+    } else {
+      removeChildren(firstChild(region.el, 'w:sdtPr')!, 'w:lock');
     }
     this.changed();
   }

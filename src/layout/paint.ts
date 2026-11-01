@@ -44,6 +44,7 @@ function recordRanges(p: Painter, ctx: RangeCtx, rect: Rect): void {
   }
   for (const id of ctx.comments) addArea(p.page.comments as never, { ...rect, id }, (a) => a.id === id);
   for (const perm of ctx.perms) addArea(p.page.perms as never, { ...rect, id: perm.id, editor: perm.editor, group: perm.group }, (a) => a.id === perm.id);
+  for (const lock of ctx.locks) addArea(p.page.locks as never, { ...rect, id: lock.id, title: lock.title }, (a) => a.id === lock.id);
 }
 
 export function textItem(x: number, y: number, chars: string[], xs: number[], widths: number[], font: LayoutFont, size: number, color: string, scale = 1): TextItem {

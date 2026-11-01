@@ -130,6 +130,17 @@ export interface PermStartInline {
   group?: string;
   el: XmlElement;
 }
+/** Start of a locked content control (w:sdt with w:lock contentLocked / sdtContentLocked). */
+export interface LockStartInline {
+  kind: 'lockStart';
+  id: string;
+  title?: string;
+  el: XmlElement;
+}
+export interface LockEndInline {
+  kind: 'lockEnd';
+  id: string;
+}
 export interface PermEndInline {
   kind: 'permEnd';
   id: string;
@@ -151,7 +162,9 @@ export type Inline =
   | CommentStartInline
   | CommentEndInline
   | PermStartInline
-  | PermEndInline;
+  | PermEndInline
+  | LockStartInline
+  | LockEndInline;
 
 export interface DocParagraph {
   kind: 'paragraph';
@@ -226,10 +239,20 @@ interface CellContext {
   conditions: ConditionalType[];
 }
 
+/** Lock info of a content control whose content cannot be edited. */
+function contentLock(sdt: XmlElement): { id: string; title?: string } | undefined {
+  const sdtPr = firstChild(sdt, 'w:sdtPr');
+  const v = attr(firstChild(sdtPr, 'w:lock'), 'w:val');
+  if (v !== 'contentLocked' && v !== 'sdtContentLocked') return undefined;
+  return { id: attr(firstChild(sdtPr, 'w:id'), 'w:val') ?? '', title: attr(firstChild(sdtPr, 'w:alias'), 'w:val') };
+}
+
 const UNDERSTOOD_REQUIRES = new Set(['w14', 'w15', 'w16se', 'w16cid', 'w16cex', 'wp14', 'w16du', 'w16sdtdh']);
 
 export class StoryReader {
   private fields: FieldState[] = [];
+  /** Locked block-level content controls around the paragraphs being read. */
+  private blockLocks: Array<{ id: string; title?: string; el: XmlElement }> = [];
   private paragraphStyleId: string | undefined;
   private cellRunProps: RunProps | undefined;
 
@@ -257,9 +280,13 @@ export class StoryReader {
         case 'w:tbl':
           out.push(this.readTable(node));
           break;
-        case 'w:sdt':
+        case 'w:sdt': {
+          const lock = contentLock(node);
+          if (lock) this.blockLocks.push({ ...lock, el: node });
           this.collectBlocks(firstChild(node, 'w:sdtContent') ?? node, out, cell);
+          if (lock) this.blockLocks.pop();
           break;
+        }
         case 'w:customXml':
         case 'w:ins':
         case 'w:moveTo':
@@ -302,10 +329,12 @@ export class StoryReader {
     const markProps = styles.resolveRun(styleId, markDirect, this.cellRunProps);
 
     const inlines: Inline[] = [];
+    for (const lock of this.blockLocks) inlines.push({ kind: 'lockStart', id: lock.id, title: lock.title, el: lock.el });
     // A link field that started in an earlier paragraph continues here.
     for (const f of this.fields) if (f.phase === 'result' && f.link) inlines.push({ kind: 'linkStart', target: f.link, el: p });
     this.readInlines(p, inlines);
     for (const f of this.fields) if (f.phase === 'result' && f.link) inlines.push({ kind: 'linkEnd' });
+    for (const lock of this.blockLocks) inlines.push({ kind: 'lockEnd', id: lock.id });
 
     const sectPr = firstChild(pPr, 'w:sectPr');
     return {
@@ -367,9 +396,13 @@ export class StoryReader {
         case 'w:moveFrom':
           if (this.ctx.showDeletions) this.readInlines(node, out);
           break;
-        case 'w:sdt':
+        case 'w:sdt': {
+          const lock = contentLock(node);
+          if (lock) out.push({ kind: 'lockStart', ...lock, el: node });
           this.readInlines(firstChild(node, 'w:sdtContent') ?? node, out);
+          if (lock) out.push({ kind: 'lockEnd', id: lock.id });
           break;
+        }
         case 'mc:AlternateContent': {
           const chosen = this.chooseAlternate(node);
           if (chosen) this.readInlines(chosen, out);
