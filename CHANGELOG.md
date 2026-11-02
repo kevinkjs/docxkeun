@@ -2,6 +2,13 @@
 
 All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic versioning](https://semver.org); while the version is 0.x, minor versions may contain breaking changes.
 
+## 0.1.3 (2026-11-02)
+
+Documentation only. No code changes.
+
+- The README shows a screenshot of the live demo.
+- docxkeun-fonts is unchanged and stays at 0.1.1.
+
 ## 0.1.2 (2026-11-02)
 
 Package metadata only. No code changes.
