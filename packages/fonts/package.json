@@ -1,6 +1,6 @@
 {
   "name": "docxkeun-fonts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Open fonts with the same widths as Calibri, Cambria, Arial, Times New Roman and Courier New, for exact .docx layout and PDF export with docxkeun.",
   "license": "OFL-1.1",
   "author": "Kevin Jeremia (https://github.com/kevinkjs)",

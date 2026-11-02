@@ -2,7 +2,29 @@
 
 All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic versioning](https://semver.org); while the version is 0.x, minor versions may contain breaking changes.
 
-## 0.1.0 (unreleased)
+## 0.1.3 (2026-11-02)
+
+Documentation only. No code changes.
+
+- The README shows a screenshot of the live demo.
+- docxkeun-fonts is unchanged and stays at 0.1.1.
+
+## 0.1.2 (2026-11-02)
+
+Package metadata only. No code changes.
+
+- A live demo at https://kevinkjs.github.io/docxkeun/, now the package homepage and linked from the README.
+- More descriptive package description and search keywords.
+- docxkeun-fonts is unchanged and stays at 0.1.1.
+
+## 0.1.1 (2026-11-01)
+
+First release published from GitHub Actions. No code changes.
+
+- The packaged changelog now shows the 0.1.0 release date (0.1.0 on npm says "unreleased").
+- docxkeun-fonts: version aligned with docxkeun; the fonts are unchanged.
+
+## 0.1.0 (2026-11-01)
 
 First public release (beta).
 

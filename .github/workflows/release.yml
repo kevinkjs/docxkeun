@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -34,7 +34,7 @@ jobs:
           # Only needed until trusted publishing is set up on npmjs.com (then delete the secret).
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # npm only accepts provenance from public repositories.
-          PROVENANCE: ${{ github.event.repository.private && '' || '--provenance' }}
+          PROVENANCE: ${{ !github.event.repository.private && '--provenance' || '' }}
         run: |
           publish() {
             name=$(node -p "require('$1/package.json').name")

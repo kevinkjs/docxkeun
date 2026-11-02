@@ -9,11 +9,11 @@ import { sampleDocx } from './sample.js';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const status = (text: string) => ($('status').textContent = text);
 
-/** The bundled open fonts (Carlito, Caladea, Liberation), served from the site root. */
+/** The bundled open fonts (Carlito, Caladea, Liberation), served next to index.html. */
 async function loadFonts(): Promise<FontRegistry> {
   const registry = new FontRegistry();
   try {
-    await loadBundledFonts(registry, { baseUrl: '/' });
+    await loadBundledFonts(registry, { baseUrl: './' });
   } catch (e) {
     console.warn('Bundled fonts unavailable, using system font metrics', e);
   }
