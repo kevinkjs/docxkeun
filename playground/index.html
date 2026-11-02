@@ -3,12 +3,38 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>docxkeun playground</title>
+    <title>docxkeun – DOCX viewer, editor and DOCX to PDF in the browser</title>
+    <meta name="description" content="Open-source JavaScript library to view, edit and convert Word .docx files to PDF in the browser, with zero dependencies. Try it: open a .docx, type on the page, export a PDF." />
+    <link rel="canonical" href="https://kevinkjs.github.io/docxkeun/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="docxkeun" />
+    <meta property="og:url" content="https://kevinkjs.github.io/docxkeun/" />
+    <meta property="og:title" content="docxkeun – DOCX viewer, editor and DOCX to PDF in the browser" />
+    <meta property="og:description" content="Open-source JavaScript library to view, edit and convert Word .docx files to PDF in the browser, with zero dependencies." />
+    <meta name="twitter:card" content="summary" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "docxkeun",
+        "description": "Open-source JavaScript library to view, edit and convert Word .docx files to PDF in the browser, with zero dependencies.",
+        "url": "https://kevinkjs.github.io/docxkeun/",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Web browser, Node.js",
+        "license": "https://opensource.org/licenses/MIT",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "sameAs": ["https://github.com/kevinkjs/docxkeun", "https://www.npmjs.com/package/docxkeun"]
+      }
+    </script>
     <style>
       html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; color: #202124; }
       body { display: flex; flex-direction: column; }
       header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid #dadce0; flex-wrap: wrap; background: #fff; }
-      header h1 { font-size: 15px; margin: 0 8px 0 0; }
+      header h1 { font-size: 15px; margin: 0; }
+      header .tagline { color: #5f6368; margin-right: 8px; }
+      header .links { display: flex; gap: 10px; }
+      header .links a { color: #1a73e8; text-decoration: none; }
+      header .links a:hover { text-decoration: underline; }
       button, select, input[type=file] { font: inherit; }
       #status { margin-left: auto; color: #5f6368; }
       main { flex: 1; min-height: 0; display: flex; }
@@ -34,6 +60,7 @@
   <body>
     <header>
       <h1>docxkeun</h1>
+      <span class="tagline">DOCX viewer, editor and DOCX to PDF in the browser</span>
       <input type="file" id="file" accept=".docx,.dotx,.docm" />
       <button id="sample">Sample</button>
       <button id="navToggle" aria-pressed="true">Navigation</button>
@@ -42,6 +69,10 @@
       <button id="zoomIn" aria-label="Zoom in">+</button>
       <span id="actions"></span>
       <span id="status"></span>
+      <nav class="links" aria-label="Project">
+        <a href="https://github.com/kevinkjs/docxkeun">GitHub</a>
+        <a href="https://www.npmjs.com/package/docxkeun">npm</a>
+      </nav>
     </header>
     <main>
       <aside id="nav" aria-label="Document navigation"></aside>

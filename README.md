@@ -4,7 +4,9 @@
 [![npm](https://img.shields.io/npm/v/docxkeun)](https://www.npmjs.com/package/docxkeun)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Read, render, edit and convert `.docx` files in the browser (and Node), with **zero runtime dependencies**. Everything is implemented in this package: zip, XML, the document model, a page layout engine, an SVG viewer, a PDF writer, and the cryptography for password-protected files.
+A DOCX viewer, editor and DOCX-to-PDF converter for JavaScript and TypeScript. Read, render, edit and convert `.docx` files in the browser (and Node), with **zero runtime dependencies**. Everything is implemented in this package: zip, XML, the document model, a page layout engine, an SVG viewer, a PDF writer, and the cryptography for password-protected files.
+
+**[Live demo](https://kevinkjs.github.io/docxkeun/)**: open a `.docx`, type on the page, add comments, export a PDF.
 
 > **Beta.** docxkeun is new. It is tested against its own test suite and independent implementations, but not yet broadly against files made by Microsoft Word. See [Status and limitations](#status-and-limitations), and please [report](https://github.com/kevinkjs/docxkeun/issues) documents that render or save wrongly.
 
