@@ -8,6 +8,8 @@ A DOCX viewer, editor and DOCX-to-PDF converter for JavaScript and TypeScript. R
 
 **[Live demo](https://kevinkjs.github.io/docxkeun/)**: open a `.docx`, type on the page, add comments, export a PDF.
 
+[![docxkeun rendering a Word .docx document in the browser: paginated layout with headings, lists, a table, highlighted text and comment threads, next to a navigation sidebar of headings, bookmarks and links](https://raw.githubusercontent.com/kevinkjs/docxkeun/main/.github/assets/screenshot.png)](https://kevinkjs.github.io/docxkeun/)
+
 > **Beta.** docxkeun is new. It is tested against its own test suite and independent implementations, but not yet broadly against files made by Microsoft Word. See [Status and limitations](#status-and-limitations), and please [report](https://github.com/kevinkjs/docxkeun/issues) documents that render or save wrongly.
 
 | Area | What you get |
