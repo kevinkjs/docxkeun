@@ -14,10 +14,12 @@ pnpm dev         # playground at http://localhost:5199
 pnpm build       # dist/
 ```
 
-The repository holds two packages:
+The repository holds three published packages and one app (a pnpm workspace):
 
 - `docxkeun` (the root): the library. It must keep **zero runtime dependencies**; a test fails if `dependencies` gains an entry. Development tools are fine as devDependencies.
 - `docxkeun-fonts` (`packages/fonts`): the bundled open fonts. Tests and the playground use them.
+- `docxkeun-mcp` (`packages/mcp`): an MCP server for AI clients, built on docxkeun. It may have dependencies (the MCP SDK and zod). It depends on docxkeun and docxkeun-fonts with normal version ranges, which pnpm links to the copies in this repository. `pnpm build && pnpm build:mcp && pnpm typecheck:mcp` builds and checks it; its tests are part of `pnpm test`.
+- `docxkeun-chat` (`packages/chat`, private, not published): a web app for chatting with Claude about a document, built on docxkeun and the document operations in `packages/mcp/src/operations.ts`. `pnpm dev:chat` runs it with its API relay (`server/relay.mjs`); `?mock` uses a scripted stand-in instead of the API.
 
 ## Pull requests
 
@@ -27,6 +29,6 @@ The repository holds two packages:
 
 ## Releasing (maintainers)
 
-1. Update versions in `package.json` (and `packages/fonts/package.json` if the fonts changed) and the changelog.
+1. Update versions in `package.json` (and in `packages/fonts/package.json` or `packages/mcp/package.json` if those changed) and the changelog. When docxkeun's minor version changes, update the `docxkeun` range in `packages/mcp/package.json` too (a test checks it).
 2. Commit, then tag: `git tag v0.1.0 && git push origin v0.1.0`.
-3. The release workflow tests, builds and publishes both packages to npm with provenance. Packages whose version already exists on npm are skipped.
+3. The release workflow tests, builds and publishes the packages to npm (with provenance once the repository is public). Packages whose version already exists on npm are skipped.

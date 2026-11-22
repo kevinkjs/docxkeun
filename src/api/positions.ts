@@ -204,6 +204,7 @@ export const RPR_ORDER = [
   'w:eastAsianLayout',
   'w:specVanish',
   'w:oMath',
+  'w:rPrChange',
 ];
 
 export const PPR_ORDER = [

@@ -7,9 +7,9 @@ import { readComments, type CommentInfo } from '../comments/read.js';
 import { randomBytes } from '../crypto/index.js';
 import type { FontRegistry } from '../fonts/registry.js';
 import { layoutDocument } from '../layout/engine.js';
-import type { DisplayItem, LayoutResult, TextItem } from '../layout/types.js';
+import type { DisplayItem, LayoutResult, PathItem, RasterImage, TextItem } from '../layout/types.js';
 import type { DocxDocument } from '../model/document.js';
-import { addImage } from './images.js';
+import { addImage, addRasterImage } from './images.js';
 import { PdfFont } from './fonts.js';
 import { name, num, pdfDate, str, type PdfDict, type PdfRef, type PdfValue } from './objects.js';
 import { PdfWriter, type PdfEncryption } from './writer.js';
@@ -49,6 +49,37 @@ class PageContent {
   readonly ops: string[] = [];
   readonly fonts = new Map<string, PdfRef>();
   readonly images = new Map<string, PdfRef>();
+  /** Graphics states for transparency: resource name → [fill alpha, stroke alpha]. */
+  readonly alphas = new Map<string, [number, number]>();
+
+  alpha(fill: number, stroke: number): string {
+    const key = `GA${Math.round(fill * 1000)}_${Math.round(stroke * 1000)}`;
+    this.alphas.set(key, [fill, stroke]);
+    return key;
+  }
+}
+
+/** The image-space matrix for an image item: its box, rotated (clockwise on the page) and flipped about its centre. */
+function imageMatrix(item: { x: number; y: number; w: number; h: number; rotation?: number; flipH?: boolean; flipV?: boolean }, H: number): string {
+  const cx = item.x + item.w / 2;
+  const cy = H - item.y - item.h / 2;
+  // PDF y points up, so a clockwise page rotation is a negative angle here.
+  const a = (-(item.rotation ?? 0) * Math.PI) / 180;
+  const sx = item.flipH ? -item.w : item.w;
+  const sy = item.flipV ? -item.h : item.h;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  // translate(cx, cy) · rotate(a) · scale(sx, sy) · translate(-0.5, -0.5)
+  const m = [cos * sx, sin * sx, -sin * sy, cos * sy];
+  const e = cx - 0.5 * m[0]! - 0.5 * m[2]!;
+  const f = cy - 0.5 * m[1]! - 0.5 * m[3]!;
+  return [...m, e, f].map(num).join(' ');
+}
+
+function pathOps(commands: PathItem['commands'], H: number): string {
+  return commands
+    .map((c) => (c.op === 'Z' ? 'h' : c.op === 'M' ? `${num(c.x)} ${num(H - c.y)} m` : c.op === 'L' ? `${num(c.x)} ${num(H - c.y)} l` : `${num(c.x1)} ${num(H - c.y1)} ${num(c.x2)} ${num(H - c.y2)} ${num(c.x)} ${num(H - c.y)} c`))
+    .join(' ');
 }
 
 export async function exportPdf(doc: DocxDocument, options: PdfExportOptions): Promise<Uint8Array> {
@@ -85,18 +116,31 @@ export async function exportPdf(doc: DocxDocument, options: PdfExportOptions): P
     return images.get(target) ?? null;
   };
 
+  const rasters = new Map<RasterImage, { ref: PdfRef; resource: string }>();
+  const rasterFor = async (image: RasterImage) => {
+    let entry = rasters.get(image);
+    if (!entry) {
+      const { ref } = await addRasterImage(writer, image);
+      entry = { ref, resource: `Im${images.size + rasters.size + 1}r` };
+      rasters.set(image, entry);
+    }
+    return entry;
+  };
+
   const pageAnnots: PdfRef[][] = layout.pages.map(() => []);
   if (options.comments ?? true) addComments(writer, readComments(doc), layout, pageAnnots);
 
   for (const page of layout.pages) {
     const content = new PageContent();
     const H = page.height;
-    for (const item of page.items) await drawItem(item, content, H, fontFor, imageFor);
+    for (const item of page.items) await drawItem(item, content, H, fontFor, imageFor, rasterFor);
     const stream = await writer.stream({}, new TextEncoder().encode(content.ops.join('\n')));
     const fontRes: PdfDict = {};
     for (const [res, ref] of content.fonts) fontRes[res] = ref;
     const xobjects: PdfDict = {};
     for (const [res, ref] of content.images) xobjects[res] = ref;
+    const extGStates: PdfDict = {};
+    for (const [res, [fill, stroke]] of content.alphas) extGStates[res] = { Type: name('ExtGState'), ca: fill, CA: stroke };
 
     // Link annotations.
     for (const link of page.links) {
@@ -119,7 +163,12 @@ export async function exportPdf(doc: DocxDocument, options: PdfExportOptions): P
       Type: name('Page'),
       Parent: pagesRef,
       MediaBox: [0, 0, page.width, page.height],
-      Resources: { Font: fontRes, XObject: Object.keys(xobjects).length ? xobjects : undefined, ProcSet: [name('PDF'), name('Text'), name('ImageB'), name('ImageC')] },
+      Resources: {
+        Font: fontRes,
+        XObject: Object.keys(xobjects).length ? xobjects : undefined,
+        ExtGState: Object.keys(extGStates).length ? extGStates : undefined,
+        ProcSet: [name('PDF'), name('Text'), name('ImageB'), name('ImageC')],
+      },
       Contents: stream,
       Annots: pageAnnots[page.index]!.length ? pageAnnots[page.index] : undefined,
     });
@@ -166,6 +215,7 @@ async function drawItem(
   H: number,
   fontFor: (item: TextItem) => { font: PdfFont; ref: PdfRef },
   imageFor: (target: string | undefined, external: boolean) => Promise<{ ref: PdfRef; resource: string } | null>,
+  rasterFor: (image: RasterImage) => Promise<{ ref: PdfRef; resource: string }>,
 ): Promise<void> {
   const ops = content.ops;
   switch (item.type) {
@@ -190,14 +240,34 @@ async function drawItem(
       } else seg(item.x1, item.y1, item.x2, item.y2, item.width);
       break;
     }
+    case 'path': {
+      if (!item.commands.length || (!item.fill && !item.stroke)) break;
+      const parts: string[] = ['q'];
+      const fa = item.fill ? (item.fillOpacity ?? 1) : 1;
+      const sa = item.stroke ? (item.strokeOpacity ?? 1) : 1;
+      if (fa < 1 || sa < 1) parts.push(`/${content.alpha(fa, sa)} gs`);
+      if (item.fill) parts.push(`${rgb(item.fill)} rg`);
+      if (item.stroke) {
+        parts.push(`${rgb(item.stroke)} RG ${num(item.strokeWidth ?? 0.75)} w`);
+        parts.push(item.dash?.length ? `[${item.dash.map(num).join(' ')}] 0 d` : '[] 0 d');
+        if (item.lineCap) parts.push(`${{ butt: 0, round: 1, square: 2 }[item.lineCap]} J`);
+        if (item.lineJoin) parts.push(`${{ miter: 0, round: 1, bevel: 2 }[item.lineJoin]} j`);
+      }
+      parts.push(pathOps(item.commands, H));
+      parts.push(item.fill && item.stroke ? (item.evenOdd ? 'B*' : 'B') : item.fill ? (item.evenOdd ? 'f*' : 'f') : 'S');
+      parts.push('Q');
+      ops.push(parts.join(' '));
+      break;
+    }
     case 'image': {
-      const img = await imageFor(item.target, item.external);
+      if (item.frameOnly) break;
+      const img = item.raster ? await rasterFor(item.raster) : await imageFor(item.target, item.external);
       if (!img) {
         ops.push(`0.945 0.953 0.957 rg ${num(item.x)} ${num(H - item.y - item.h)} ${num(item.w)} ${num(item.h)} re f`);
         break;
       }
       content.images.set(img.resource, img.ref);
-      ops.push(`q ${num(item.w)} 0 0 ${num(item.h)} ${num(item.x)} ${num(H - item.y - item.h)} cm /${img.resource} Do Q`);
+      ops.push(`q ${imageMatrix(item, H)} cm /${img.resource} Do Q`);
       break;
     }
     case 'text': {
@@ -205,6 +275,25 @@ async function drawItem(
       const { font, ref } = fontFor(item);
       content.fonts.set(font.resource, ref);
       const scale = item.scale || 1;
+      if (item.clusterGlyphs) {
+        // Shaped text: each glyph at its own position (joining forms, ligatures, attached marks).
+        const skew = item.font.syntheticItalic ? 0.21 : 0;
+        const bold = item.font.syntheticBold ? ` 2 Tr ${num(item.size * 0.03)} w ${rgb(item.color)} RG` : '';
+        const tz = scale !== 1 ? ` ${num(scale * 100)} Tz` : '';
+        const parts: string[] = [];
+        item.clusterGlyphs.forEach((cluster, i) => {
+          // Right-to-left clusters are drawn in visual order: their glyphs reversed.
+          const glyphs = item.complex?.rtl ? [...cluster].reverse() : cluster;
+          let pen = item.xs[i]!;
+          for (const g of glyphs) {
+            font.use(g.id, g.text);
+            parts.push(`1 0 ${num(skew)} 1 ${num(pen + g.dx)} ${num(H - item.y + g.dy)} Tm <${g.id.toString(16).padStart(4, '0')}> Tj`);
+            pen += g.advance * scale;
+          }
+        });
+        ops.push(`BT /${font.resource} ${num(item.size)} Tf${tz}${bold} ${rgb(item.color)} rg ${parts.join(' ')} ET`);
+        break;
+      }
       const parts: string[] = [];
       let hex = '';
       let x = item.xs[0]!;

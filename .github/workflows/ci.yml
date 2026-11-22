@@ -25,9 +25,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test
       - run: pnpm build
+      # docxkeun-mcp type-checks against docxkeun's build, and its stdio test runs the built server.
+      - run: pnpm build:mcp
+      - run: pnpm typecheck:mcp
+      - run: pnpm typecheck:chat
+      - run: pnpm build:chat
+      - run: pnpm test
       - name: Check what npm would publish
         run: |
           npm pack --dry-run
           npm pack --dry-run ./packages/fonts
+          npm pack --dry-run ./packages/mcp

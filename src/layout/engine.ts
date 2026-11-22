@@ -3,22 +3,36 @@
  * footnotes, resolves page-number fields, and collects anchors for links and comments.
  */
 import { FontRegistry } from '../fonts/registry.js';
-import type { Block, NoteRefInline } from '../model/content.js';
+import type { Block, FloatInfo, NoteRefInline } from '../model/content.js';
 import type { DocxDocument } from '../model/document.js';
 import { formatNumber, NumberingCounter } from '../model/numbering.js';
 import { parseSectionProps, type SectionProps } from '../model/props.js';
-import { blockBoxes, type BlockContext, type Box, type NoteRef } from './blocks.js';
+import { blockBoxes, type BlockContext, type Box, type NoteRef, type ParagraphMeta } from './blocks.js';
+import type { LayoutCache } from './cache.js';
+import { createDrawingContext } from './shapes.js';
+import type { DrawingContext } from './drawing.js';
 import { RegistryFontProvider } from './fonts.js';
 import { RangeTracker } from './lines.js';
-import { measureChars, pageNumberLabel, type Painter } from './paint.js';
+import { floatPosition, measureChars, pageNumberLabel, type Painter } from './paint.js';
+import type { LineBounds } from './lines.js';
 import type { DisplayItem, FontProvider, LayoutResult, Page, TextItem } from './types.js';
 
 export interface LayoutOptions {
   /** Registered fonts (or a custom provider, e.g. canvas metrics in a browser). */
   fonts: FontRegistry | FontProvider;
+  /** Re-use the layout of unchanged paragraphs from earlier runs (keep one per document). */
+  cache?: LayoutCache;
 }
 
 const EPS = 0.01;
+
+const providers = new WeakMap<FontRegistry, RegistryFontProvider>();
+/** One provider per registry, so cached paragraph layout (which holds its fonts) stays valid. */
+function providerFor(registry: FontRegistry): RegistryFontProvider {
+  let p = providers.get(registry);
+  if (!p) providers.set(registry, (p = new RegistryFontProvider(registry)));
+  return p;
+}
 
 interface SectionGroup {
   props: SectionProps;
@@ -65,6 +79,8 @@ class Paginator {
   columns: Array<{ x: number; width: number }> = [];
   col = 0;
   regionTop = 0;
+  /** First placement of the current column region (placements restart on every page). */
+  regionStart = 0;
   bodyTop = 0;
   bottom = 0;
   y = 0;
@@ -72,6 +88,10 @@ class Paginator {
   startedByOverflow = false;
   pageNumber = 0;
   placements: Placement[] = [];
+  /** Areas text must flow around on this page (floating objects with wrapping, plus their distance from text). */
+  exclusions: Array<{ left: number; top: number; right: number; bottom: number; wrap: FloatInfo['wrap']; side: FloatInfo['wrapText'] }> = [];
+  /** Paragraphs whose floats are already placed on this page. */
+  private floatsPlaced = new Set<ParagraphMeta>();
   notes: Array<{ ref: NoteRef; boxes: Box[]; height: number }> = [];
   notesHeight = 0;
   readonly endnotes: NoteRef[] = [];
@@ -110,11 +130,14 @@ class Paginator {
     this.sectionPageCounts[index] = 0;
     const samePage = prev && prev.pageWidth === section.pageWidth && prev.pageHeight === section.pageHeight;
     if (!first && section.type === 'continuous' && samePage) {
+      // Word balances the columns of a section that ends with a continuous break.
+      if (this.columns.length > 1) this.balanceColumns();
       // New column layout on the same page, below the content so far.
       this.flushColumnsTo();
       this.columns = this.computeColumns(section);
       this.col = 0;
       this.regionTop = this.y;
+      this.regionStart = this.placements.length;
       this.atColumnTop = true;
       this.sectionPageCounts[index] = 1;
       return;
@@ -130,6 +153,63 @@ class Paginator {
       if ((nextNumber % 2 === 0) !== wantEven) this.newPage(false);
     }
     this.newPage(false);
+  }
+
+  /**
+   * Redistribute the current page's part of a multi-column section so its columns end at about the
+   * same height: find the smallest column height that holds everything (splitting paragraphs and
+   * tables between lines and rows as usual), then place the boxes again with that height.
+   */
+  private balanceColumns(): void {
+    const n = this.columns.length;
+    const region = this.placements.slice(this.regionStart);
+    const boxes = region.filter((p) => p.index >= 0).map((p) => p.box);
+    if (boxes.length === 0) return;
+    // Explicit column or page breaks decide the columns themselves.
+    if (boxes.some((b) => b.breakBefore || b.breakAfter)) return;
+    const total = boxes.reduce((sum, b) => sum + b.height, 0);
+    const fits = (h: number): boolean => {
+      const queue = [...boxes];
+      let col = 0;
+      let used = 0;
+      for (let i = 0; i < queue.length; i++) {
+        const b = queue[i]!;
+        const height = used === 0 && b.discardAtTop ? 0 : b.height;
+        if (used + height <= h + EPS) {
+          used += height;
+          continue;
+        }
+        const parts = b.split && h - used > 12 ? b.split(h - used) : undefined;
+        if (parts) {
+          queue.splice(i, 1, parts[0], parts[1]);
+        } else {
+          if (used === 0) return false;
+          i--;
+        }
+        col++;
+        used = 0;
+        if (col >= n) return false;
+      }
+      return true;
+    };
+    let hi = this.y - this.regionTop;
+    for (const p of region) hi = Math.max(hi, p.y + p.box.height - this.regionTop);
+    if (!fits(hi)) return;
+    let lo = total / n;
+    for (let k = 0; k < 24 && hi - lo > 0.25; k++) {
+      const mid = (lo + hi) / 2;
+      if (fits(mid)) hi = mid;
+      else lo = mid;
+    }
+    const page = this.page;
+    const savedBottom = this.bottom;
+    this.placements.length = this.regionStart;
+    this.col = 0;
+    this.y = this.regionTop;
+    this.atColumnTop = true;
+    this.bottom = this.regionTop + hi + EPS + this.notesHeight;
+    this.run(boxes);
+    if (this.page === page) this.bottom = savedBottom;
   }
 
   /** All columns of the current region are done: continue below the tallest. */
@@ -159,6 +239,7 @@ class Paginator {
       locks: [],
       anchors: new Map(),
       lines: [],
+      storyLines: [],
       headings: [],
       content: { x: 0, y: 0, w: 0, h: 0 },
     };
@@ -175,12 +256,83 @@ class Paginator {
     page.content = { x: m.left + m.gutter, y: this.bodyTop, w: this.contentWidth, h: this.bottom - this.bodyTop };
     this.col = 0;
     this.regionTop = this.bodyTop;
+    this.regionStart = 0;
     this.y = this.bodyTop;
     this.atColumnTop = true;
     this.startedByOverflow = overflow;
     this.placements = [];
+    this.exclusions = [];
+    this.floatsPlaced = new Set();
     this.notes = [];
     this.notesHeight = 0;
+  }
+
+  /** Place a paragraph's floating objects (anchored at `paraTop`) and record the areas text wraps around. */
+  private placeFloats(meta: ParagraphMeta, paraTop: number): void {
+    if (this.floatsPlaced.has(meta)) return;
+    this.floatsPlaced.add(meta);
+    const column = this.columns[this.col]!;
+    for (const image of meta.floats) {
+      const f = image.float!;
+      const at = floatPosition(this.page, column, f, image, column.x, paraTop);
+      this.painter.floatRects?.set(image, at);
+      if (f.wrap === 'none') continue;
+      this.exclusions.push({
+        left: at.x - f.dist.left,
+        top: at.y - f.dist.top,
+        right: at.x + image.width + f.dist.right,
+        bottom: at.y + image.height + f.dist.bottom,
+        wrap: f.wrap,
+        side: f.wrapText,
+      });
+    }
+  }
+
+  /** Room for a line at an absolute height in the current column, around this page's exclusions. */
+  private boundsAt(column: { x: number; width: number }, top: number, height: number): LineBounds | undefined {
+    let left = 0;
+    let right = column.width;
+    let next: number | undefined;
+    let touched = false;
+    for (const e of this.exclusions) {
+      if (e.bottom <= top + EPS || e.top >= top + height - EPS) continue;
+      const exLeft = e.left - column.x;
+      const exRight = e.right - column.x;
+      if (exRight <= left || exLeft >= right) continue;
+      touched = true;
+      if (e.wrap === 'topAndBottom') {
+        right = left;
+      } else {
+        const roomLeft = exLeft - left;
+        const roomRight = right - exRight;
+        const textLeft = e.side === 'left' || ((e.side === 'bothSides' || e.side === 'largest') && roomLeft >= roomRight);
+        if (textLeft) right = Math.min(right, exLeft);
+        else left = Math.max(left, exRight);
+      }
+      next = Math.max(next ?? 0, e.bottom);
+    }
+    if (!touched) return undefined;
+    return { left, right, ...(next !== undefined ? { next } : {}) };
+  }
+
+  /** Lay a paragraph out around this page's floats when it overlaps any; returns the boxes to use. */
+  private wrapParagraph(queue: Box[], i: number): boolean {
+    const meta = queue[i]!.paragraph;
+    if (!meta || meta.wrapped) return false;
+    const paraTop = this.y + meta.textOffset;
+    this.placeFloats(meta, paraTop);
+    if (!this.exclusions.length) return false;
+    let height = 0;
+    for (let k = i; k < i + meta.count && k < queue.length; k++) height += queue[k]!.height;
+    const column = this.columns[this.col]!;
+    const overlaps = this.exclusions.some((e) => e.bottom > this.y && e.top < this.y + height && e.right > column.x && e.left < column.x + column.width);
+    if (!overlaps) return false;
+    const boxes = meta.reflow((top, h) => {
+      const b = this.boundsAt(column, paraTop + top, h);
+      return b && { left: b.left, right: b.right, ...(b.next !== undefined ? { next: b.next - paraTop } : {}) };
+    });
+    queue.splice(i, meta.count, ...boxes);
+    return true;
   }
 
   nextColumn(overflow: boolean): void {
@@ -234,8 +386,10 @@ class Paginator {
     let guard = 0;
     while (i < queue.length) {
       if (++guard > queue.length * 20 + 10000) throw new Error('Layout did not converge');
+      if (queue[i]!.breakBefore && !this.atColumnTop) this.breakTo(queue[i]!.breakBefore!);
+      // Text wraps around floating objects: re-break the paragraph where it meets them.
+      this.wrapParagraph(queue, i);
       const box = queue[i]!;
-      if (box.breakBefore && !this.atColumnTop) this.breakTo(box.breakBefore);
 
       // Continuing a table on a new page or column: repeat its header rows.
       if (box.repeatHeader && this.atColumnTop) {
@@ -308,12 +462,14 @@ class Paginator {
       pl.box.paint(p, pl.x, pl.y);
     }
     if (this.notes.length) {
-      p.story = 'other';
+      p.story = 'footnote';
       const column = this.columns[0]!;
       let y = this.bottom - this.notesHeight;
       p.page.items.push({ type: 'line', x1: column.x, y1: y + NOTE_SEPARATOR_SPACE / 2, x2: column.x + Math.min(144, column.width / 3), y2: y + NOTE_SEPARATOR_SPACE / 2, width: 0.5, color: '000000', style: 'solid' });
       y += NOTE_SEPARATOR_SPACE;
       for (const n of this.notes) {
+        p.story = n.ref.type;
+        p.storyRef = { part: this.engine.notePart(n.ref.type) ?? '', noteId: n.ref.id };
         for (const b of n.boxes) {
           b.paint(p, column.x, y);
           y += b.height;
@@ -321,6 +477,7 @@ class Paginator {
       }
     }
     p.story = 'body';
+    p.storyRef = undefined;
     if (p.behind.length) p.page.items.unshift(...p.behind);
     this.placements = [];
   }
@@ -336,9 +493,13 @@ class LayoutEngine {
   private currentNote: { type: 'footnote' | 'endnote'; id: string } | undefined;
   private readonly noteCache = new Map<string, { boxes: Box[]; height: number }>();
   private numPagesPlaceholder = '0';
+  private readonly cache: LayoutCache | undefined;
+  private readonly faceCount: number;
 
   constructor(private readonly doc: DocxDocument, options: LayoutOptions) {
-    this.fonts = options.fonts instanceof FontRegistry ? new RegistryFontProvider(options.fonts) : options.fonts;
+    this.fonts = options.fonts instanceof FontRegistry ? providerFor(options.fonts) : options.fonts;
+    this.cache = options.cache;
+    this.faceCount = options.fonts instanceof FontRegistry ? Array.from(options.fonts.faces()).length : 0;
     this.counter = new NumberingCounter(doc.numbering, (s) => doc.styles.get(s)?.pPr.numId);
   }
 
@@ -357,12 +518,24 @@ class LayoutEngine {
     return this.formatNote(inline.noteType, n);
   };
 
+  private drawingCtx: DrawingContext | undefined;
+
+  /** Document and fonts for painting drawings (shapes, charts, metafiles). */
+  drawingContext(): DrawingContext {
+    return (this.drawingCtx ??= createDrawingContext(this.doc, this.fonts, (blocks, width) => blockBoxes(blocks, width, this.context(new RangeTracker(), new NumberingCounter(this.doc.numbering)))));
+  }
+
+  /** Part holding footnotes or endnotes. */
+  notePart(type: 'footnote' | 'endnote'): string | undefined {
+    return type === 'footnote' ? this.doc.parts.footnotes : this.doc.parts.endnotes;
+  }
+
   private formatNote(type: 'footnote' | 'endnote', n: number): string {
     return formatNumber(n, type === 'footnote' ? 'decimal' : 'lowerRoman');
   }
 
   private context(tracker = this.tracker, counter = this.counter): BlockContext {
-    return { fonts: this.fonts, theme: this.doc.theme, tracker, counter, defaultTab: this.doc.defaultTabStop, noteLabel: this.noteLabel };
+    return { fonts: this.fonts, theme: this.doc.theme, tracker, counter, defaultTab: this.doc.defaultTabStop, noteLabel: this.noteLabel, cache: this.cache };
   }
 
   painterFor(page: Page, column: { x: number; width: number }): Painter {
@@ -371,6 +544,8 @@ class LayoutEngine {
       behind: [],
       column,
       story: 'body',
+      floatRects: new Map(),
+      drawing: this.drawingContext(),
       fieldValue: (field) => {
         if (field === 'PAGE') return page.label;
         return this.numPagesPlaceholder;
@@ -413,14 +588,19 @@ class LayoutEngine {
     };
     const saved = p.column;
     p.column = { x, width };
-    p.story = 'other';
+    const headerRef = pick(s.headers);
+    p.story = 'header';
+    p.storyRef = headerRef ? { part: this.doc.headerFooterPart(headerRef.rId) ?? '' } : undefined;
     let y = m.header;
-    for (const b of story(pick(s.headers))) {
+    for (const b of story(headerRef)) {
       b.paint(p, x, y);
       y += b.height;
     }
     const headerBottom = y;
-    const footer = story(pick(s.footers));
+    const footerRef = pick(s.footers);
+    p.story = 'footer';
+    p.storyRef = footerRef ? { part: this.doc.headerFooterPart(footerRef.rId) ?? '' } : undefined;
+    const footer = story(footerRef);
     const footerHeight = footer.reduce((h, b) => h + b.height, 0);
     let fy = s.pageHeight - m.footer - footerHeight;
     const footerTop = fy;
@@ -430,10 +610,12 @@ class LayoutEngine {
     }
     p.column = saved;
     p.story = 'body';
+    p.storyRef = undefined;
     return { headerBottom, footerTop: Math.min(footerTop, s.pageHeight - m.footer) };
   }
 
   run(): LayoutResult {
+    this.cache?.begin([this.fonts, this.faceCount, this.doc.theme, this.doc.styles, this.doc.numbering]);
     const story = this.doc.body();
     const groups = splitSections(story.blocks, story.finalSection);
     const paginator = new Paginator(this);
@@ -445,7 +627,22 @@ class LayoutEngine {
     if (paginator.endnotes.length) {
       const width = paginator.columns[0]!.width;
       const boxes: Box[] = [{ height: NOTE_SEPARATOR_SPACE * 2, keepWithNext: true, paint: (p, x, y) => p.page.items.push({ type: 'line', x1: x, y1: y + NOTE_SEPARATOR_SPACE, x2: x + Math.min(144, width / 3), y2: y + NOTE_SEPARATOR_SPACE, width: 0.5, color: '000000', style: 'solid' }) }];
-      for (const ref of paginator.endnotes) boxes.push(...this.noteBoxes(ref, width).boxes);
+      for (const ref of paginator.endnotes) {
+        const storyRef = { part: this.notePart('endnote') ?? '', noteId: ref.id };
+        // Endnotes flow like body text but are their own story for editing.
+        for (const b of this.noteBoxes(ref, width).boxes) {
+          boxes.push({
+            ...b,
+            paint: (p, x, y) => {
+              p.story = 'endnote';
+              p.storyRef = storyRef;
+              b.paint(p, x, y);
+              p.story = 'body';
+              p.storyRef = undefined;
+            },
+          });
+        }
+      }
       paginator.run(boxes);
     }
     paginator.finishPage();

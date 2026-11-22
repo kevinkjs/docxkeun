@@ -64,6 +64,13 @@ export interface TextItem {
   source?: TextSource;
   /** Present when the text is a resolved field (page numbers). */
   field?: 'PAGE' | 'NUMPAGES' | 'SECTIONPAGES';
+  /**
+   * Right-to-left or complex-script text: the characters in logical order. `chars`, `xs` and
+   * `glyphs` are in visual order; renderers that shape text (SVG) draw `text` as one run.
+   */
+  complex?: { text: string; rtl: boolean };
+  /** Glyphs of each cluster from the shaping engine (ligatures, contextual forms), when shaped. */
+  clusterGlyphs?: Array<Array<{ id: number; dx: number; dy: number; advance: number; text: string }>>;
 }
 
 export interface RectItem {
@@ -86,6 +93,14 @@ export interface LineItem {
   style: 'solid' | 'dashed' | 'dotted' | 'double';
 }
 
+/** Decoded pixels: for images a renderer cannot take as they are (GIF and BMP in PDF, bitmaps inside metafiles). */
+export interface RasterImage {
+  width: number;
+  height: number;
+  /** 8-bit RGBA, row by row from the top, 4 bytes per pixel (not premultiplied). */
+  rgba: Uint8Array;
+}
+
 export interface ImageItem {
   type: 'image';
   x: number;
@@ -96,10 +111,46 @@ export interface ImageItem {
   target: string | undefined;
   external: boolean;
   alt?: string;
-  inline: ImageInline;
+  /** The image as drawn, when it does not come from a media part (or must not be read from one). */
+  raster?: RasterImage;
+  inline?: ImageInline;
+  /** Clockwise rotation in degrees about the centre, and flips. */
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+  /** Only marks the object's box (for hit-testing): what it shows is drawn by the items after it. */
+  frameOnly?: boolean;
 }
 
-export type DisplayItem = TextItem | RectItem | LineItem | ImageItem;
+/** Path segments in points, page coordinates (y down). Arcs are converted to cubic Béziers. */
+export type PathCommand =
+  | { op: 'M'; x: number; y: number }
+  | { op: 'L'; x: number; y: number }
+  | { op: 'C'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
+  | { op: 'Z' };
+
+/** A filled and/or stroked vector path: shapes, charts, equations, metafiles. */
+export interface PathItem {
+  type: 'path';
+  commands: PathCommand[];
+  /** Fill colour as RRGGBB; no fill when absent. */
+  fill?: string;
+  /** 0..1, default 1. */
+  fillOpacity?: number;
+  /** Even-odd fill rule instead of non-zero. */
+  evenOdd?: boolean;
+  /** Stroke colour as RRGGBB; no stroke when absent. */
+  stroke?: string;
+  /** Stroke width in points (default 0.75). */
+  strokeWidth?: number;
+  strokeOpacity?: number;
+  /** Dash pattern in points (on, off, …). */
+  dash?: number[];
+  lineCap?: 'butt' | 'round' | 'square';
+  lineJoin?: 'miter' | 'round' | 'bevel';
+}
+
+export type DisplayItem = TextItem | RectItem | LineItem | ImageItem | PathItem;
 
 export interface Rect {
   x: number;
@@ -147,10 +198,29 @@ export interface Page {
   anchors: Map<string, { x: number; y: number }>;
   /** Every body line (not headers, footers or notes), for caret placement and hit-testing. */
   lines: BodyLine[];
+  /** Lines of headers, footers, footnotes and text boxes, for editing them in place. */
+  storyLines: StoryLine[];
   /** Paragraphs with an outline level (headings), for PDF outlines and navigation panes. */
   headings: Array<{ level: number; title: string; x: number; y: number }>;
   /** Body content area (for viewers that draw margins). */
   content: Rect;
+}
+
+/** Stories other than the main body that can be edited in place. */
+export type StoryKind = 'header' | 'footer' | 'footnote' | 'endnote' | 'textbox';
+
+export interface StoryRef {
+  /** Part holding the story's XML (the main document for text boxes). */
+  part: string;
+  /** Footnote or endnote id. */
+  noteId?: string;
+  /** The w:txbxContent of a text box. */
+  container?: import('../xml/dom.js').XmlElement;
+}
+
+/** A line of a header, footer, note or text box. */
+export interface StoryLine extends BodyLine, StoryRef {
+  story: StoryKind;
 }
 
 export interface BodyLine {

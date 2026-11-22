@@ -153,7 +153,7 @@ export function passwordAttributes(password: string, options: { algorithm?: Hash
   };
 }
 
-const SETTINGS_ORDER = [
+export const SETTINGS_ORDER = [
   'w:writeProtection',
   'w:view',
   'w:zoom',

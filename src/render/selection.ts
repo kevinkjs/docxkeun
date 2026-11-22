@@ -27,6 +27,11 @@ export function positionFromDom(node: Node, offset: number, pages: Page[]): Inli
   const pi = pageIndex(el);
   const item = pi === undefined ? undefined : (pages[pi]?.items[Number(el.getAttribute('data-i'))] as TextItem | undefined);
   if (!item || item.type !== 'text' || !item.source) return undefined;
+  if (el.hasAttribute('data-complex')) {
+    // The element holds the run in logical order.
+    const start = Math.min(...item.source.offsets);
+    return { inline: item.source.inline, offset: start + offset };
+  }
   let cluster: number;
   const fixed = el.getAttribute('data-c');
   if (fixed !== null) {

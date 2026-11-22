@@ -6,7 +6,7 @@
 
 A DOCX viewer, editor and DOCX-to-PDF converter for JavaScript and TypeScript. Read, render, edit and convert `.docx` files in the browser (and Node), with **zero runtime dependencies**. Everything is implemented in this package: zip, XML, the document model, a page layout engine, an SVG viewer, a PDF writer, and the cryptography for password-protected files.
 
-**[Live demo](https://kevinkjs.github.io/docxkeun/)**: open a `.docx`, type on the page, add comments, export a PDF.
+**[Live demo](https://kevinkjs.github.io/docxkeun/)**: open a `.docx`, type on the page, right-click to comment or link, track changes, undo anything, export a PDF.
 
 [![docxkeun rendering a Word .docx document in the browser: paginated layout with headings, lists, a table, highlighted text and comment threads, next to a navigation sidebar of headings, bookmarks and links](https://raw.githubusercontent.com/kevinkjs/docxkeun/main/.github/assets/screenshot.png)](https://kevinkjs.github.io/docxkeun/)
 
@@ -14,11 +14,12 @@ A DOCX viewer, editor and DOCX-to-PDF converter for JavaScript and TypeScript. R
 
 | Area | What you get |
 |---|---|
-| Read / write | Open `.docx` (also `.dotx`/`.docm`), edit through a code API, save. Parts you did not touch are written back byte-for-byte; unknown markup is preserved. |
-| Render | Paginated, Word-like layout: styles, lists, tabs, tables, sections, columns, headers/footers, footnotes, page numbers, inline images. One SVG per page with real, selectable text. |
+| Read / write | Open `.docx` (also `.dotx`/`.docm`), edit through a code API, save. Parts you did not touch are written back byte-for-byte; unknown markup is preserved. Record, accept and reject tracked changes. |
+| Render | Paginated, Word-like layout: styles, lists, tabs, tables, sections, balanced columns, headers/footers, footnotes, page numbers. Pictures (PNG, JPEG, GIF, BMP, TIFF, EMF, WMF), shapes and text boxes, charts, SmartArt and equations, with text wrapping around floating objects. Right-to-left text (Arabic, Hebrew) and complex scripts. One SVG per page with real, selectable text. |
 | PDF | Native PDF from the same layout: embedded font subsets, searchable text, links, bookmarks as named destinations, an outline from headings, comments as annotations. |
 | Permissions | Word protection (read-only / comments / tracked changes / forms) with editable ranges, an app-level `AccessPolicy`, password-to-open `.docx` encryption, PDF passwords and permission flags. |
 | Comments, anchors, links | Threaded comments (all five Word comment parts), bookmarks, internal and external hyperlinks, field-code links. |
+| AI assistants | [`docxkeun-mcp`](packages/mcp#readme): an MCP server that lets Claude and other AI assistants read, edit, comment on, protect and export your `.docx` files. |
 
 ## Install
 
@@ -73,18 +74,89 @@ viewer.on('navigate', ({ target, location }) => highlightInMyPanel(target));
 - Bookmarks whose names start with `_` (`_Toc…`, `_Hlk…`, `_GoBack`) are marked `hidden`, as Word hides them. `next`/`previous` skip them unless you pass `{ includeHidden: true }`.
 - `collectNavTargets(layout)` from `docxkeun/viewer` gives the same lists without a viewer (e.g. in Node).
 
-The playground shows these lists in a side panel, with ↑/↓ buttons per kind, Back/Forward, and Alt+←/→.
+The `navigation` option adds a ready-made panel for these lists (see [Viewer UI](#viewer-ui)); the playground uses it with Alt+←/→ for back and forward.
 
 ### Typing on the page
 
 ```ts
-const viewer = new DocxViewer(el, { fonts, editable: true });   // or { editable: { guard: policy } }
+const viewer = new DocxViewer(el, { fonts, editable: true, toolbar: true });  // or { editable: { guard: policy, trackChanges: true, author: 'Rina' } }
 viewer.on('editerror', ({ error }) => toast(error.message));     // e.g. PermissionError under read-only protection
+viewer.on('storychange', ({ story }) => console.log(story.kind)); // 'body', 'header', 'footer', 'footnote', 'endnote' or 'textbox'
 viewer.editing!.undo();
 viewer.setEditable(false);                                       // back to view-only
 ```
 
-Click to place the caret and type. Supported: text and IME input, Backspace/Delete (Alt/Ctrl for words), Enter (new paragraph, following the style's "next" style), Shift+Enter (line break), Tab, arrow keys, Home/End, Shift to select, double-click a word, drag to select, Cmd/Ctrl+A, copy/cut/paste as plain text, Cmd/Ctrl+B/I/U on a selection, Cmd/Ctrl+Z / Shift+Z / Y for undo and redo, and Cmd/Ctrl-click to follow a link. Every change goes through `DocxEditor`, so the same access guard applies and everything the editor does not understand stays in the file.
+Click to place the caret and type. Supported: text and IME input, Backspace/Delete (Alt/Ctrl for words), Enter (new paragraph, following the style's "next" style), Shift+Enter (line break), Tab, arrow keys, Home/End, Shift to select, double-click a word, drag to select, Cmd/Ctrl+A, Cmd/Ctrl+B/I/U, Cmd/Ctrl+E/L/R/J for alignment, Cmd/Ctrl+Z / Shift+Z / Y for undo and redo, and Cmd/Ctrl-click to follow a link. Every change goes through `DocxEditor`, so the same access guard applies and everything the editor does not understand stays in the file.
+
+- **Headers, footers, notes and text boxes:** double-click a header or footer to type in it (as in Word), click a footnote, endnote or text box to edit it, and click the body to go back.
+- **Toolbar:** `toolbar: true` adds a formatting bar above the pages (paragraph style, size, bold/italic/underline/strikethrough, colour, highlight, alignment, lists, indents, text direction, undo/redo, Track Changes). It follows the formatting at the caret through the `caretchange` event, so you can also build your own: `viewer.editing.format({ bold: true })`, `formatParagraphs({ align: 'center' })`, `setStyle('Heading1')`, `setList('bullet')`, `indent(1)`, `trackChanges = true`.
+- **Copy and paste keep formatting:** HTML from Word, Google Docs and web pages comes in with bold, italic, underline, colours, sizes, links, headings and lists; copying puts HTML and plain text on the clipboard.
+- **Pictures** count as one character: the caret steps over them, and Backspace/Delete removes them.
+- **Track Changes:** with Word's Track Changes on (or `trackChanges: true`), typing is recorded as tracked insertions and deletions.
+- **Speed:** layout keeps the measured lines of unchanged paragraphs, so a keystroke re-measures only the paragraph you type in (a 90-page document re-lays out in about 45 ms).
+
+### AI assistants on the page
+
+Two pieces for apps that let an AI edit the document (the [chat app](packages/chat#readme) and the MCP [live preview](packages/mcp#live-preview) use both):
+
+```ts
+import { describeSelection } from 'docxkeun/editor';
+
+// What the user selected, like the "selected lines" an editor shares with a coding agent.
+viewer.on('selectioninfo', ({ selection }) => {
+  // { story: 'body', start: { paragraph: 4, offset: 22 }, end: …, text: '30 days', pages: [2], paragraphs: [...] }
+  if (selection) prompt.context = describeSelection(selection, { document: 'contract.docx' });
+  // "Selected in contract.docx: paragraph 4, page 2, 7 characters.
+  //  [4] Payment is due within «30 days» of the invoice date."
+});
+viewer.selectionInfo();                         // the same, on demand (the caret when typing is on, else the text selection)
+
+// Show the AI at work, then what it changed.
+viewer.activity.work([4, 5], { label: 'editing' });   // shimmer over paragraphs 4–5, and "Claude is editing…" on its own caret
+const before = viewer.activity.snapshot();
+editor.replaceRange(editor.find('30 days')[0], '45 days');
+await viewer.activity.reveal(before);                 // new text inks in, removed text floats away, change bars and a change map stay
+viewer.activity.clearMarks();
+```
+
+Paragraph numbers are the ones docxkeun-mcp's `read_document` uses (table cells included), so a selection can go straight into a tool call.
+
+The effects are optional: `new DocxViewer(el, { aiActivity: false })` turns them off (calls become no-ops; `reveal` still returns the diff), or `aiActivity: { animate: false }` keeps the highlights without motion and `marks: false` leaves out the change bars. At run time: `viewer.activity.enabled`, `.animate` and `.marksShown`. They also follow `prefers-reduced-motion`.
+
+Name and colours: `aiActivity: { name: 'Aria', color: ['#0b57d0', '#1e8e3e'] }` puts "Aria is editing…" on the caret and draws the caret, shimmer, glow and change marks from blue to green; one colour (`color: '#0b57d0'`) is used for both ends. Change them at run time with `viewer.activity.name` and `viewer.activity.color` (`undefined` goes back to the default purple to orange), or from CSS with `--docxkeun-ai-color-1` and `--docxkeun-ai-color-2` (any CSS colour). The caret's label turns dark when white text would be hard to read on the colours you pick.
+
+### Viewer UI
+
+Four optional parts share one look and one frame: a toolbar, a navigation panel, a comment column and a right-click menu. With none enabled the viewer's DOM is unchanged.
+
+```ts
+const viewer = new DocxViewer(el, {
+  fonts, editable: true,
+  toolbar: { collapsed: false },                       // true | HTMLElement | { container?, collapsed?, styles? }
+  navigation: { tab: 'outline' },                      // true | { tab?: 'outline' | 'bookmarks' | 'links', collapsed? }
+  comments: { mode: 'auto', showResolved: false },     // 'auto' | 'cards' | 'bubbles'
+  contextMenu: {                                       // true | { items?(at, defaults) }
+    items: (at, defaults) => [...defaults, '-', { label: 'Ask Claude', run: () => ask(at.selection) }],
+  },
+});
+viewer.toolbar.hide();  viewer.toolbar.collapsed = true;      // show(), hide(), visible, collapsed
+viewer.navigation.show('links');  viewer.navigation.refresh(); // show(tab) unfolds onto that tab; hide(), collapsed, tab; headings, bookmarks, links as before
+viewer.comments.open(id);  viewer.comments.compose();          // close(), mode, effectiveMode, showResolved, width
+viewer.contextMenu.open(x, y);                                 // enable(), disable(), close(), enabled
+viewer.on('chromechange', ({ part, visible, collapsed }) => remember(part, visible, collapsed));
+
+// One undo step for an action that touches several parts (comment parts, relationships, headers, numbering, styles).
+await viewer.editing!.transaction('Add note', async (editor) => { /* several editor calls */ });
+```
+
+- **Toolbar:** a fold button hides the bar to a thin "Show toolbar" strip; groups that do not fit move into a "⋯" menu. Arrow keys move between buttons.
+- **Navigation panel:** 240px beside the pages, with back/forward, Outline, Bookmarks and Links tabs, search, previous/next per tab and "Show hidden bookmarks". It folds to a 36px rail (with a Comments button when the document has comments) and starts folded when the frame is narrower than 720px, unless `collapsed` is given.
+- **Comments:** one column for the whole document with compact cards. Opening a thread lines the card up with its text; when editing is allowed it has Reply, Resolve and Delete, and resolved threads sit behind "Show resolved (N)". `auto` switches to margin bubbles when the viewer is narrower than 0.75 × the widest page + 300px; `showComments: false` still hides everything. An app that fits the page to the window should subtract `viewer.comments.width`. `commentclick` fires when a thread opens, and `scrollToComment(id)` opens it too.
+- **Right-click menu:** off by default. Items change with what was clicked (text, link, comment, picture, header or footer), and ones the access guard refuses are greyed with the reason as a tooltip. Shift+right-click shows the browser's own menu, and right-clicks outside the pages are left alone. A read-only viewer drops Cut and Paste, and Paste shows "Paste (⌘V)" where the async clipboard is missing.
+- **Theming:** set `--docxkeun-ui-bg`, `-fg`, `-muted`, `-line`, `-hover`, `-accent`, `-accent-soft`, `-radius`, `-shadow` and `-font` on the container or `:root` (light by default; set them for a dark theme). The older `--docxkeun-toolbar-*` variables still work. The library stores nothing: use `chromechange` to remember what the user folded.
+- **Undo:** `transaction()` makes everything an action changed one undo step, and a failure restores the document, emits `editerror` and rethrows. Inside the function, change the document through the `editor` it receives; edits requested elsewhere meanwhile wait their turn and are undo steps of their own. Typing waits for a pending transaction: keys pressed while one runs are ignored, as are undo and redo. Undo keeps 200 steps. Adding a comment or link now undoes completely.
+
+The playground uses all four; `docxkeun/viewer` exports the controllers (`NavigationController`, `CommentsController`, `ContextMenuController`, `ToolbarController`) and the pieces for custom menus (`openMenu`, `promptPopover`).
 
 ### Editing from code
 
@@ -109,7 +181,44 @@ await editor.resolveComment(id);
 const bytes = await viewer.document!.save();
 ```
 
-Also available: `insertText`, `appendText`, `replaceRange`, `replaceAll`, `deleteRange` (across paragraphs), `insertParagraph`, `deleteParagraph`, `setParagraphStyle`, `removeHyperlink`, `hyperlinks()`, `bookmarks()`, `removeBookmark`, `editComment`, `deleteComment`, `addEditableRange`, `removeEditableRange`.
+Also available: `insertText`, `appendText`, `replaceRange`, `replaceAll`, `deleteRange` (across paragraphs), `insertParagraph`, `deleteParagraph`, `setParagraphStyle`, `formatParagraph` (alignment, right-to-left, indents, spacing, keep rules), `insertImage`, `addFootnote`, `setHeader` / `setFooter` / `removeHeader` / `removeFooter` / `headersAndFooters()`, `await removeHyperlink` (async since it also drops the link's relationship when unused), `setHyperlinkTarget`, `setImageAlt`, `clearFormatting`, `hyperlinks()`, `bookmarks()`, `removeBookmark`, `editComment`, `deleteComment`, `addEditableRange`, `removeEditableRange`.
+
+```ts
+// Tracked changes: record edits as Word revisions, then review them.
+const tracked = new DocxEditor(doc, policy, { trackChanges: true, author: 'Rina Pratama' });
+tracked.replaceRange(tracked.find('30 days')[0], '45 days');    // a w:del and a w:ins, signed and dated
+tracked.revisions();                                             // [{ id, kind: 'delete', author, date, text: '30 days' }, { kind: 'insert', … }]
+tracked.acceptRevisions({ author: 'Rina Pratama' });             // or rejectRevisions({ ids: ['3'] }); no filter = all
+await tracked.setTrackChangesSetting(true);                      // turn on Word's own Track Changes for the file
+
+// Headers, footers and notes: an editor per part.
+for (const story of doc.storyParts()) console.log(story.kind, story.part);  // 'header' word/header1.xml …
+const header = new DocxEditor(doc, policy, { part: 'word/header1.xml' });
+header.replaceAll('Draft', 'Final');
+
+// Headers and footers: tabs split left / centre / right, {PAGE} {NUMPAGES} {SECTIONPAGES} are page numbers.
+await editor.setHeader('ACME Ltd.\tService Agreement\tConfidential');
+await editor.setFooter('Page {PAGE} of {NUMPAGES}', { align: 'center' });
+await editor.setFooter('', { type: 'first' });                   // a blank footer on the first page; also 'even', and { section: 2 }
+await editor.removeHeader({ section: 2 });
+
+// Pictures and footnotes.
+await editor.insertImage(editor.find('Site plan')[0].end, pngBytes, { width: 300, alt: 'Site plan' });
+await editor.addFootnote(editor.find('royalty')[0].end, 'Calculated on gross revenue.');
+editor.formatParagraph(editor.paragraphs()[3].el, { direction: 'rtl', align: 'right', spaceAfter: 6 });
+```
+
+Lists: `listItems()` gives every list paragraph's label as Word shows it (`"1."`, `"b)"`, `"•"`), and `setList` changes list formatting. A changed list keeps the indentation of the list it was in.
+
+```ts
+const items = [...editor.listItems().keys()];                  // w:p elements, in document order
+await editor.setList(items, { format: 'decimal' });            // a. b. → 1. 2. (also 'bullet', 'decimalParen', 'lowerLetter', 'upperLetter', 'lowerRoman', 'upperRoman')
+await editor.setList(items, { start: 5 });                     // restart the numbering, same format
+await editor.setList([items[1]!], { level: 1 });               // indent one level
+const extra = editor.insertParagraph({ after: items[1]! }, 'Admin fee');
+await editor.setList([extra], { sameListAs: items[1]! });      // continue an existing list
+await editor.setList(items, { format: 'none' });               // no longer a list
+```
 
 ### PDF
 
@@ -189,6 +298,18 @@ const DocxView = createDocxViewerComponent(React);  // no React dependency in do
 <DocxView file={bytes} fonts={fonts} onReady={(viewer) => setViewer(viewer)} />
 ```
 
+## AI assistants (MCP)
+
+[`docxkeun-mcp`](packages/mcp#readme) is an [MCP](https://modelcontextprotocol.io) server built on docxkeun. It gives Claude Code, Claude Desktop and other MCP clients tools to read documents (including pictures, charts, equations, headers, footers and notes), find and replace text, fill templates, format paragraphs, insert pictures and footnotes, comment, record and review tracked changes, lock regions, set protection and passwords, and export PDFs, limited to the folders you choose and to a role (viewer, commenter, editor or owner).
+
+```bash
+claude mcp add docxkeun -- npx -y docxkeun-mcp ~/Documents/contracts
+```
+
+It is a separate package so that docxkeun itself keeps zero dependencies.
+
+[`docxkeun chat`](packages/chat#readme) is a small web app built on the same tools: open a `.docx`, chat with Claude about it using your own API key, and watch the edits appear in the docxkeun viewer as they happen. Run it with `pnpm dev:chat`; a small local server makes the API calls and keeps the key in memory.
+
 ## Fonts
 
 Word documents name fonts (Calibri, Times New Roman...) but rarely contain them, and browsers cannot read the system's font files. For exact layout and for PDF export, layout needs font files in a `FontRegistry`.
@@ -225,21 +346,21 @@ TrueType, OpenType (CFF) and `.ttc` collections are supported. PDF embedding res
 
 ## Status and limitations
 
-Working and tested (98 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination, viewer, editing, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
+Working and tested (over 500 tests): zip/XML/OPC round-trips, styles and numbering, layout and pagination (text wrapping around floating objects, balanced columns, right-to-left text), shapes, charts, SmartArt, equations, GIF/BMP/TIFF/EMF/WMF pictures, OpenType shaping, the viewer and in-page editing, tracked changes, comments, links, bookmarks, PDF export, document protection, access policy, `.docx` encryption, PDF encryption.
 
 Verified against independent implementations so far:
 - Crypto primitives against FIPS/RFC test vectors and Node's crypto.
 - PDF output and AES-256 PDF encryption opened by Chrome's PDF viewer (with and without an open password).
 
-**Still to verify against files made by Microsoft Word:** layout fidelity (line and page breaks), the Word protection password hash (the Excel-compatible low half is confirmed), and opening docxkeun-encrypted files in Word / decrypting Word-encrypted files.
+**Still to verify against files made by Microsoft Word:** layout fidelity (line and page breaks), the Word protection password hash (the Excel-compatible low half is confirmed), opening docxkeun-encrypted files in Word / decrypting Word-encrypted files, and how closely shapes, charts and equations match Word's own drawing.
 
-Not yet supported:
-- Text wrapping around floating images and text boxes. Floating images are placed but text does not flow around them; DrawingML shapes and text boxes are not drawn.
-- Right-to-left text and complex-script shaping (Arabic, Hebrew, Indic), ligatures and GPOS kerning.
-- EMF/WMF, GIF and BMP images (drawn as placeholders in PDF), charts, SmartArt, equations (shown as plain text).
-- Recording tracked changes. Existing insertions are shown and deletions hidden.
-- Column balancing on continuous section breaks.
-- In-page typing re-lays out the whole document on every keystroke (about 20–35 ms for a few pages), so very long documents will feel slow. Typing into headers, footers, footnotes and text boxes is not supported, there is no formatting toolbar beyond the shortcuts, pasting keeps text only, and the caret does not yet move through images.
+Known limits:
+- **Drawings:** text in a rotated shape or text box stays upright, and vertical text is drawn horizontally. Gradient and pattern fills are drawn in one colour; picture fills, shadows, glow and 3-D effects are not drawn. SmartArt is drawn from the layout Word saves with the file; a diagram saved without it shows its text in a box.
+- **Charts:** surface charts, trendlines, error bars, data tables and up/down bars are not drawn; 3-D charts are drawn flat; date axes are spaced like categories.
+- **Pictures:** only the first frame of a GIF and the first page of a TIFF; JPEG-compressed and CMYK TIFFs are not decoded. EMF+-only pictures (some Office 2007+ charts pasted as pictures) and clipping inside metafiles are not supported.
+- **Equations:** no line breaks inside an equation and no equation numbers. Math symbols missing from your fonts fall back to other fonts (the bundled fonts have no math font such as Cambria Math).
+- **Right-to-left and complex scripts:** the bundled fonts have no Arabic or Indic letters; register a font that has them (for example Arial, Times New Roman or Noto) for PDF export. The viewer leaves shaping these scripts to the browser.
+- **Editing:** creating or changing shapes, charts and equations, moving or resizing pictures, and editing table structure (rows, columns, merging) are not supported. A keystroke still paginates the whole document, re-using the measured lines of unchanged paragraphs.
 
 ## Development
 

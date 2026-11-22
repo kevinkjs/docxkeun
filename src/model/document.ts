@@ -1,6 +1,6 @@
 /** A loaded .docx: its package, parsed parts and readers for every story. */
-import { CONTENT_TYPE, OpcPackage, REL, isRelType, relTypeName } from '../opc/index.js';
-import { attr, elements, firstChild, parseXml, textContent, type XmlDocument, type XmlElement } from '../xml/index.js';
+import { CONTENT_TYPE, OpcPackage, type PackageCheckpoint, REL, isRelType, relTypeName } from '../opc/index.js';
+import { attr, elements, findAll, firstChild, parseXml, textContent, type XmlDocument, type XmlElement } from '../xml/index.js';
 import { StoryReader, type Block, type Story } from './content.js';
 import { NumberingDefs } from './numbering.js';
 import { StyleSheet } from './styles.js';
@@ -75,6 +75,14 @@ export async function toBytes(input: Uint8Array | ArrayBuffer | Blob): Promise<U
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   return new Uint8Array(await input.arrayBuffer());
+}
+
+/** An opaque snapshot of a document (see `DocxDocument.checkpoint`). */
+export interface DocumentCheckpoint {
+  readonly pkg: PackageCheckpoint;
+  readonly parts: WordParts;
+  readonly relMaps: Array<[string, Array<[string, { target: string; external: boolean }]>]>;
+  readonly mediaCache: Array<[string, Uint8Array]>;
 }
 
 export class DocxDocument {
@@ -163,7 +171,39 @@ export class DocxDocument {
       const name = this.parts[kind];
       if (name) await pkg.getXml(name);
     }
+    await this.loadDrawingParts();
     this.reparseDefinitions();
+  }
+
+  private readonly mediaCache = new Map<string, Uint8Array>();
+
+  /**
+   * Charts and SmartArt live in their own parts, and metafile pictures are drawn as vectors, so
+   * layout (which is synchronous) needs them read in advance.
+   */
+  private async loadDrawingParts(): Promise<void> {
+    const { pkg } = this;
+    const stories = [this.mainPart, ...[...this.relMaps.keys()].filter((p) => p !== this.mainPart)];
+    for (const story of stories) {
+      for (const rel of await pkg.relationships(story)) {
+        if (rel.external) continue;
+        const name = pkg.resolve(story, rel);
+        if (!pkg.has(name)) continue;
+        const type = rel.type.slice(rel.type.lastIndexOf('/') + 1);
+        if (type === 'chart' || type.startsWith('diagram')) {
+          await pkg.getXml(name);
+          // A chart's own relationships (its embedded workbook, styles); a diagram drawing's images.
+          if (!this.relMaps.has(name)) await this.loadRels(name);
+        } else if (type === 'image' && /\.(emf|wmf|tiff?)$/i.test(name)) {
+          this.mediaCache.set(name, await pkg.getBytes(name));
+        }
+      }
+    }
+  }
+
+  /** Bytes of a media part read at open (metafiles and TIFF images), for synchronous rendering. */
+  mediaSync(part: string | undefined): Uint8Array | undefined {
+    return part ? this.mediaCache.get(part) : undefined;
   }
 
   private async loadRels(part: string): Promise<RelMap> {
@@ -232,6 +272,24 @@ export class DocxDocument {
     return story;
   }
 
+  /** Headers, footers and note parts, for editing them (`new DocxEditor(doc, guard, { part })`). */
+  storyParts(): StoryPart[] {
+    const out: StoryPart[] = [];
+    const seen = new Set<string>();
+    findAll(this.documentXml.root, 'w:sectPr').forEach((sectPr, section) => {
+      for (const ref of elements(sectPr)) {
+        const kind = ref.name === 'w:headerReference' ? 'header' : ref.name === 'w:footerReference' ? 'footer' : undefined;
+        const part = kind ? this.headerFooterPart(attr(ref, 'r:id') ?? '') : undefined;
+        if (!kind || !part || seen.has(part)) continue;
+        seen.add(part);
+        out.push({ kind, part, type: (attr(ref, 'w:type') ?? 'default') as 'default' | 'first' | 'even', section });
+      }
+    });
+    if (this.parts.footnotes) out.push({ kind: 'footnotes', part: this.parts.footnotes });
+    if (this.parts.endnotes) out.push({ kind: 'endnotes', part: this.parts.endnotes });
+    return out;
+  }
+
   /** Blocks of a footnote or endnote by id. */
   note(type: 'footnote' | 'endnote', id: string): Block[] {
     const part = type === 'footnote' ? this.parts.footnotes : this.parts.endnotes;
@@ -291,6 +349,30 @@ export class DocxDocument {
     for (const l of this.listeners) l(part);
   }
 
+  /** Snapshot every part and the document's own indexes, for document-wide undo. */
+  checkpoint(): DocumentCheckpoint {
+    return {
+      pkg: this.pkg.checkpoint(),
+      parts: { ...this.parts },
+      relMaps: [...this.relMaps].map(([part, map]) => [part, [...map].map(([id, r]) => [id, { ...r }])]),
+      mediaCache: [...this.mediaCache],
+    };
+  }
+
+  /** Put the document back as it was at `checkpoint()` and tell listeners the main part changed. */
+  restore(cp: DocumentCheckpoint): void {
+    this.pkg.restore(cp.pkg);
+    for (const k of Object.keys(this.parts) as Array<keyof WordParts>) delete this.parts[k];
+    Object.assign(this.parts, cp.parts);
+    this.relMaps.clear();
+    for (const [part, entries] of cp.relMaps) this.relMaps.set(part, new Map(entries.map(([id, r]) => [id, { ...r }])));
+    this.mediaCache.clear();
+    for (const [name, bytes] of cp.mediaCache) this.mediaCache.set(name, bytes);
+    this.documentXml = this.pkg.cachedXml(this.mainPart)!;
+    this.reparseDefinitions();
+    for (const l of this.listeners) l(this.mainPart);
+  }
+
   invalidate(): void {
     this.bodyCache = undefined;
     this.storyCache.clear();
@@ -322,3 +404,13 @@ const BLANK_DOCUMENT = `${DECL}<w:document ${W}><w:body><w:p/><w:sectPr><w:pgSz 
 const BLANK_STYLES = `${DECL}<w:styles ${W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Times New Roman"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="en-US"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style><w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/><w:uiPriority w:val="1"/><w:semiHidden/><w:unhideWhenUsed/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="0"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:color w:val="2F5496"/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="40" w:after="0"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:color w:val="2F5496"/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr></w:style><w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:basedOn w:val="DefaultParagraphFont"/><w:uiPriority w:val="99"/><w:unhideWhenUsed/><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr></w:style><w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/><w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style><w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:uiPriority w:val="39"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPr></w:style></w:styles>`;
 
 const BLANK_SETTINGS = `${DECL}<w:settings ${W}><w:defaultTabStop w:val="720"/><w:characterSpacingControl w:val="doNotCompress"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`;
+
+/** A header, footer or notes part. */
+export interface StoryPart {
+  kind: 'header' | 'footer' | 'footnotes' | 'endnotes';
+  part: string;
+  /** Which pages a header or footer is for. */
+  type?: 'default' | 'first' | 'even';
+  /** Index of the first section that uses it. */
+  section?: number;
+}

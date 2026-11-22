@@ -3,11 +3,33 @@
  * everything docxkeun does not understand is preserved), passes through the access guard, and
  * notifies listeners such as the viewer.
  */
-import { REL } from '../opc/index.js';
+import { CONTENT_TYPE, IMAGE_CONTENT_TYPES, REL } from '../opc/index.js';
+import { imageInfo } from '../images/size.js';
+import { hasEvenPages, hasFirstPage, headerParagraphs, headerText, referencesOf, sectionProperties, SECTPR_ORDER, textWidth, type HeaderFooterInfo, type HeaderFooterKind, type HeaderFooterOptions, type HeaderFooterType } from './headers.js';
 import type { DocParagraph, Block, Inline } from '../model/content.js';
 import type { DocxDocument } from '../model/document.js';
-import { attr, el, elements, ensureChild, findAll, firstChild, insertOrdered, removeChildren, textContent, type XmlElement } from '../xml/index.js';
-import { ensureNamespaces, ensurePart, randomHexId } from './parts.js';
+import { attr, el, elements, ensureChild, findAll, firstChild, insertOrdered, NS, removeChildren, textContent, type XmlElement, type XmlNode } from '../xml/index.js';
+import { createList, listItems, type ListFormat, type ListItem } from './lists.js';
+import {
+  acceptRevisions,
+  cleanRunProps,
+  deleteRun,
+  insertedRuns,
+  listRevisions,
+  markParagraph,
+  nextRevisionId,
+  paragraphMarkRevision,
+  recordParagraphFormat,
+  recordRunFormat,
+  rejectRevisions,
+  revisionStamp,
+  runRevision,
+  type Revision,
+  type RevisionAuthor,
+  type RevisionFilter,
+} from './revisions.js';
+import { SETTINGS_ORDER } from '../security/protection.js';
+import { ensureNamespaces, ensurePart, randomHexId, ROOT_NAMESPACES } from './parts.js';
 import {
   between,
   EditError,
@@ -22,7 +44,7 @@ import {
   type DocRange,
 } from './positions.js';
 
-export type EditAction = 'edit' | 'format' | 'comment' | 'reply' | 'resolveComment' | 'editComment' | 'deleteComment' | 'link' | 'bookmark' | 'fillForm' | 'protect';
+export type EditAction = 'edit' | 'format' | 'comment' | 'reply' | 'resolveComment' | 'editComment' | 'deleteComment' | 'link' | 'bookmark' | 'fillForm' | 'protect' | 'review';
 
 /**
  * How a locked region is locked (Word's content-control locking, w:sdtPr/w:lock):
@@ -73,7 +95,31 @@ function locksContent(mode: LockMode | undefined): boolean {
 
 /** Checks every edit (see docxkeun/security's AccessPolicy). Throw to refuse. */
 export interface EditGuard {
-  assert(action: EditAction, range?: DocRange, detail?: { commentAuthor?: string }): void;
+  /** `detail.tracked` is set when the edit is recorded as a tracked change. */
+  assert(action: EditAction, range?: DocRange, detail?: { commentAuthor?: string; tracked?: boolean }): void;
+}
+
+export interface EditorOptions {
+  /** Record edits as tracked changes. Default: the document's own Track Changes setting. */
+  trackChanges?: boolean;
+  /** Author of tracked changes (default: the guard's user name, else "docxkeun"). */
+  author?: string;
+  /**
+   * Edit another story: a header or footer part, or the footnotes or endnotes part (see
+   * `DocxDocument.storyParts()`). Default: the main document (body and text boxes).
+   */
+  part?: string;
+}
+
+/** Whether Word would record changes in this document: Track Changes on, or protected for tracked changes. */
+export function documentTracksChanges(doc: DocxDocument): boolean {
+  const settings = doc.parts.settings ? doc.xmlSync(doc.parts.settings)?.root : undefined;
+  if (!settings) return false;
+  const track = firstChild(settings, 'w:trackRevisions');
+  if (track && attr(track, 'w:val') !== 'false' && attr(track, 'w:val') !== '0') return true;
+  const protection = firstChild(settings, 'w:documentProtection');
+  const enforced = attr(protection, 'w:enforcement');
+  return attr(protection, 'w:edit') === 'trackedChanges' && (enforced === '1' || enforced === 'true' || enforced === 'on');
 }
 
 export interface TextFormat {
@@ -91,6 +137,35 @@ export interface TextFormat {
   caps?: boolean;
   smallCaps?: boolean;
   hidden?: boolean;
+}
+
+/** Paragraph formatting for `formatParagraph` (lengths in points; undefined leaves a property alone). */
+export interface ParagraphFormat {
+  align?: 'left' | 'center' | 'right' | 'justify';
+  /** Right-to-left paragraph (Arabic, Hebrew): w:bidi. */
+  direction?: 'ltr' | 'rtl';
+  indentLeft?: number;
+  indentRight?: number;
+  /** Positive: first-line indent; negative: hanging indent. */
+  indentFirstLine?: number;
+  spaceBefore?: number;
+  spaceAfter?: number;
+  /** Line spacing as a multiple of single spacing (1, 1.15, 1.5, 2). */
+  lineSpacing?: number;
+  keepWithNext?: boolean;
+  keepLinesTogether?: boolean;
+  pageBreakBefore?: boolean;
+}
+
+export interface SetListOptions {
+  /** A list format, or 'none' to take the paragraphs out of their list. */
+  format?: ListFormat | 'none';
+  /** List level, 0–8. */
+  level?: number;
+  /** First number of the list. */
+  start?: number;
+  /** Join this paragraph's list instead of starting a new one. */
+  sameListAs?: XmlElement;
 }
 
 export interface CommentInput {
@@ -130,7 +205,7 @@ export function paragraphsOf(blocks: Block[], out: DocParagraph[] = []): DocPara
   return out;
 }
 
-export function paragraphText(para: DocParagraph): ParagraphText {
+export function paragraphText(para: DocParagraph, options: { objects?: boolean } = {}): ParagraphText {
   let text = '';
   const segments: TextSegment[] = [];
   const add = (value: string, node: XmlElement) => {
@@ -141,8 +216,21 @@ export function paragraphText(para: DocParagraph): ParagraphText {
     if (inline.kind === 'text') add(inline.text, inline.node);
     else if (inline.kind === 'tab') add('\t', inline.node);
     else if (inline.kind === 'break' && inline.type === 'line') add('\n', inline.node);
+    else if (options.objects && inline.kind === 'image' && !inline.float) {
+      // An inline picture or shape is one character (U+FFFC) the caret can step over and delete.
+      const node = objectNode(inline);
+      if (node) add(OBJECT_CHAR, node);
+    }
   }
   return { paragraph: para.el, text, segments };
+}
+
+/** Stands for an inline picture, shape or chart in `paragraphText(p, { objects: true })`. */
+export const OBJECT_CHAR = '\ufffc';
+
+/** The run child (w:drawing, w:pict, mc:AlternateContent) holding an inline object. */
+export function objectNode(inline: { run: XmlElement; drawing: XmlElement }): XmlElement | undefined {
+  return elements(inline.run).find((c) => c === inline.drawing || findAll(c, inline.drawing.name).includes(inline.drawing));
 }
 
 /**
@@ -221,6 +309,8 @@ function endOfRun(run: XmlElement, fallback: XmlElement): DocPosition {
 function newRun(text: string, template?: XmlElement, format?: TextFormat): XmlElement {
   const rPr = template ? firstChild(template, 'w:rPr') : undefined;
   const run = el('w:r', {}, [...(rPr ? [structuredClone(rPr)] : []), ...runContent(text)]);
+  // A new run starts with no revision history of its own.
+  cleanRunProps(run);
   if (format) applyFormat(run, format);
   return run;
 }
@@ -228,13 +318,137 @@ function newRun(text: string, template?: XmlElement, format?: TextFormat): XmlEl
 const BOOKMARK_NAME = /^[\p{L}_][\p{L}\p{N}_]{0,39}$/u;
 
 export class DocxEditor {
-  constructor(readonly doc: DocxDocument, readonly guard?: EditGuard) {}
+  private trackOverride: boolean | undefined;
+  private readonly authorName: string | undefined;
+  /** The part being edited. */
+  readonly part: string;
+
+  constructor(
+    readonly doc: DocxDocument,
+    readonly guard?: EditGuard,
+    options: EditorOptions = {},
+  ) {
+    this.trackOverride = options.trackChanges;
+    this.authorName = options.author;
+    this.part = options.part ?? doc.mainPart;
+    if (this.part !== doc.mainPart && !doc.xmlSync(this.part)) throw new EditError(`No part "${this.part}" to edit`);
+  }
+
+  /** Whether this editor works on a header, footer or notes part rather than the main document. */
+  private get isStory(): boolean {
+    return this.part !== this.doc.mainPart;
+  }
+
+  // ---- tracked changes ----------------------------------------------------------------------
+
+  /** Whether edits are recorded as tracked changes (default: the document's Track Changes setting). */
+  get trackChanges(): boolean {
+    return this.trackOverride ?? documentTracksChanges(this.doc);
+  }
+
+  set trackChanges(on: boolean) {
+    this.trackOverride = on;
+  }
+
+  /** The author tracked changes are recorded under. */
+  get author(): string {
+    const user = (this.guard as { user?: { name?: string; id?: string } } | undefined)?.user;
+    return this.authorName ?? user?.name ?? user?.id ?? 'docxkeun';
+  }
+
+  /** Revision stamp and id source for one edit, or undefined when not tracking. */
+  private tracking(): { who: RevisionAuthor; nextId: () => string } | undefined {
+    if (!this.trackChanges) return undefined;
+    return { who: revisionStamp(this.author), nextId: nextRevisionId(this.root) };
+  }
+
+  /** Turn Word's own Track Changes setting (settings.xml w:trackRevisions) on or off. */
+  async setTrackChangesSetting(on: boolean): Promise<void> {
+    this.guard?.assert('edit');
+    const { name, xml } = await ensurePart(this.doc, 'settings');
+    removeChildren(xml.root, 'w:trackRevisions');
+    if (on) insertOrdered(xml.root, el('w:trackRevisions'), SETTINGS_ORDER);
+    this.trackOverride = undefined;
+    this.doc.touch(name);
+  }
+
+  /** Tracked changes in the main document, in document order. */
+  revisions(): Revision[] {
+    return listRevisions(this.root);
+  }
+
+  /** Accept tracked changes (all, or those matching ids / author). Returns how many. */
+  acceptRevisions(filter?: RevisionFilter): number {
+    this.guard?.assert('review');
+    const n = acceptRevisions(this.root, filter);
+    if (n) this.changed();
+    return n;
+  }
+
+  /** Reject tracked changes (all, or those matching ids / author). Returns how many. */
+  rejectRevisions(filter?: RevisionFilter): number {
+    this.guard?.assert('review');
+    const n = rejectRevisions(this.root, filter);
+    if (n) this.changed();
+    return n;
+  }
+
+  /** The new run as it goes into the document: wrapped in a w:ins when tracking. */
+  private placed(run: XmlElement, track: ReturnType<DocxEditor['tracking']>): XmlElement {
+    return track ? insertedRuns([run], track.nextId(), track.who) : run;
+  }
+
+  /** Whether a run sits in an insertion by the current author (edits to it need no new revision). */
+  private inOwnInsertion(run: XmlElement, idx: TreeIndex): boolean {
+    const rev = runRevision(run, (n) => idx.parent.get(n));
+    return !!rev && (rev.name === 'w:ins' || rev.name === 'w:moveTo') && attr(rev, 'w:author') === this.author;
+  }
+
+  /**
+   * A sentinel inside someone else's w:ins cannot take a nested w:ins: split that insertion at the
+   * sentinel so the new one goes between its two halves.
+   */
+  private liftOutOfInsertion(mark: XmlElement, idx: TreeIndex): void {
+    const container = idx.parent.get(mark);
+    if (!container || (container.name !== 'w:ins' && container.name !== 'w:moveTo')) return;
+    const outer = idx.parentOf(container);
+    const at = container.children.indexOf(mark);
+    const tail = container.children.splice(at);
+    tail.shift();
+    const pos = outer.children.indexOf(container);
+    const pieces: XmlNode[] = [mark];
+    if (tail.some((n) => n.type === 'element')) pieces.push(el(container.name, { ...container.attrs }, tail));
+    outer.children.splice(pos + 1, 0, ...pieces);
+    if (!container.children.some((n) => n.type === 'element')) outer.children.splice(outer.children.indexOf(container), 1);
+  }
+
+  /** Mark the runs of a range as deleted (and the paragraph marks inside it), keeping the text. */
+  private trackedCut(range: DocRange, track: NonNullable<ReturnType<DocxEditor['tracking']>>): { startMark: XmlElement; endMark: XmlElement; idx: TreeIndex } {
+    const index = this.index();
+    const { startMark, endMark } = isolate(index, range);
+    let idx = this.index();
+    const startCell = idx.ancestor(startMark, 'w:tc');
+    const endCell = idx.ancestor(endMark, 'w:tc');
+    if (startCell !== endCell) {
+      replaceMark(idx, startMark, []);
+      replaceMark(idx, endMark, []);
+      throw new EditError('The range crosses table cells');
+    }
+    const startPara = idx.ancestor(startMark, 'w:p')!;
+    const endPara = idx.ancestor(endMark, 'w:p')!;
+    const paragraphs = startPara === endPara ? [] : [startPara, ...between(idx, startMark, endMark, 'w:p').filter((p) => p !== endPara)];
+    for (const run of between(idx, startMark, endMark, 'w:r')) deleteRun(run, (n) => idx.parent.get(n), track.nextId, track.who);
+    for (const p of paragraphs) markParagraph(p, 'del', track.nextId(), track.who);
+    idx = this.index();
+    return { startMark, endMark, idx };
+  }
 
   private get root(): XmlElement {
-    return this.doc.documentXml.root;
+    return this.isStory ? this.doc.xmlSync(this.part)!.root : this.doc.documentXml.root;
   }
 
   private get body(): XmlElement {
+    if (this.isStory) return this.root;
     const body = firstChild(this.root, 'w:body');
     if (!body) throw new EditError('document has no body');
     return body;
@@ -244,12 +458,13 @@ export class DocxEditor {
     return new TreeIndex(this.root);
   }
 
-  private changed(part = this.doc.mainPart): void {
+  private changed(part = this.part): void {
     this.doc.touch(part);
   }
 
   private check(action: EditAction, range?: DocRange, detail?: { commentAuthor?: string }): void {
-    this.guard?.assert(action, range, detail);
+    const tracked = this.trackChanges && (action === 'edit' || action === 'format' || action === 'fillForm');
+    this.guard?.assert(action, range, tracked ? { ...detail, tracked: true } : detail);
     if (range && (action === 'edit' || action === 'format' || action === 'link')) this.assertUnlocked(range);
   }
 
@@ -301,9 +516,17 @@ export class DocxEditor {
     return { start: { node: sel.start.inline.node, offset: sel.start.offset }, end: { node: sel.end.inline.node, offset: sel.end.offset } };
   }
 
-  /** Every paragraph of the body, including those in tables, in document order. */
+  /** Every paragraph of the story (the body by default), including those in tables, in document order. */
   paragraphs(): DocParagraph[] {
-    return paragraphsOf(this.doc.body().blocks);
+    if (!this.isStory) return paragraphsOf(this.doc.body().blocks);
+    const root = this.root;
+    if (root.name === 'w:footnotes' || root.name === 'w:endnotes') {
+      // Separator notes (w:type) are not content.
+      return elements(root)
+        .filter((n) => !attr(n, 'w:type') || attr(n, 'w:type') === 'normal')
+        .flatMap((n) => paragraphsOf(this.doc.readBlocks(this.part, n)));
+    }
+    return paragraphsOf(this.doc.headerFooter(this.part).blocks);
   }
 
   /** Range covering a paragraph's text (undefined for paragraphs without text). */
@@ -361,20 +584,22 @@ export class DocxEditor {
    */
   insertText(at: DocPosition, text: string, format?: TextFormat): DocPosition {
     const edge = this.bypassLocks ? undefined : this.lockEdge(at);
+    const track = this.tracking();
     if (edge) {
       // Typing at the very edge of a locked region goes just outside it, as in Word.
-      this.guard?.assert('edit', { start: at, end: at });
+      this.guard?.assert('edit', { start: at, end: at }, track ? { tracked: true } : undefined);
       const idx = this.index();
       const run = newRun(text, idx.parentOf(at.node), format);
       const parent = idx.parentOf(edge.sdt);
-      parent.children.splice(indexOfChild(parent, edge.sdt) + (edge.after ? 1 : 0), 0, run);
+      parent.children.splice(indexOfChild(parent, edge.sdt) + (edge.after ? 1 : 0), 0, this.placed(run, track));
       this.changed();
       return endOfRun(run, run);
     }
     this.check('edit', { start: at, end: at });
     const plain = !format && !/[\t\r\n]/.test(text);
-    // Typing into existing text: change the text node itself instead of adding a run per keystroke.
-    if (plain && at.node.name === 'w:t') {
+    // Typing into existing text: change the text node itself instead of adding a run per keystroke
+    // (when tracking, only inside the author's own insertion).
+    if (plain && at.node.name === 'w:t' && (!track || this.inOwnInsertion(this.index().parentOf(at.node), this.index()))) {
       const current = textContent(at.node);
       const offset = Math.max(0, Math.min(at.offset, current.length));
       const value = current.slice(0, offset) + text + current.slice(offset);
@@ -387,21 +612,319 @@ export class DocxEditor {
       // An empty paragraph: the new run takes the paragraph mark's formatting.
       const markRPr = firstChild(firstChild(at.node, 'w:pPr'), 'w:rPr');
       const run = el('w:r', {}, [...(markRPr ? [structuredClone(markRPr)] : []), ...runContent(text)]);
+      // The paragraph mark's own revision markers do not belong on a text run.
+      const runPr = firstChild(run, 'w:rPr');
+      if (runPr) for (const n of ['w:ins', 'w:del', 'w:moveFrom', 'w:moveTo', 'w:rPrChange']) removeChildren(runPr, n);
       if (format) applyFormat(run, format);
       const pPr = firstChild(at.node, 'w:pPr');
-      at.node.children.splice(pPr ? at.node.children.indexOf(pPr) + 1 : 0, 0, run);
+      at.node.children.splice(pPr ? at.node.children.indexOf(pPr) + 1 : 0, 0, this.placed(run, track));
       this.changed();
       return endOfRun(run, at.node);
     }
     const index = this.index();
     const template = index.parentOf(at.node);
     const { startMark, endMark } = isolate(index, { start: at, end: at });
-    const idx = this.index();
+    let idx = this.index();
     const run = newRun(text, template, format);
-    replaceMark(idx, startMark, [run]);
     replaceMark(idx, endMark, []);
+    idx = this.index();
+    if (track && !this.inOwnInsertion(template, index)) this.liftOutOfInsertion(startMark, idx);
+    idx = this.index();
+    replaceMark(idx, startMark, [track && !this.inOwnInsertion(template, index) ? this.placed(run, track) : run]);
     this.changed();
     return endOfRun(run, run);
+  }
+
+  /** Insert a run holding `content` (a drawing, a note reference) at a position; returns the run. */
+  private insertRunContent(at: DocPosition, content: XmlElement[], rPr?: XmlElement): XmlElement {
+    // Insert a placeholder character in a run of its own (a format forces a new run), then swap in the content.
+    const end = this.insertText(at, '\u2063', {});
+    const t = end.node;
+    const run = this.index().parentOf(t);
+    run.children.splice(run.children.indexOf(t), 1, ...content);
+    if (rPr) {
+      removeChildren(run, 'w:rPr');
+      run.children.unshift(rPr);
+    }
+    this.changed();
+    return run;
+  }
+
+  /**
+   * Insert a picture (PNG, JPEG, GIF, BMP, TIFF, EMF or WMF) inline at a position. Without a size it
+   * gets its natural size, shrunk to `maxWidth` (default 468pt, a Letter page's text width).
+   */
+  async insertImage(at: DocPosition, bytes: Uint8Array, options: { width?: number; height?: number; alt?: string; name?: string; maxWidth?: number } = {}): Promise<XmlElement> {
+    this.check('edit', { start: at, end: at });
+    const info = imageInfo(bytes);
+    if (!info) throw new EditError('Unsupported image: use PNG, JPEG, GIF, BMP, TIFF, EMF or WMF');
+    let { width, height } = options;
+    if (width === undefined && height === undefined) {
+      width = info.width;
+      height = info.height;
+      const max = options.maxWidth ?? 468;
+      if (width > max) {
+        height = (height * max) / width;
+        width = max;
+      }
+    } else if (width === undefined) width = (info.width * height!) / info.height;
+    else if (height === undefined) height = (info.height * width) / info.width;
+    const ext = info.kind === 'jpeg' ? 'jpeg' : info.kind;
+    let n = 1;
+    while (this.doc.pkg.has(`word/media/image${n}.${ext}`)) n++;
+    const part = `word/media/image${n}.${ext}`;
+    this.doc.pkg.setBytes(part, bytes, IMAGE_CONTENT_TYPES[ext]);
+    const rId = await this.doc.pkg.addRelationship(this.part, REL.image, part);
+    await this.doc.refreshRels(this.part);
+    // Drawing ids must be unique in the document.
+    let id = 0;
+    for (const root of [this.doc.documentXml.root, this.root]) for (const d of findAll(root, 'wp:docPr')) id = Math.max(id, Number(attr(d, 'id') ?? 0));
+    id++;
+    const name = options.name ?? `Picture ${id}`;
+    const cx = String(Math.round(width! * 12700));
+    const cy = String(Math.round(height! * 12700));
+    if (this.root.attrs['xmlns:wp'] === undefined) this.root.attrs['xmlns:wp'] = NS.wp;
+    if (this.root.attrs['xmlns:r'] === undefined) this.root.attrs['xmlns:r'] = NS.r;
+    const docPr: Record<string, string> = { id: String(id), name };
+    if (options.alt) docPr.descr = options.alt;
+    const drawing = el('w:drawing', {}, [
+      el('wp:inline', { distT: '0', distB: '0', distL: '0', distR: '0' }, [
+        el('wp:extent', { cx, cy }),
+        el('wp:effectExtent', { l: '0', t: '0', r: '0', b: '0' }),
+        el('wp:docPr', docPr),
+        el('wp:cNvGraphicFramePr', {}, [el('a:graphicFrameLocks', { 'xmlns:a': NS.a, noChangeAspect: '1' })]),
+        el('a:graphic', { 'xmlns:a': NS.a }, [
+          el('a:graphicData', { uri: 'http://schemas.openxmlformats.org/drawingml/2006/picture' }, [
+            el('pic:pic', { 'xmlns:pic': NS.pic }, [
+              el('pic:nvPicPr', {}, [el('pic:cNvPr', { id: '0', name }), el('pic:cNvPicPr')]),
+              el('pic:blipFill', {}, [el('a:blip', { 'r:embed': rId }), el('a:stretch', {}, [el('a:fillRect')])]),
+              el('pic:spPr', {}, [el('a:xfrm', {}, [el('a:off', { x: '0', y: '0' }), el('a:ext', { cx, cy })]), el('a:prstGeom', { prst: 'rect' }, [el('a:avLst')])]),
+            ]),
+          ]),
+        ]),
+      ]),
+    ]);
+    this.insertRunContent(at, [drawing]);
+    return drawing;
+  }
+
+  /** Add a footnote whose reference mark goes at a position. Returns the note's id. */
+  async addFootnote(at: DocPosition, text: string): Promise<string> {
+    this.check('edit', { start: at, end: at });
+    if (this.isStory) throw new EditError('Footnotes can only be added to the main document');
+    let part = this.doc.parts.footnotes;
+    if (!part || !this.doc.xmlSync(part)) {
+      part = 'word/footnotes.xml';
+      for (let n = 2; this.doc.pkg.has(part); n++) part = `word/footnotes${n}.xml`;
+      const separator = (type: string, id: string, mark: string) =>
+        el('w:footnote', { 'w:type': type, 'w:id': id }, [el('w:p', {}, [el('w:pPr', {}, [el('w:spacing', { 'w:after': '0', 'w:line': '240', 'w:lineRule': 'auto' })]), el('w:r', {}, [el(mark)])])]);
+      const xml = { declaration: null, prolog: [], epilog: [], root: el('w:footnotes', { ...ROOT_NAMESPACES }, [separator('separator', '-1', 'w:separator'), separator('continuationSeparator', '0', 'w:continuationSeparator')]) };
+      this.doc.pkg.setXml(part, xml, CONTENT_TYPE.footnotes);
+      await this.doc.pkg.addRelationship(this.doc.mainPart, REL.footnotes, part);
+      await this.doc.refreshRels(this.doc.mainPart);
+      this.doc.parts.footnotes = part;
+    }
+    const notes = this.doc.xmlSync(part)!.root;
+    const id = String(Math.max(0, ...elements(notes, 'w:footnote').map((n) => Number(attr(n, 'w:id') ?? 0))) + 1);
+    const styled = (styleId: string, fallback: XmlElement[]) => (this.doc.styles.get(styleId) ? [el('w:rStyle', { 'w:val': styleId })] : fallback);
+    const refPr = () => el('w:rPr', {}, styled('FootnoteReference', [el('w:vertAlign', { 'w:val': 'superscript' })]));
+    const pPr = this.doc.styles.get('FootnoteText') ? [el('w:pPr', {}, [el('w:pStyle', { 'w:val': 'FootnoteText' })])] : [el('w:pPr', {}, [el('w:spacing', { 'w:after': '0' })])];
+    const textPr = this.doc.styles.get('FootnoteText') ? [] : [el('w:rPr', {}, [el('w:sz', { 'w:val': '20' })])];
+    notes.children.push(
+      el('w:footnote', { 'w:id': id }, [
+        el('w:p', {}, [...pPr, el('w:r', {}, [refPr(), el('w:footnoteRef')]), el('w:r', {}, [...textPr, ...runContent(` ${text}`)])]),
+      ]),
+    );
+    this.doc.touch(part);
+    this.insertRunContent(at, [el('w:footnoteReference', { 'w:id': id })], refPr());
+    return id;
+  }
+
+  // ---- headers and footers -----------------------------------------------------------------
+
+  /** Headers and footers by section and page type, with their text ({PAGE} for page fields). */
+  headersAndFooters(): HeaderFooterInfo[] {
+    const sections = sectionProperties(this.mainBody());
+    const out: HeaderFooterInfo[] = [];
+    sections.forEach((sp, i) => {
+      for (const kind of ['header', 'footer'] as const) {
+        for (const ref of referencesOf(sp, kind)) {
+          const part = this.doc.headerFooterPart(attr(ref, 'r:id') ?? '');
+          if (!part) continue;
+          const type = (attr(ref, 'w:type') ?? 'default') as HeaderFooterType;
+          const known = out.find((h) => h.part === part && h.type === type && h.kind === kind);
+          if (known) known.sections.push(i + 1);
+          else out.push({ kind, type, sections: [i + 1], part, text: headerText(this.doc.xmlSync(part)?.root ?? el('w:hdr')) });
+        }
+      }
+    });
+    return out;
+  }
+
+  /** Give the document's sections a header (see `setHeaderFooter`). Returns the part name. */
+  setHeader(text: string, options: HeaderFooterOptions = {}): Promise<string> {
+    return this.setHeaderFooter('header', text, options);
+  }
+
+  /** Give the document's sections a footer (see `setHeaderFooter`). Returns the part name. */
+  setFooter(text: string, options: HeaderFooterOptions = {}): Promise<string> {
+    return this.setHeaderFooter('footer', text, options);
+  }
+
+  /**
+   * Create or replace a header or footer. `text`: lines become paragraphs, tabs split it into
+   * left / centre / right parts, and {PAGE}, {NUMPAGES}, {SECTIONPAGES} become page number fields
+   * ("Page {PAGE} of {NUMPAGES}"). Every section by default, or one (`section`, from 1); all pages,
+   * the first page or even pages (`type`). A part used only by these sections is rewritten in place,
+   * otherwise a new part is made, so other sections keep theirs. With Track Changes on, the text
+   * changes are recorded.
+   */
+  async setHeaderFooter(kind: HeaderFooterKind, text: string, options: HeaderFooterOptions = {}): Promise<string> {
+    if (this.isStory) throw new EditError('Headers and footers are set from an editor of the main document');
+    this.check('edit');
+    const type = options.type ?? 'default';
+    const body = this.mainBody();
+    let sections = sectionProperties(body);
+    if (!sections.length) {
+      body.children.push(el('w:sectPr', {}, [el('w:pgSz', { 'w:w': '12240', 'w:h': '15840' }), el('w:pgMar', { 'w:top': '1440', 'w:right': '1440', 'w:bottom': '1440', 'w:left': '1440', 'w:header': '720', 'w:footer': '720', 'w:gutter': '0' })]));
+      sections = sectionProperties(body);
+    }
+    const targets = this.sectionTargets(sections, options.section);
+    const refOf = (sp: XmlElement) => referencesOf(sp, kind).find((r) => (attr(r, 'w:type') ?? 'default') === type);
+    const partOf = (r: XmlElement | undefined) => (r ? this.doc.headerFooterPart(attr(r, 'r:id') ?? '') : undefined);
+    // Rewrite in place only when the targets share one part that nothing else uses.
+    const current = targets.map((sp) => partOf(refOf(sp)));
+    const shared = current[0] && current.every((p) => p === current[0]) ? current[0] : undefined;
+    const usedElsewhere =
+      shared &&
+      sections.some((sp) => {
+        const refs = [...referencesOf(sp, 'header'), ...referencesOf(sp, 'footer')];
+        return refs.some((r) => partOf(r) === shared && (!targets.includes(sp) || r.name !== (kind === 'header' ? 'w:headerReference' : 'w:footerReference') || (attr(r, 'w:type') ?? 'default') !== type));
+      });
+    const paragraphs = headerParagraphs(this.doc, kind, text, options.align, textWidth(targets[0]));
+    const track = this.tracking();
+    if (track) {
+      for (const p of paragraphs) {
+        const pPr = firstChild(p, 'w:pPr');
+        const content = p.children.filter((c): c is XmlElement => c.type === 'element' && c !== pPr);
+        p.children = [...(pPr ? [pPr] : []), ...(content.length ? [el('w:ins', insertedRuns([], track.nextId(), track.who).attrs, content)] : [])];
+        markParagraph(p, 'ins', track.nextId(), track.who);
+      }
+    }
+    let part: string;
+    if (shared && !usedElsewhere && this.doc.xmlSync(shared)) {
+      part = shared;
+      const root = this.doc.xmlSync(part)!.root;
+      if (track) {
+        // The old text stays, marked deleted.
+        const idx = new TreeIndex(root);
+        for (const run of findAll(root, 'w:r')) deleteRun(run, (n) => idx.parent.get(n), track.nextId, track.who);
+        for (const p of findAll(root, 'w:p')) markParagraph(p, 'del', track.nextId(), track.who);
+        root.children.push(...paragraphs);
+      } else root.children = paragraphs;
+    } else {
+      let n = 1;
+      while (this.doc.pkg.has(`word/${kind}${n}.xml`)) n++;
+      part = `word/${kind}${n}.xml`;
+      const root = el(kind === 'header' ? 'w:hdr' : 'w:ftr', { ...ROOT_NAMESPACES }, paragraphs);
+      this.doc.pkg.setXml(part, { declaration: null, prolog: [], root, epilog: [] }, CONTENT_TYPE[kind]);
+      const rId = await this.doc.pkg.addRelationship(this.doc.mainPart, REL[kind], part);
+      await this.doc.refreshRels(this.doc.mainPart);
+      await this.doc.refreshRels(part);
+      for (const sp of targets) {
+        const ref = refOf(sp);
+        if (ref) ref.attrs['r:id'] = rId;
+        else insertOrdered(sp, el(kind === 'header' ? 'w:headerReference' : 'w:footerReference', { 'w:type': type, 'r:id': rId }), SECTPR_ORDER);
+      }
+      if (!this.root.attrs['xmlns:r']) this.root.attrs['xmlns:r'] = NS.r;
+      await this.dropUnusedParts(current.filter((p): p is string => !!p));
+    }
+    if (type === 'first') for (const sp of targets) if (!firstChild(sp, 'w:titlePg')) insertOrdered(sp, el('w:titlePg'), SECTPR_ORDER);
+    if (type === 'even') await this.setEvenAndOdd(true);
+    this.doc.touch(part);
+    this.changed();
+    return part;
+  }
+
+  /** Remove headers (see `removeHeaderFooter`). Returns how many references were removed. */
+  removeHeader(options: Omit<HeaderFooterOptions, 'type' | 'align'> & { type?: HeaderFooterType | 'all' } = {}): Promise<number> {
+    return this.removeHeaderFooter('header', options);
+  }
+
+  /** Remove footers (see `removeHeaderFooter`). Returns how many references were removed. */
+  removeFooter(options: Omit<HeaderFooterOptions, 'type' | 'align'> & { type?: HeaderFooterType | 'all' } = {}): Promise<number> {
+    return this.removeHeaderFooter('footer', options);
+  }
+
+  /**
+   * Remove headers or footers: of every type unless `type` says which, from every section unless
+   * `section` says which (a later section without its own then shows the previous section's). Parts
+   * nothing uses any more are deleted. Not recorded as a tracked change.
+   */
+  async removeHeaderFooter(kind: HeaderFooterKind, options: Omit<HeaderFooterOptions, 'type' | 'align'> & { type?: HeaderFooterType | 'all' } = {}): Promise<number> {
+    if (this.isStory) throw new EditError('Headers and footers are removed from an editor of the main document');
+    this.guard?.assert('edit');
+    const type = options.type ?? 'all';
+    const sections = sectionProperties(this.mainBody());
+    const targets = this.sectionTargets(sections, options.section);
+    const removed: string[] = [];
+    let count = 0;
+    let firstGone = false;
+    let evenGone = false;
+    for (const sp of targets) {
+      for (const ref of referencesOf(sp, kind)) {
+        const t = attr(ref, 'w:type') ?? 'default';
+        if (type !== 'all' && t !== type) continue;
+        sp.children.splice(sp.children.indexOf(ref), 1);
+        const part = this.doc.headerFooterPart(attr(ref, 'r:id') ?? '');
+        if (part) removed.push(part);
+        if (t === 'first') firstGone = true;
+        if (t === 'even') evenGone = true;
+        count++;
+      }
+      if (firstGone && !hasFirstPage(sp)) removeChildren(sp, 'w:titlePg');
+    }
+    if (!count) return 0;
+    if (evenGone && !hasEvenPages(sections)) await this.setEvenAndOdd(false);
+    await this.dropUnusedParts(removed);
+    this.changed();
+    return count;
+  }
+
+  private mainBody(): XmlElement {
+    const body = firstChild(this.doc.documentXml.root, 'w:body');
+    if (!body) throw new EditError('document has no body');
+    return body;
+  }
+
+  private sectionTargets(sections: XmlElement[], section: number | undefined): XmlElement[] {
+    if (section === undefined) return sections;
+    const sp = sections[section - 1];
+    if (!sp) throw new EditError(`There is no section ${section}; the document has ${sections.length}`);
+    return [sp];
+  }
+
+  /** Delete header/footer parts (and their relationships) that no section refers to any more. */
+  private async dropUnusedParts(parts: string[]): Promise<void> {
+    const sections = sectionProperties(this.mainBody());
+    const inUse = new Set<string>();
+    for (const sp of sections) for (const r of [...referencesOf(sp, 'header'), ...referencesOf(sp, 'footer')]) inUse.add(attr(r, 'r:id') ?? '');
+    for (const part of new Set(parts)) {
+      const rels = [...this.doc.rels(this.doc.mainPart)].filter(([, rel]) => rel.target === part);
+      if (rels.some(([id]) => inUse.has(id))) continue;
+      for (const [id] of rels) await this.doc.pkg.removeRelationship(this.doc.mainPart, id);
+      if (this.doc.pkg.has(part)) this.doc.pkg.removePart(part);
+    }
+    await this.doc.refreshRels(this.doc.mainPart);
+  }
+
+  private async setEvenAndOdd(on: boolean): Promise<void> {
+    const { name, xml } = await ensurePart(this.doc, 'settings');
+    const has = !!firstChild(xml.root, 'w:evenAndOddHeaders');
+    if (on === has) return;
+    if (on) insertOrdered(xml.root, el('w:evenAndOddHeaders'), SETTINGS_ORDER);
+    else removeChildren(xml.root, 'w:evenAndOddHeaders');
+    this.doc.touch(name);
   }
 
   /** Join a paragraph with the one right after it (Backspace at the start of the second). */
@@ -409,6 +932,14 @@ export class DocxEditor {
     const firstRange = this.paragraphRange(first);
     const secondRange = this.paragraphRange(second);
     this.check('edit', { start: firstRange?.end ?? { node: first, offset: 0 }, end: secondRange?.start ?? { node: second, offset: 0 } });
+    const track = this.tracking();
+    const mark = paragraphMarkRevision(first);
+    if (track && !(mark?.kind === 'ins' && attr(mark.el, 'w:author') === this.author)) {
+      // Deleting a paragraph mark is recorded; the paragraphs join when the change is accepted.
+      markParagraph(first, 'del', track.nextId(), track.who);
+      this.changed();
+      return;
+    }
     const idx = this.index();
     const parent = idx.parentOf(first);
     if (idx.parentOf(second) !== parent) throw new EditError('Cannot join paragraphs in different table cells');
@@ -496,6 +1027,14 @@ export class DocxEditor {
     const newPara = el('w:p', {}, [...(newPPr ? [newPPr] : []), ...tail]);
     const parent = idx.parentOf(para);
     parent.children.splice(indexOfChild(parent, para) + 1, 0, newPara);
+    const track = this.tracking();
+    // Enter inserts a paragraph mark: the first half's mark is the new one.
+    if (track) {
+      const newPr = firstChild(newPara, 'w:pPr');
+      const newMark = firstChild(newPr, 'w:rPr');
+      if (newMark) for (const n of ['w:ins', 'w:del']) removeChildren(newMark, n);
+      markParagraph(para, 'ins', track.nextId(), track.who);
+    }
     this.changed();
     return newPara;
   }
@@ -506,7 +1045,7 @@ export class DocxEditor {
     this.check('edit', range);
     const runs = elements(paragraph, 'w:r');
     const run = newRun(text, runs[runs.length - 1], format);
-    paragraph.children.push(run);
+    paragraph.children.push(this.placed(run, this.tracking()));
     this.changed();
     return run;
   }
@@ -514,6 +1053,14 @@ export class DocxEditor {
   /** Delete a range (it may span paragraphs, but not table cells). */
   deleteRange(range: DocRange): void {
     this.check('edit', range);
+    const track = this.tracking();
+    if (track) {
+      const { startMark, endMark, idx } = this.trackedCut(range, track);
+      replaceMark(idx, startMark, []);
+      replaceMark(this.index(), endMark, []);
+      this.changed();
+      return;
+    }
     // Deleting inside one text node (backspace): edit it in place.
     if (range.start.node === range.end.node && range.start.node.name === 'w:t') {
       const current = textContent(range.start.node);
@@ -532,6 +1079,16 @@ export class DocxEditor {
     this.check('edit', range);
     const index = this.index();
     const template = index.parentOf(range.start.node);
+    const track = this.tracking();
+    if (track) {
+      // The old text stays as a deletion; the new text follows it as an insertion.
+      const { startMark, endMark } = this.trackedCut(range, track);
+      replaceMark(this.index(), startMark, []);
+      this.liftOutOfInsertion(endMark, this.index());
+      replaceMark(this.index(), endMark, text || format ? [this.placed(newRun(text, template, format), track)] : []);
+      this.changed();
+      return;
+    }
     const { startMark, endMark, idx } = this.cut(range);
     replaceMark(idx, startMark, text || format ? [newRun(text, template, format)] : []);
     replaceMark(idx, endMark, []);
@@ -620,7 +1177,31 @@ export class DocxEditor {
     const index = this.index();
     const { startMark, endMark } = isolate(index, range);
     const idx = this.index();
-    for (const run of between(idx, startMark, endMark, 'w:r')) applyFormat(run, format);
+    const track = this.tracking();
+    for (const run of between(idx, startMark, endMark, 'w:r')) {
+      if (track && !this.inOwnInsertion(run, idx)) recordRunFormat(run, track.nextId(), track.who);
+      applyFormat(run, format);
+    }
+    replaceMark(idx, startMark, []);
+    replaceMark(idx, endMark, []);
+    this.changed();
+  }
+
+  /** Remove direct character formatting (and character styles, except Hyperlink) from a range. */
+  clearFormatting(range: DocRange): void {
+    this.check('format', range);
+    const index = this.index();
+    const { startMark, endMark } = isolate(index, range);
+    const idx = this.index();
+    const track = this.tracking();
+    for (const run of between(idx, startMark, endMark, 'w:r')) {
+      if (track && !this.inOwnInsertion(run, idx)) recordRunFormat(run, track.nextId(), track.who);
+      const rPr = firstChild(run, 'w:rPr');
+      if (!rPr) continue;
+      const keep = rPr.children.filter((c) => c.type === 'element' && ((c.name === 'w:rStyle' && attr(c, 'w:val') === 'Hyperlink') || c.name === 'w:rPrChange'));
+      rPr.children = keep;
+      if (!keep.length) run.children.splice(run.children.indexOf(rPr), 1);
+    }
     replaceMark(idx, startMark, []);
     replaceMark(idx, endMark, []);
     this.changed();
@@ -677,7 +1258,9 @@ export class DocxEditor {
     const ref = typeof where === 'object' ? (where.before ?? where.after) : undefined;
     this.check('edit', ref ? { start: { node: ref, offset: 0 }, end: { node: ref, offset: 0 } } : undefined);
     const pPr = options.style ? [el('w:pPr', {}, [el('w:pStyle', { 'w:val': options.style })])] : [];
-    const para = el('w:p', {}, [...pPr, ...(text ? [newRun(text, undefined, options.format)] : [])]);
+    const track = this.tracking();
+    const para = el('w:p', {}, [...pPr, ...(text ? [this.placed(newRun(text, undefined, options.format), track)] : [])]);
+    if (track) markParagraph(para, 'ins', track.nextId(), track.who);
     const body = this.body;
     if (where === 'start') body.children.unshift(para);
     else if (where === 'end') {
@@ -696,6 +1279,17 @@ export class DocxEditor {
 
   deleteParagraph(paragraph: XmlElement): void {
     this.check('edit', this.paragraphRange(paragraph) ?? { start: { node: paragraph, offset: 0 }, end: { node: paragraph, offset: 0 } });
+    const track = this.tracking();
+    const mark = paragraphMarkRevision(paragraph);
+    const ownNew = mark?.kind === 'ins' && attr(mark.el, 'w:author') === this.author;
+    if (track && !ownNew) {
+      // The text is marked deleted and so is the paragraph mark; Word joins them away on accept.
+      const tidx = this.index();
+      for (const run of findAll(paragraph, 'w:r')) deleteRun(run, (n) => tidx.parent.get(n), track.nextId, track.who);
+      markParagraph(paragraph, 'del', track.nextId(), track.who);
+      this.changed();
+      return;
+    }
     const idx = this.index();
     const parent = idx.parentOf(paragraph);
     // A table cell must keep at least one paragraph.
@@ -707,6 +1301,8 @@ export class DocxEditor {
 
   setParagraphStyle(paragraph: XmlElement, styleId: string): void {
     this.check('format', this.paragraphRange(paragraph));
+    const track = this.tracking();
+    if (track) recordParagraphFormat(paragraph, track.nextId(), track.who, PPR_ORDER);
     const pPr = ensureChild(paragraph, 'w:pPr');
     if (paragraph.children[0] !== pPr) {
       paragraph.children.splice(paragraph.children.indexOf(pPr), 1);
@@ -717,6 +1313,162 @@ export class DocxEditor {
     this.changed();
   }
 
+  /** Change paragraph formatting: alignment, direction, indents, spacing and keep rules. */
+  formatParagraph(paragraph: XmlElement, format: ParagraphFormat): void {
+    this.check('format', this.paragraphRange(paragraph));
+    const track = this.tracking();
+    if (track) recordParagraphFormat(paragraph, track.nextId(), track.who, PPR_ORDER);
+    const pPr = ensureChild(paragraph, 'w:pPr');
+    if (paragraph.children[0] !== pPr) {
+      paragraph.children.splice(paragraph.children.indexOf(pPr), 1);
+      paragraph.children.unshift(pPr);
+    }
+    const twips = (pt: number) => String(Math.round(pt * 20));
+    const onOff = (name: string, on: boolean | undefined) => {
+      if (on === undefined) return;
+      removeChildren(pPr, name);
+      insertOrdered(pPr, on ? el(name) : el(name, { 'w:val': '0' }), PPR_ORDER);
+    };
+    onOff('w:keepNext', format.keepWithNext);
+    onOff('w:keepLines', format.keepLinesTogether);
+    onOff('w:pageBreakBefore', format.pageBreakBefore);
+    if (format.direction) onOff('w:bidi', format.direction === 'rtl');
+    if (format.align) {
+      removeChildren(pPr, 'w:jc');
+      // In a right-to-left paragraph Word reads left and right as start and end, so a visually
+      // right-aligned RTL paragraph is stored as "left".
+      const bidi = firstChild(pPr, 'w:bidi');
+      const rtl = !!bidi && attr(bidi, 'w:val') !== '0' && attr(bidi, 'w:val') !== 'false';
+      const visual = format.align === 'justify' ? 'both' : format.align;
+      const jc = rtl && visual === 'left' ? 'right' : rtl && visual === 'right' ? 'left' : visual;
+      insertOrdered(pPr, el('w:jc', { 'w:val': jc }), PPR_ORDER);
+    }
+    if (format.indentLeft !== undefined || format.indentRight !== undefined || format.indentFirstLine !== undefined) {
+      const ind = ensureOrdered(pPr, 'w:ind', PPR_ORDER);
+      if (format.indentLeft !== undefined) {
+        delete ind.attrs['w:start'];
+        ind.attrs['w:left'] = twips(format.indentLeft);
+      }
+      if (format.indentRight !== undefined) {
+        delete ind.attrs['w:end'];
+        ind.attrs['w:right'] = twips(format.indentRight);
+      }
+      if (format.indentFirstLine !== undefined) {
+        delete ind.attrs['w:firstLine'];
+        delete ind.attrs['w:hanging'];
+        if (format.indentFirstLine >= 0) ind.attrs['w:firstLine'] = twips(format.indentFirstLine);
+        else ind.attrs['w:hanging'] = twips(-format.indentFirstLine);
+      }
+    }
+    if (format.spaceBefore !== undefined || format.spaceAfter !== undefined || format.lineSpacing !== undefined) {
+      const sp = ensureOrdered(pPr, 'w:spacing', PPR_ORDER);
+      if (format.spaceBefore !== undefined) {
+        delete sp.attrs['w:beforeAutospacing'];
+        sp.attrs['w:before'] = twips(format.spaceBefore);
+      }
+      if (format.spaceAfter !== undefined) {
+        delete sp.attrs['w:afterAutospacing'];
+        sp.attrs['w:after'] = twips(format.spaceAfter);
+      }
+      if (format.lineSpacing !== undefined) {
+        sp.attrs['w:line'] = String(Math.round(format.lineSpacing * 240));
+        sp.attrs['w:lineRule'] = 'auto';
+      }
+    }
+    this.changed();
+  }
+
+  // ---- lists --------------------------------------------------------------------------------
+
+  /** The list paragraphs of the body with their labels ("1.", "a)", "•"), keyed by w:p. */
+  listItems(): Map<XmlElement, ListItem> {
+    return listItems(this.doc, this.paragraphs());
+  }
+
+  /**
+   * Change list formatting of paragraphs:
+   * - `format`: make them one list in that format ('bullet', 'decimal' 1., 'decimalParen' 1),
+   *   'lowerLetter' a., 'upperLetter' A., 'lowerRoman' i., 'upperRoman' I.), numbered from `start`
+   *   (default 1). Paragraphs already in a list keep its indentation and their level. 'none' takes
+   *   them out of their list.
+   * - `start` alone: restart the numbering, keeping the format.
+   * - `level` (0–8): the list level (indent); alone, only the level changes.
+   * - `sameListAs`: join the list of that paragraph, continuing its numbering.
+   * Returns the numId the paragraphs now use (undefined after 'none').
+   */
+  async setList(paragraphs: XmlElement[], options: SetListOptions): Promise<string | undefined> {
+    const { format, level, start, sameListAs } = options;
+    if (paragraphs.length === 0) throw new EditError('setList needs at least one paragraph');
+    if (level !== undefined && (!Number.isInteger(level) || level < 0 || level > 8)) throw new EditError('List levels go from 0 to 8');
+    if (start !== undefined && (!Number.isInteger(start) || start < 0 || start > 32767)) throw new EditError('start must be a whole number from 0 to 32767');
+    const all = new Map(this.paragraphs().map((p) => [p.el, p]));
+    const paras = paragraphs.map((el) => {
+      const p = all.get(el);
+      if (!p) throw new EditError('setList only works on paragraphs of the document body');
+      return p;
+    });
+    for (const p of paras) this.check('format', this.paragraphRange(p) ?? { start: { node: p.el, offset: 0 }, end: { node: p.el, offset: 0 } });
+
+    if (format === 'none') {
+      if (sameListAs || start !== undefined || level !== undefined) throw new EditError("format 'none' cannot be combined with other list options");
+      for (const p of paras) this.writeNumPr(p, undefined);
+      this.changed();
+      return undefined;
+    }
+    if (sameListAs) {
+      if (format !== undefined || start !== undefined) throw new EditError('sameListAs cannot be combined with format or start');
+      const target = all.get(sameListAs)?.numbering;
+      if (!target) throw new EditError('The paragraph to join is not in a list');
+      for (const p of paras) this.writeNumPr(p, { numId: target.numId, ilvl: level ?? (p.numbering ? p.numbering.ilvl : target.ilvl) });
+      this.changed();
+      return target.numId;
+    }
+    const first = paras.find((p) => p.numbering)?.numbering;
+    if (format === undefined) {
+      if (!first) throw new EditError('These paragraphs are not in a list; pass a format to make them one');
+      if (start === undefined) {
+        if (level === undefined) throw new EditError('Nothing to change: pass format, level, start or sameListAs');
+        for (const p of paras) {
+          if (!p.numbering) throw new EditError('Some of these paragraphs are not in a list; pass a format to make them one');
+          this.writeNumPr(p, { numId: p.numbering.numId, ilvl: level });
+        }
+        this.changed();
+        return first.numId;
+      }
+    }
+    const ilvlOf = (p: DocParagraph) => level ?? p.numbering?.ilvl ?? 0;
+    const styleNumId = (s: string) => this.doc.styles.get(s)?.pPr.numId;
+    const base = first ? { numId: first.numId, abstractId: this.doc.numbering.abstractFor(first.numId, styleNumId)?.id } : undefined;
+    const numId = await createList(this.doc, {
+      format: format ?? 'keep',
+      levels: new Set(paras.map(ilvlOf)),
+      ...(start !== undefined ? { start } : {}),
+      ...(base ? { base } : {}),
+    });
+    for (const p of paras) this.writeNumPr(p, { numId, ilvl: ilvlOf(p) });
+    this.changed();
+    return numId;
+  }
+
+  /** Set or clear a paragraph's w:numPr (clearing style-given numbering with numId 0). */
+  private writeNumPr(para: DocParagraph, num: { numId: string; ilvl: number } | undefined): void {
+    const p = para.el;
+    const track = this.tracking();
+    if (track) recordParagraphFormat(p, track.nextId(), track.who, PPR_ORDER);
+    const pPr = ensureChild(p, 'w:pPr');
+    if (p.children[0] !== pPr) {
+      p.children.splice(p.children.indexOf(pPr), 1);
+      p.children.unshift(pPr);
+    }
+    removeChildren(pPr, 'w:numPr');
+    if (num) {
+      insertOrdered(pPr, el('w:numPr', {}, [el('w:ilvl', { 'w:val': String(num.ilvl) }), el('w:numId', { 'w:val': num.numId })]), PPR_ORDER);
+      return;
+    }
+    const styleNum = para.styleId ? this.doc.styles.get(para.styleId)?.pPr.numId : undefined;
+    if (styleNum && styleNum !== '0') insertOrdered(pPr, el('w:numPr', {}, [el('w:numId', { 'w:val': '0' })]), PPR_ORDER);
+  }
+
   // ---- hyperlinks and bookmarks -------------------------------------------------------------
 
   /** Turn a range (within one paragraph) into a hyperlink to a URL or a bookmark. */
@@ -725,8 +1477,8 @@ export class DocxEditor {
     if ('url' in target && !/^(https?|mailto|tel|ftp):/i.test(target.url)) throw new EditError(`Refusing link to "${target.url}": unsupported scheme`);
     const attrs: Record<string, string> = {};
     if ('url' in target) {
-      attrs['r:id'] = await this.doc.pkg.addRelationship(this.doc.mainPart, REL.hyperlink, target.url, true);
-      await this.doc.refreshRels(this.doc.mainPart);
+      attrs['r:id'] = await this.doc.pkg.addRelationship(this.part, REL.hyperlink, target.url, true);
+      await this.doc.refreshRels(this.part);
     } else attrs['w:anchor'] = target.bookmark;
     if (tooltip) attrs['w:tooltip'] = tooltip;
     attrs['w:history'] = '1';
@@ -754,8 +1506,47 @@ export class DocxEditor {
     return link;
   }
 
+  /** Point an existing w:hyperlink at another URL or a bookmark (same scheme rules as `addHyperlink`). */
+  async setHyperlinkTarget(hyperlink: XmlElement, target: { url: string } | { bookmark: string }): Promise<void> {
+    this.check('link');
+    if ('url' in target && !/^(https?|mailto|tel|ftp):/i.test(target.url)) throw new EditError(`Refusing link to "${target.url}": unsupported scheme`);
+    const old = hyperlink.attrs['r:id'];
+    if ('url' in target) {
+      hyperlink.attrs['r:id'] = await this.doc.pkg.addRelationship(this.part, REL.hyperlink, target.url, true);
+      delete hyperlink.attrs['w:anchor'];
+      if (!this.root.attrs['xmlns:r']) this.root.attrs['xmlns:r'] = NS.r;
+    } else {
+      hyperlink.attrs['w:anchor'] = target.bookmark;
+      delete hyperlink.attrs['r:id'];
+    }
+    // The old tooltip described the old target.
+    delete hyperlink.attrs['w:tooltip'];
+    delete hyperlink.attrs['w:docLocation'];
+    await this.dropHyperlinkRel(old);
+    this.changed();
+  }
+
+  /** Remove a hyperlink relationship that nothing in this part refers to any more. */
+  private async dropHyperlinkRel(id: string | undefined): Promise<void> {
+    if (id) {
+      const used = findAll(this.root, 'w:hyperlink').some((h) => h.attrs['r:id'] === id);
+      const rel = this.doc.rels(this.part).get(id);
+      if (!used && rel && rel.external) await this.doc.pkg.removeRelationship(this.part, id);
+    }
+    await this.doc.refreshRels(this.part);
+  }
+
+  /** Set the alt text (wp:docPr/@descr) of a picture or drawing. */
+  setImageAlt(drawing: XmlElement, text: string): void {
+    this.check('edit');
+    const props = drawing.name === 'wp:docPr' ? drawing : findAll(drawing, 'wp:docPr')[0];
+    if (!props) throw new EditError('This object has no description to edit');
+    props.attrs['descr'] = text;
+    this.changed();
+  }
+
   /** Unwrap a w:hyperlink, keeping its text. */
-  removeHyperlink(link: XmlElement): void {
+  async removeHyperlink(link: XmlElement): Promise<void> {
     this.check('link');
     const idx = this.index();
     const parent = idx.parentOf(link);
@@ -767,11 +1558,12 @@ export class DocxEditor {
     }
     parent.children.splice(indexOfChild(parent, link), 1, ...runs);
     this.changed();
+    await this.dropHyperlinkRel(attr(link, 'r:id'));
   }
 
   /** Every w:hyperlink in the body with its target. */
   hyperlinks(): Array<{ el: XmlElement; url?: string; anchor?: string; tooltip?: string; text: string }> {
-    const rels = this.doc.rels(this.doc.mainPart);
+    const rels = this.doc.rels(this.part);
     return findAll(this.body, 'w:hyperlink').map((h) => {
       const rId = attr(h, 'r:id');
       return { el: h, url: rId ? rels.get(rId)?.target : undefined, anchor: attr(h, 'w:anchor'), tooltip: attr(h, 'w:tooltip'), text: textContent(h) };
@@ -1192,3 +1984,12 @@ function localDate(d: Date): string {
 
 export type { DocPosition, DocRange };
 export { EditError };
+
+/** The child `name` of `parent`, created in schema order when missing. */
+function ensureOrdered(parent: XmlElement, name: string, order: readonly string[]): XmlElement {
+  const existing = firstChild(parent, name);
+  if (existing) return existing;
+  const node = el(name);
+  insertOrdered(parent, node, order);
+  return node;
+}

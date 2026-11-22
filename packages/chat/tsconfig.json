@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "allowJs": true,
+    "checkJs": true,
+    "paths": {
+      "docxkeun": ["../../src/index.ts"],
+      "docxkeun/editor": ["../../src/api/index.ts"],
+      "docxkeun/viewer": ["../../src/render/index.ts"],
+      "docxkeun/security": ["../../src/security/index.ts"],
+      "docxkeun/pdf": ["../../src/pdf/index.ts"],
+      "docxkeun/fonts": ["../../src/fonts/index.ts"]
+    }
+  },
+  "include": ["src", "test", "server", "vite.config.ts"]
+}

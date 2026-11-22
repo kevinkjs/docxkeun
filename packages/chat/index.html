@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>docxkeun chat</title>
+    <link rel="stylesheet" href="./src/style.css" />
+    <script type="module" src="./src/main.ts"></script>
+  </head>
+  <body>
+    <header class="bar">
+      <h1>docxkeun chat</h1>
+      <label class="button" title="Open a Word document">
+        Open .docx<input type="file" id="file" accept=".docx,.docm,.dotx" hidden />
+      </label>
+      <button type="button" id="sample">Sample</button>
+      <span id="docname" class="docname"></span>
+      <span class="spacer"></span>
+      <button type="button" id="download" disabled>Download .docx</button>
+      <button type="button" id="pdf" disabled>Export PDF</button>
+      <select id="model" aria-label="Model"></select>
+      <select id="effects" aria-label="AI effects" title="How Claude's work shows in the document: shimmer, caret and change marks">
+        <option value="animated">Effects: animated</option>
+        <option value="still">Effects: still</option>
+        <option value="off">Effects: off</option>
+      </select>
+      <button type="button" id="look" title="The name and colours of Claude's caret, shimmer and change marks">Appearance</button>
+      <button type="button" id="key" title="Change or forget your API key">API key</button>
+    </header>
+    <main class="layout">
+      <section class="chat" aria-label="Chat">
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <div id="selection" class="selection" hidden></div>
+        <form id="composer" class="composer">
+          <textarea id="prompt" rows="3" placeholder="Ask about the document, or tell Claude what to change…" aria-label="Message"></textarea>
+          <div class="composer-actions">
+            <span class="hint">Enter to send · Shift+Enter for a new line</span>
+            <button type="button" id="stop" hidden>Stop</button>
+            <button type="submit" id="send" class="primary">Send</button>
+          </div>
+        </form>
+      </section>
+      <section class="document" aria-label="Document">
+        <div id="viewer" class="viewer"></div>
+        <div id="empty" class="empty">
+          <p><strong>Open a .docx</strong> or try the <button type="button" class="link" id="sample2">sample</button>.</p>
+          <p>Claude's edits appear here as they happen.</p>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="keyDialog" class="key-dialog">
+      <form method="dialog" id="keyForm">
+        <h2>Your Anthropic API key</h2>
+        <p>The key goes to the docxkeun chat server running on this computer, which checks it, keeps it in memory and makes the Claude calls to <code>api.anthropic.com</code>. Your browser does not store it.</p>
+        <label for="keyInput">API key</label>
+        <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" required />
+        <p class="small">The server forgets the key when it stops. To skip this step, start it with <code>ANTHROPIC_API_KEY</code> set. Create a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">console.anthropic.com</a>.</p>
+        <p id="envNote" class="small" hidden>The server is using the key from <code>ANTHROPIC_API_KEY</code>. A key entered here replaces it until the server restarts.</p>
+        <p id="keyError" class="error" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="forget" hidden>Forget the key</button>
+          <button type="submit" id="keySubmit" class="primary">Continue</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="lookDialog" class="key-dialog" aria-labelledby="lookTitle">
+      <form method="dialog">
+        <h2 id="lookTitle">How Claude shows in the document</h2>
+        <p>The name on its caret, and the colours of its caret, shimmer and change marks. Changes apply right away and are remembered in this browser.</p>
+        <label for="lookName">Name</label>
+        <input id="lookName" type="text" maxlength="40" autocomplete="off" spellcheck="false" />
+        <div class="look-colors">
+          <label>From <input id="lookColor1" type="color" /></label>
+          <label>To <input id="lookColor2" type="color" /></label>
+        </div>
+        <div class="look-sample" aria-hidden="true">
+          <span class="look-caret"></span><span id="lookLabel" class="look-label"></span>
+          <span class="look-shimmer">A paragraph being changed</span>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="lookReset">Reset</button>
+          <button type="submit" class="primary">Done</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

@@ -2,9 +2,9 @@ import { DocxEditor } from '../src/api/index.js';
 import { FontRegistry, loadBundledFonts } from '../src/index.js';
 import { exportPdf } from '../src/pdf/index.js';
 import { pdfSecurity } from '../src/security/index.js';
-import { DocxViewer } from '../src/render/index.js';
-import { mountNavigation } from './navigation.js';
+import { DocxViewer, promptPopover, type MenuItem } from '../src/render/index.js';
 import { sampleDocx } from './sample.js';
+import { fitZoom, readFold, writeFold } from './view.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const status = (text: string) => ($('status').textContent = text);
@@ -21,14 +21,47 @@ async function loadFonts(): Promise<FontRegistry> {
 }
 
 const fonts = await loadFonts();
-const viewer = new DocxViewer($('viewer'), { fonts, highlightRange: () => true, editable: true });
+/** Fold states remembered across visits (see view.ts: the toolbar keeps only its fold). */
+const store = () => localStorage;
+const saved = readFold(store);
+
+const viewer = new DocxViewer($('viewer'), {
+  fonts,
+  highlightRange: () => true,
+  editable: true,
+  toolbar: { collapsed: saved.toolbar?.collapsed ?? false },
+  navigation: { collapsed: saved.navigation?.collapsed ?? false },
+  comments: { mode: 'auto' },
+  contextMenu: {
+    items: (_at, defaults): MenuItem[] => [
+      ...defaults,
+      '-',
+      { label: 'Lock…', run: () => lockSelection() },
+      { label: 'Unlock', run: () => unlockAtCaret() },
+    ],
+  },
+});
+if (saved.navigation?.visible === false) viewer.navigation.hide();
+viewer.on('chromechange', ({ part, visible, collapsed }) => {
+  if (part === 'toolbar' || part === 'navigation') writeFold(store, part, visible, !!collapsed);
+  if (part === 'navigation') $('navToggle').setAttribute('aria-pressed', String(visible));
+});
+$('navToggle').setAttribute('aria-pressed', String(viewer.navigation.visible));
 viewer.on('editerror', ({ error }) => status(`Not changed: ${error.message}`));
 (window as unknown as { viewer: DocxViewer }).viewer = viewer;
-mountNavigation($('nav'), viewer, (text) => status(text));
 $('navToggle').addEventListener('click', () => {
-  const nav = $('nav');
-  nav.hidden = !nav.hidden;
-  $('navToggle').setAttribute('aria-pressed', String(!nav.hidden));
+  if (viewer.navigation.visible) viewer.navigation.hide();
+  else viewer.navigation.show();
+});
+
+// Alt+Left / Alt+Right walk the navigation history, except in text fields outside the viewer
+// (the navigation search box, popovers), where they keep jumping by word.
+document.addEventListener('keydown', (e) => {
+  if (!e.altKey || e.metaKey || e.ctrlKey) return;
+  const t = e.target instanceof HTMLElement ? e.target : undefined;
+  if (t?.matches('input, textarea, select, [contenteditable=""], [contenteditable="true"]') && !viewer.root.contains(t)) return;
+  if (e.key === 'ArrowLeft' && viewer.back()) e.preventDefault();
+  else if (e.key === 'ArrowRight' && viewer.forward()) e.preventDefault();
 });
 
 async function show(bytes: Uint8Array | Blob, name: string) {
@@ -54,9 +87,44 @@ document.body.addEventListener('drop', (e) => {
   if (file) void show(file, file.name);
 });
 $('sample').addEventListener('click', async () => show(await sampleDocx(), 'sample.docx'));
+
+// Zoom: the page and its comment column are fitted to the viewer's width (at most 100%, at least
+// 50%) until − or + is used; then that zoom stays until the page is reloaded.
+let fitWidth = true;
+const showZoom = () => ($('zoom').textContent = `${Math.round(viewer.zoom * 100)}%`);
+function fitToWidth(): void {
+  const layout = viewer.layout;
+  if (!fitWidth || !layout || layout.pages.length === 0 || !viewer.root.clientWidth) return;
+  const zoom = fitZoom(viewer.root.clientWidth, layout.pages.map((p) => p.width), viewer.comments.width);
+  if (Math.abs(viewer.zoom - zoom) > 0.01) viewer.zoom = zoom;
+  showZoom();
+}
+viewer.on('layout', fitToWidth);
+viewer.on('chromechange', ({ part }) => {
+  if (part === 'comments') fitToWidth();
+});
+// The viewer's room changes with the window and with the navigation panel opening or folding.
+// Only real width changes count (a scrollbar coming and going does not).
+{
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const refit = () => {
+    clearTimeout(timer);
+    timer = setTimeout(fitToWidth, 50);
+  };
+  if (typeof ResizeObserver === 'undefined') window.addEventListener('resize', refit);
+  else {
+    let width = viewer.root.offsetWidth;
+    new ResizeObserver(() => {
+      if (viewer.root.offsetWidth === width) return;
+      width = viewer.root.offsetWidth;
+      refit();
+    }).observe(viewer.root);
+  }
+}
 const setZoom = (z: number) => {
+  fitWidth = false;
   viewer.zoom = z;
-  $('zoom').textContent = `${Math.round(viewer.zoom * 100)}%`;
+  showZoom();
 };
 $('zoomIn').addEventListener('click', () => setZoom(viewer.zoom * 1.25));
 $('zoomOut').addEventListener('click', () => setZoom(viewer.zoom / 1.25));
@@ -126,46 +194,64 @@ button('Editing: on', function (this: void) {
 });
 button('Undo', () => viewer.editing?.undo());
 button('Redo', () => viewer.editing?.redo());
-button('Comment', async () => {
+/** Run an edit as one undo step (the editing layer is there once the viewer has been editable). */
+function edit<T>(label: string, fn: (ed: DocxEditor) => T | Promise<T>): Promise<T> {
+  return viewer.editing ? viewer.editing.transaction(label, fn) : Promise.resolve(fn(editor()));
+}
+
+/** A viewport point near the document, for popovers opened from the header buttons. */
+function anchorPoint(): { x: number; y: number } {
+  const r = viewer.root.getBoundingClientRect();
+  return { x: r.left + r.width / 2 - 130, y: r.top + 60 };
+}
+
+async function lockSelection(at = anchorPoint()): Promise<void> {
   const range = selectionRange();
-  if (!range) return status('Select some text first');
-  const text = prompt('Comment');
-  if (!text) return;
-  await editor().addComment(range, { author: 'Playground user', text });
-  status('Comment added');
+  if (!range) return void status('Select the text to lock first');
+  const title = await promptPopover({ title: 'Name of the locked region (optional)', placeholder: 'Optional', at });
+  if (title === undefined) return;
+  const id = await edit('Lock', (ed) => ed.lockRange(range, { title: title || undefined }));
+  status(`Locked region ${id}${title ? ` "${title}"` : ''}: it can no longer be edited`);
+}
+
+async function unlockAtCaret(): Promise<void> {
+  const sel = viewer.editing?.selection;
+  const range = selectionRange() ?? (sel ? viewer.editing!.rangeOf(sel.anchor, sel.anchor) : undefined);
+  if (!range) return void status('Click inside a locked region first');
+  const contains = (root: { children: unknown[] }, node: unknown): boolean =>
+    root.children.some((c) => c === node || (typeof c === 'object' && c !== null && 'children' in c && contains(c as { children: unknown[] }, node)));
+  const region = editor().lockedRegions().find((r) => contains(r.el, range.start.node));
+  if (!region) return void status('The caret is not inside a locked region');
+  await edit('Unlock', (ed) => ed.unlock(region.id));
+  status(`Unlocked${region.title ? ` "${region.title}"` : ''}`);
+}
+
+button('Comment', () => {
+  if (!viewer.editing?.isEnabled) return status('Turn editing on to comment');
+  if (!selectionRange()) return status('Select some text first');
+  viewer.comments.compose();
 });
 button('Link', async () => {
   const range = selectionRange();
   if (!range) return status('Select some text first');
-  const url = prompt('URL (https://...) or #bookmark');
+  const url = await promptPopover({
+    title: 'Link address',
+    placeholder: 'https://… or #bookmark',
+    at: anchorPoint(),
+    validate: (v) => (v.trim() ? undefined : 'Enter a web address, or #bookmark'),
+  });
   if (!url) return;
-  await editor().addHyperlink(range, url.startsWith('#') ? { bookmark: url.slice(1) } : { url });
+  const target = url.trim();
+  await edit('Add link', (ed) => ed.addHyperlink(range, target.startsWith('#') ? { bookmark: target.slice(1) } : { url: target }));
   status('Link added');
 });
-button('Bold', () => {
+button('Bold', async () => {
   const range = selectionRange();
   if (!range) return status('Select some text first');
-  editor().formatRange(range, { bold: true });
+  await edit('Bold', (ed) => ed.formatRange(range, { bold: true }));
 });
-button('Lock', () => {
-  const range = selectionRange();
-  if (!range) return status('Select the text to lock first');
-  const title = prompt('Name of the locked region (optional)') ?? undefined;
-  const id = editor().lockRange(range, { title: title || undefined });
-  status(`Locked region ${id}${title ? ` "${title}"` : ''}: it can no longer be edited`);
-});
-button('Unlock', () => {
-  const ed = editor();
-  const sel = viewer.editing?.selection;
-  const range = selectionRange() ?? (sel ? viewer.editing!.rangeOf(sel.anchor, sel.anchor) : undefined);
-  if (!range) return status('Click inside a locked region first');
-  const contains = (root: { children: unknown[] }, node: unknown): boolean =>
-    root.children.some((c) => c === node || (typeof c === 'object' && c !== null && 'children' in c && contains(c as { children: unknown[] }, node)));
-  const region = ed.lockedRegions().find((r) => contains(r.el, range.start.node));
-  if (!region) return status('The caret is not inside a locked region');
-  ed.unlock(region.id);
-  status(`Unlocked${region.title ? ` "${region.title}"` : ''}`);
-});
+button('Lock', () => lockSelection());
+button('Unlock', () => unlockAtCaret());
 button('Export PDF', async () => {
   if (fonts.isEmpty) return status('PDF export needs font files');
   const t0 = performance.now();

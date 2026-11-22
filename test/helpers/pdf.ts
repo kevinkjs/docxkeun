@@ -237,11 +237,12 @@ export function pageText(pdf: ParsedPdf, page: Map<string, PdfObj>): string {
   const content = latin1(streamData(pdf, page.get('Contents')));
   let out = '';
   let current: Map<number, string> | undefined;
-  for (const m of content.matchAll(/\/(F\d+) [\d.]+ Tf|\[([^\]]*)\] TJ|(ET)/g)) {
+  for (const m of content.matchAll(/\/(F\d+) [\d.]+ Tf|\[([^\]]*)\] TJ|(ET)|(<[0-9a-fA-F]*>) Tj/g)) {
     if (m[1]) current = maps.get(m[1]);
     else if (m[3]) out += '\n';
-    else if (m[2] && current) {
-      for (const h of m[2].matchAll(/<([0-9a-f]*)>/gi)) {
+    else if ((m[2] ?? m[4]) && current) {
+      const shown = m[2] ?? m[4] ?? '';
+      for (const h of shown.matchAll(/<([0-9a-f]*)>/gi)) {
         for (let i = 0; i < h[1]!.length; i += 4) out += current.get(Number.parseInt(h[1]!.slice(i, i + 4), 16)) ?? '�';
       }
     }

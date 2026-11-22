@@ -42,7 +42,7 @@ export class PermissionError extends Error {
 }
 
 const COMMENT_ACTIONS: Capability[] = ['comment', 'reply', 'resolveComment', 'editComment', 'deleteComment'];
-const CONTENT_ACTIONS: Capability[] = ['edit', 'format', 'link', 'bookmark', 'fillForm'];
+const CONTENT_ACTIONS: Capability[] = ['edit', 'format', 'link', 'bookmark', 'fillForm', 'review'];
 
 interface PermRange {
   id: string;
@@ -64,7 +64,7 @@ export class AccessPolicy implements EditGuard {
   }
 
   /** The reason an action is refused, or undefined when it is allowed. */
-  denial(action: Capability, range?: DocRange, detail: { commentAuthor?: string } = {}): string | undefined {
+  denial(action: Capability, range?: DocRange, detail: { commentAuthor?: string; tracked?: boolean } = {}): string | undefined {
     const { role } = this.options;
     if (action === 'read') return undefined;
     if (action === 'export' || action === 'print' || action === 'copy') {
@@ -93,7 +93,9 @@ export class AccessPolicy implements EditGuard {
         return 'The document only allows comments outside its editable regions';
       case 'trackedChanges':
         if (isCommentAction) return undefined;
-        return 'The document requires tracked changes, which docxkeun does not record yet';
+        if (action === 'review') return 'Tracked changes cannot be accepted or rejected while the document is protected for tracked changes';
+        if (detail.tracked) return undefined;
+        return 'The document only allows changes that are tracked';
       case 'forms':
         if (action === 'fillForm') return undefined;
         return 'The document only allows filling in forms';
@@ -102,11 +104,11 @@ export class AccessPolicy implements EditGuard {
     }
   }
 
-  can(action: Capability, range?: DocRange, detail?: { commentAuthor?: string }): boolean {
+  can(action: Capability, range?: DocRange, detail?: { commentAuthor?: string; tracked?: boolean }): boolean {
     return this.denial(action, range, detail) === undefined;
   }
 
-  assert(action: Capability, range?: DocRange, detail?: { commentAuthor?: string }): void {
+  assert(action: Capability, range?: DocRange, detail?: { commentAuthor?: string; tracked?: boolean }): void {
     const reason = this.denial(action, range, detail);
     if (reason) throw new PermissionError(action, reason);
   }

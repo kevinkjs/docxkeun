@@ -4,8 +4,9 @@
  * such as hyperlinks, fields, content controls and tracked insertions are flattened into markers;
  * every inline keeps a reference to the XML it came from so edits can go back to the source.
  */
+import { mathToText } from '../math/linear.js';
 import { attr, elements, firstChild, localName, textContent, type XmlElement } from '../xml/index.js';
-import { fieldLinkTarget, isDynamicField, parseFieldInstruction, type DynamicFieldType, type LinkTarget } from './fields.js';
+import { fieldLinkTarget, setLinkSource, isDynamicField, parseFieldInstruction, type DynamicFieldType, type LinkTarget } from './fields.js';
 import type { LevelDef, NumberingDefs } from './numbering.js';
 import {
   mergeCellProps,
@@ -66,6 +67,42 @@ export interface FloatInfo {
   vOffset: number;
   dist: { top: number; bottom: number; left: number; right: number };
 }
+/** A DrawingML shape: geometry, fill and outline (kept as XML: colours resolve against the theme), text. */
+export interface ShapeInfo {
+  /** a:prstGeom or a:custGeom. */
+  geometry: XmlElement | undefined;
+  /** The shape properties (fill, outline, transform). */
+  spPr: XmlElement | undefined;
+  /** wps:style: theme references used when spPr leaves fill or outline out. */
+  style: XmlElement | undefined;
+  /** Text box content (Word paragraphs), when the shape has a text box. */
+  text?: { blocks: Block[]; insets: { left: number; top: number; right: number; bottom: number }; anchor: 't' | 'ctr' | 'b'; vertical: boolean; container: XmlElement; autoFit?: boolean };
+  /** DrawingML text (a:txBody) of SmartArt and canvas shapes, kept as XML. */
+  txBody?: XmlElement;
+  /** Fill and outline colours of an old-style VML shape (RRGGBB; absent: none). */
+  vml?: { fill?: string; stroke?: string };
+}
+
+/** A placed child of a group or drawing canvas, in points relative to the group's top-left. */
+export interface DrawingChild {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rotation: number;
+  flipH: boolean;
+  flipV: boolean;
+  content: DrawingContent;
+}
+
+/** What a drawing shows when it is not a plain picture. */
+export type DrawingContent =
+  | { type: 'picture'; target: string | undefined; external: boolean }
+  | { type: 'shape'; shape: ShapeInfo }
+  | { type: 'group'; children: DrawingChild[] }
+  | { type: 'chart'; part: string | undefined }
+  | { type: 'diagram'; dataPart: string | undefined };
+
 export interface ImageInline extends RunRef {
   kind: 'image';
   /** Resolved media part name (or external URL when `external`). */
@@ -76,6 +113,12 @@ export interface ImageInline extends RunRef {
   alt?: string;
   float?: FloatInfo;
   drawing: XmlElement;
+  /** Shapes, text boxes, groups, charts and SmartArt (absent for a plain picture). */
+  content?: DrawingContent;
+  /** Rotation in degrees and flips of the whole drawing. */
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
 }
 export interface FieldInline extends RunRef {
   kind: 'field';
@@ -147,7 +190,19 @@ export interface PermEndInline {
   el: XmlElement;
 }
 
+/** An equation (m:oMath, or m:oMathPara for display equations on their own line). */
+export interface MathInline {
+  kind: 'math';
+  node: XmlElement;
+  /** Display style: an m:oMathPara (big operators, limits above and below). */
+  display: boolean;
+  /** Linear format ("x=(-b±√(b^2-4ac))/(2a)"), for text extraction and search. */
+  text: string;
+  props: RunProps;
+}
+
 export type Inline =
+  | MathInline
   | TextInline
   | TabInline
   | BreakInline
@@ -177,7 +232,12 @@ export interface DocParagraph {
   numbering?: { numId: string; ilvl: number; level: LevelDef };
   /** Set when this paragraph's w:pPr/w:sectPr ends a section. */
   sectionEnd?: SectionProps;
+  /** The paragraph mark is a tracked insertion or deletion. */
+  markRevision?: 'ins' | 'del';
 }
+
+/** Word-like colours for revision authors (one per author, in order of first appearance). */
+export const REVISION_COLORS = ['B5082E', '2E74B5', '548235', '7030A0', 'C55A11', '00838F', '7F6000', '595959'];
 
 export interface DocCell {
   el: XmlElement;
@@ -247,7 +307,7 @@ function contentLock(sdt: XmlElement): { id: string; title?: string } | undefine
   return { id: attr(firstChild(sdtPr, 'w:id'), 'w:val') ?? '', title: attr(firstChild(sdtPr, 'w:alias'), 'w:val') };
 }
 
-const UNDERSTOOD_REQUIRES = new Set(['w14', 'w15', 'w16se', 'w16cid', 'w16cex', 'wp14', 'w16du', 'w16sdtdh']);
+const UNDERSTOOD_REQUIRES = new Set(['w14', 'w15', 'w16se', 'w16cid', 'w16cex', 'wp14', 'w16du', 'w16sdtdh', 'wps', 'wpg', 'wpc', 'cx', 'cx1', 'cx2', 'aink', 'am3d', 'a14']);
 
 export class StoryReader {
   private fields: FieldState[] = [];
@@ -267,7 +327,7 @@ export class StoryReader {
   readBlocks(container: XmlElement, cell?: CellContext): Block[] {
     const out: Block[] = [];
     this.collectBlocks(container, out, cell);
-    return out;
+    return this.ctx.showDeletions ? out : joinDeletedMarks(out);
   }
 
   private collectBlocks(container: XmlElement, out: Block[], cell?: CellContext): void {
@@ -337,6 +397,8 @@ export class StoryReader {
     for (const lock of this.blockLocks) inlines.push({ kind: 'lockEnd', id: lock.id });
 
     const sectPr = firstChild(pPr, 'w:sectPr');
+    const markRPr = firstChild(pPr, 'w:rPr');
+    const markRevision = firstChild(markRPr, 'w:del') || firstChild(markRPr, 'w:moveFrom') ? 'del' : firstChild(markRPr, 'w:ins') || firstChild(markRPr, 'w:moveTo') ? 'ins' : undefined;
     return {
       kind: 'paragraph',
       el: p,
@@ -346,8 +408,22 @@ export class StoryReader {
       inlines,
       numbering: numInfo,
       sectionEnd: sectPr ? parseSectionProps(sectPr) : undefined,
+      ...(markRevision ? { markRevision } : {}),
     };
   }
+
+  /** Display formatting for text inside a tracked change (only when deletions are shown: "all markup"). */
+  private revisionProps(props: RunProps): RunProps {
+    const rev = this.revisions[this.revisions.length - 1];
+    if (!rev || !this.ctx.showDeletions) return props;
+    let index = this.authors.indexOf(rev.author);
+    if (index < 0) index = this.authors.push(rev.author) - 1;
+    const color = REVISION_COLORS[index % REVISION_COLORS.length]!;
+    return rev.kind === 'ins' ? { ...props, underline: 'single', underlineColor: color, color } : { ...props, strike: true, color };
+  }
+
+  private readonly revisions: Array<{ kind: 'ins' | 'del'; author: string }> = [];
+  private readonly authors: string[] = [];
 
   private suppressed(): boolean {
     for (const f of this.fields) if (f.phase === 'instr' || f.dynamic) return true;
@@ -386,6 +462,10 @@ export class StoryReader {
         }
         case 'w:ins':
         case 'w:moveTo':
+          this.revisions.push({ kind: 'ins', author: attr(node, 'w:author') ?? '' });
+          this.readInlines(node, out);
+          this.revisions.pop();
+          break;
         case 'w:smartTag':
         case 'w:customXml':
         case 'w:dir':
@@ -394,7 +474,11 @@ export class StoryReader {
           break;
         case 'w:del':
         case 'w:moveFrom':
-          if (this.ctx.showDeletions) this.readInlines(node, out);
+          if (this.ctx.showDeletions) {
+            this.revisions.push({ kind: 'del', author: attr(node, 'w:author') ?? '' });
+            this.readInlines(node, out);
+            this.revisions.pop();
+          }
           break;
         case 'w:sdt': {
           const lock = contentLock(node);
@@ -455,7 +539,7 @@ export class StoryReader {
 
   private readRun(run: XmlElement, out: Inline[]): void {
     let props: RunProps | undefined;
-    const getProps = () => (props ??= this.runProps(run));
+    const getProps = () => (props ??= this.revisionProps(this.runProps(run)));
 
     for (const node of run.children) {
       if (node.type !== 'element') continue;
@@ -481,7 +565,7 @@ export class StoryReader {
           out.push({ kind: 'text', text: textContent(node), node, run, props: getProps() });
           break;
         case 'w:delText':
-          if (this.ctx.showDeletions) out.push({ kind: 'text', text: textContent(node), node, run, props: { ...getProps(), strike: true } });
+          if (this.ctx.showDeletions) out.push({ kind: 'text', text: textContent(node), node, run, props: getProps() });
           break;
         case 'w:tab':
         case 'w:ptab':
@@ -617,7 +701,7 @@ export class StoryReader {
     }
     const location = attr(node, 'w:docLocation');
     if (url && location) url += `#${location}`;
-    return { url, anchor, tooltip };
+    return setLinkSource({ url, anchor, tooltip }, node);
   }
 
   private chooseAlternate(node: XmlElement): XmlElement | undefined {
@@ -636,13 +720,12 @@ export class StoryReader {
     const height = emuToPt(Number(attr(extent, 'cy') ?? 0));
     const docPr = firstChild(d, 'wp:docPr');
     const graphicData = firstChild(firstChild(d, 'a:graphic'), 'a:graphicData');
-    const blip = findDescendant(graphicData, 'a:blip');
-    const rId = attr(blip, 'r:embed') ?? attr(blip, 'r:link');
-    const rel = rId ? this.ctx.rels.get(rId) : undefined;
+    const content = this.readGraphic(graphicData, width, height);
+    const picture = content?.type === 'picture' ? content : undefined;
     const image: ImageInline = {
       kind: 'image',
-      target: rel?.target,
-      external: rel?.external ?? false,
+      target: picture?.target,
+      external: picture?.external ?? false,
       width,
       height,
       alt: attr(docPr, 'descr') || attr(docPr, 'title') || undefined,
@@ -650,14 +733,129 @@ export class StoryReader {
       run,
       props,
     };
+    if (content && content.type !== 'picture') image.content = content;
+    const xfrm = graphicData ? findDescendant(graphicData, 'a:xfrm') : undefined;
+    const transform = readTransform(xfrm);
+    if (transform.rotation) image.rotation = transform.rotation;
+    if (transform.flipH) image.flipH = true;
+    if (transform.flipV) image.flipV = true;
     if (isAnchor) image.float = readFloat(d);
     return image;
+  }
+
+  /** The content of an a:graphicData: picture, shape, group, canvas, chart or SmartArt. */
+  private readGraphic(graphicData: XmlElement | undefined, width: number, height: number): DrawingContent | undefined {
+    if (!graphicData) return undefined;
+    for (const c of elements(graphicData)) {
+      switch (c.name) {
+        case 'pic:pic':
+          return this.readPicture(c);
+        case 'wps:wsp':
+          return { type: 'shape', shape: this.readShape(c) };
+        case 'wpg:wgp':
+        case 'wpc:wpc':
+          return { type: 'group', children: this.readGroupChildren(c, { x: 0, y: 0, w: width, h: height }) };
+        case 'c:chart': {
+          const rel = this.ctx.rels.get(attr(c, 'r:id') ?? '');
+          return { type: 'chart', part: rel?.target };
+        }
+        case 'dgm:relIds': {
+          const rel = this.ctx.rels.get(attr(c, 'r:dm') ?? '');
+          return { type: 'diagram', dataPart: rel?.target };
+        }
+        default:
+          break;
+      }
+    }
+    // Anything else with a picture in it (e.g. an unknown wrapper) still shows the picture.
+    const blip = findDescendant(graphicData, 'a:blip');
+    return blip ? this.readPicture(graphicData) : undefined;
+  }
+
+  private readPicture(node: XmlElement): DrawingContent {
+    const blip = findDescendant(node, 'a:blip');
+    const rId = attr(blip, 'r:embed') ?? attr(blip, 'r:link');
+    const rel = rId ? this.ctx.rels.get(rId) : undefined;
+    return { type: 'picture', target: rel?.target, external: rel?.external ?? false };
+  }
+
+  private readShape(wsp: XmlElement): ShapeInfo {
+    const spPr = firstChild(wsp, 'wps:spPr') ?? firstChild(wsp, 'dsp:spPr') ?? firstChild(wsp, 'a:spPr') ?? firstChild(wsp, 'p:spPr');
+    const geometry = firstChild(spPr, 'a:prstGeom') ?? firstChild(spPr, 'a:custGeom');
+    const shape: ShapeInfo = { geometry, spPr, style: firstChild(wsp, 'wps:style') ?? firstChild(wsp, 'dsp:style') };
+    const content = firstChild(firstChild(wsp, 'wps:txbx'), 'w:txbxContent');
+    const bodyPr = firstChild(wsp, 'wps:bodyPr');
+    if (content) {
+      const inset = (name: string, fallback: number) => {
+        const v = parseIntSafe(attr(bodyPr, name));
+        return v === undefined ? fallback : emuToPt(v);
+      };
+      const anchor = attr(bodyPr, 'anchor');
+      const vert = attr(bodyPr, 'vert');
+      shape.text = {
+        container: content,
+        autoFit: !!firstChild(bodyPr, 'a:spAutoFit'),
+        blocks: this.readBlocks(content),
+        insets: { left: inset('lIns', 7.2), top: inset('tIns', 3.6), right: inset('rIns', 7.2), bottom: inset('bIns', 3.6) },
+        anchor: anchor === 'ctr' ? 'ctr' : anchor === 'b' ? 'b' : 't',
+        vertical: vert !== undefined && vert !== 'horz',
+      };
+    }
+    const txBody = firstChild(wsp, 'dsp:txBody') ?? firstChild(wsp, 'wps:txBody');
+    if (txBody) shape.txBody = txBody;
+    return shape;
+  }
+
+  /** Children of a group or canvas, mapped from the group's child coordinates into `frame`. */
+  private readGroupChildren(group: XmlElement, frame: { x: number; y: number; w: number; h: number }): DrawingChild[] {
+    const grpSpPr = firstChild(group, 'wpg:grpSpPr') ?? firstChild(group, 'wpc:bg') ?? firstChild(group, 'a:grpSpPr');
+    const xfrm = firstChild(grpSpPr, 'a:xfrm');
+    const chOff = firstChild(xfrm, 'a:chOff');
+    const chExt = firstChild(xfrm, 'a:chExt');
+    const off = { x: Number(attr(chOff, 'x') ?? 0), y: Number(attr(chOff, 'y') ?? 0) };
+    const ext = { cx: Number(attr(chExt, 'cx') ?? 0), cy: Number(attr(chExt, 'cy') ?? 0) };
+    // Without child extents (a canvas), child coordinates are EMU from the frame's corner.
+    const sx = ext.cx > 0 ? frame.w / ext.cx : 1 / 12700;
+    const sy = ext.cy > 0 ? frame.h / ext.cy : 1 / 12700;
+    const out: DrawingChild[] = [];
+    for (const c of elements(group)) {
+      let content: DrawingContent | undefined;
+      let spPr: XmlElement | undefined;
+      switch (c.name) {
+        case 'wps:wsp':
+          content = { type: 'shape', shape: this.readShape(c) };
+          spPr = firstChild(c, 'wps:spPr');
+          break;
+        case 'pic:pic':
+          content = this.readPicture(c);
+          spPr = firstChild(c, 'pic:spPr');
+          break;
+        case 'wpg:grpSp':
+        case 'wpg:wgp':
+          spPr = firstChild(c, 'wpg:grpSpPr');
+          break;
+        case 'wpc:wpc':
+          break;
+        default:
+          continue;
+      }
+      const t = readTransform(firstChild(spPr, 'a:xfrm'));
+      const child = {
+        x: frame.x + (t.x - off.x) * sx,
+        y: frame.y + (t.y - off.y) * sy,
+        w: t.cx * sx,
+        h: t.cy * sy,
+      };
+      if (!content) content = { type: 'group', children: this.readGroupChildren(c, { x: 0, y: 0, w: child.w, h: child.h }) };
+      out.push({ ...child, rotation: t.rotation, flipH: t.flipH, flipV: t.flipV, content });
+    }
+    return out;
   }
 
   private readVml(node: XmlElement, run: XmlElement, props: RunProps): ImageInline | undefined {
     const imagedata = findDescendant(node, 'v:imagedata');
     const rId = attr(imagedata, 'r:id');
-    if (!rId) return undefined;
+    if (!rId) return this.readVmlTextBox(node, run, props);
     const shape = findDescendant(node, 'v:shape');
     const style = parseCssStyle(attr(shape, 'style') ?? '');
     const rel = this.ctx.rels.get(rId);
@@ -674,11 +872,54 @@ export class StoryReader {
     };
   }
 
-  private readMath(node: XmlElement, out: Inline[]): void {
-    // Equations are not typeset yet: show their text so content is not lost.
-    for (const t of findAllDescendants(node, 'm:t')) {
-      out.push({ kind: 'text', text: textContent(t), node: t, run: node, props: this.runProps(undefined) });
+  /** An old-style (VML) text box: its Word paragraphs in a plain frame, sized from the VML style. */
+  private readVmlTextBox(node: XmlElement, run: XmlElement, props: RunProps): ImageInline | undefined {
+    const textbox = findDescendant(node, 'v:textbox');
+    const content = firstChild(textbox, 'w:txbxContent');
+    if (!content) return undefined;
+    const shape = findDescendant(node, 'v:shape') ?? findDescendant(node, 'v:rect') ?? findDescendant(node, 'v:roundrect');
+    const style = parseCssStyle(attr(shape, 'style') ?? '');
+    const fill = attr(shape, 'fillcolor');
+    const stroke = attr(shape, 'strokecolor');
+    const inline: ImageInline = {
+      kind: 'image',
+      target: undefined,
+      external: false,
+      width: cssLengthToPt(style.width) ?? 144,
+      height: cssLengthToPt(style.height) ?? 72,
+      drawing: node,
+      run,
+      props,
+      content: {
+        type: 'shape',
+        shape: {
+          geometry: undefined,
+          spPr: undefined,
+          style: undefined,
+          vml: { fill: attr(shape, 'filled') === 'f' ? undefined : (fill?.replace('#', '') ?? 'FFFFFF'), stroke: attr(shape, 'stroked') === 'f' ? undefined : (stroke?.replace('#', '') ?? '000000') },
+          text: { container: content, blocks: this.readBlocks(content), insets: { left: 7.2, top: 3.6, right: 7.2, bottom: 3.6 }, anchor: 't', vertical: false },
+        },
+      },
+    };
+    if (style.position === 'absolute') {
+      inline.float = {
+        behindDoc: (style['z-index'] ?? '').startsWith('-'),
+        wrap: 'square',
+        wrapText: 'bothSides',
+        hRelative: style['mso-position-horizontal-relative'] ?? 'column',
+        hAlign: style['mso-position-horizontal'],
+        hOffset: cssLengthToPt(style['margin-left']) ?? 0,
+        vRelative: style['mso-position-vertical-relative'] ?? 'paragraph',
+        vAlign: style['mso-position-vertical'],
+        vOffset: cssLengthToPt(style['margin-top']) ?? 0,
+        dist: { top: 0, bottom: 0, left: 9, right: 9 },
+      };
     }
+    return inline;
+  }
+
+  private readMath(node: XmlElement, out: Inline[]): void {
+    out.push({ kind: 'math', node, display: node.name === 'm:oMathPara', text: mathToText(node), props: this.runProps(undefined) });
   }
 
   readTable(tbl: XmlElement): DocTable {
@@ -867,6 +1108,7 @@ export function blocksToText(blocks: Block[]): string {
         else if (i.kind === 'tab') s += '\t';
         else if (i.kind === 'break' && i.type === 'line') s += '\n';
         else if (i.kind === 'field') s += i.cached;
+        else if (i.kind === 'math') s += i.text;
       }
       lines.push(s);
     } else {
@@ -874,4 +1116,49 @@ export function blocksToText(blocks: Block[]): string {
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * The final view of tracked changes: a paragraph whose mark was deleted runs on into the next
+ * paragraph (which keeps its own properties), as Word shows it with markup hidden.
+ */
+function joinDeletedMarks(blocks: Block[]): Block[] {
+  const out: Block[] = [];
+  let carry: Inline[] = [];
+  for (const b of blocks) {
+    if (b.kind === 'paragraph' && b.markRevision === 'del') {
+      carry = [...carry, ...b.inlines];
+      continue;
+    }
+    if (carry.length && b.kind === 'paragraph') {
+      b.inlines = [...carry, ...b.inlines];
+      carry = [];
+    } else if (carry.length) {
+      // A table follows: the carried text stays as its own paragraph rather than vanishing.
+      const last = blocks[blocks.indexOf(b) - 1];
+      if (last && last.kind === 'paragraph') out.push({ ...last, inlines: carry, markRevision: undefined });
+      carry = [];
+    }
+    out.push(b);
+  }
+  if (carry.length) {
+    const last = blocks[blocks.length - 1];
+    if (last && last.kind === 'paragraph') out.push({ ...last, inlines: carry, markRevision: undefined });
+  }
+  return out;
+}
+
+/** Position, size (EMU) and rotation (degrees) of an a:xfrm. */
+function readTransform(xfrm: XmlElement | undefined): { x: number; y: number; cx: number; cy: number; rotation: number; flipH: boolean; flipV: boolean } {
+  const off = firstChild(xfrm, 'a:off');
+  const ext = firstChild(xfrm, 'a:ext');
+  return {
+    x: Number(attr(off, 'x') ?? 0),
+    y: Number(attr(off, 'y') ?? 0),
+    cx: Number(attr(ext, 'cx') ?? 0),
+    cy: Number(attr(ext, 'cy') ?? 0),
+    rotation: Number(attr(xfrm, 'rot') ?? 0) / 60000,
+    flipH: parseOnOff(attr(xfrm, 'flipH') ?? '0'),
+    flipV: parseOnOff(attr(xfrm, 'flipV') ?? '0'),
+  };
 }

@@ -1,0 +1,65 @@
+{
+  "name": "docxkeun-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Word .docx files: lets Claude and other AI assistants read, edit, comment on, track changes in, protect and convert .docx files to PDF, with a live preview that shows the AI at work. Built on docxkeun.",
+  "license": "MIT",
+  "author": "Kevin Jeremia (https://github.com/kevinkjs)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevinkjs/docxkeun.git",
+    "directory": "packages/mcp"
+  },
+  "homepage": "https://github.com/kevinkjs/docxkeun/tree/main/packages/mcp#readme",
+  "bugs": {
+    "url": "https://github.com/kevinkjs/docxkeun/issues"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "docx",
+    "word",
+    "docx-to-pdf",
+    "ai",
+    "claude",
+    "llm",
+    "docxkeun"
+  ],
+  "type": "module",
+  "bin": {
+    "docxkeun-mcp": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "docxkeun": "^0.1.3",
+    "docxkeun-fonts": "^0.1.1",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

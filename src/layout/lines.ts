@@ -7,7 +7,12 @@ import type { LinkTarget } from '../model/fields.js';
 import type { RunProps, TabStop } from '../model/props.js';
 import type { Theme } from '../model/theme.js';
 import { fontNameForSlot, isEastAsian, resolveRunStyle, scriptSlot, type RunStyle } from './style.js';
-import type { FontProvider, LayoutFont } from './types.js';
+import { layoutMath } from '../math/index.js';
+import { mirrorChar } from '../text/bidi.js';
+import { shape } from '../fonts/shaping/index.js';
+import { analyzeBidi, bidiOf, visualAtoms } from './bidi.js';
+import { attr, firstChild, type XmlElement } from '../xml/index.js';
+import type { DisplayItem, FontProvider, LayoutFont } from './types.js';
 
 // ---------------------------------------------------------------------------------------------
 // Range state (links, comments, permission ranges) that spans inlines and paragraphs
@@ -82,9 +87,21 @@ export class RangeTracker {
 interface AtomBase {
   ctx: RangeCtx;
 }
+/** One glyph from the shaping engine, in points: position relative to the pen, and its advance. */
+export interface PlacedGlyph {
+  id: number;
+  dx: number;
+  dy: number;
+  advance: number;
+  /** Text the glyph stands for (a ligature covers several characters), for copy and search in PDFs. */
+  text: string;
+}
+
 export interface CharAtom extends AtomBase {
   kind: 'char';
   ch: string;
+  /** Glyphs from the shaping engine (complex scripts, kerning, ligatures); absent: one glyph per code point. */
+  glyphs?: PlacedGlyph[];
   width: number;
   font: LayoutFont;
   size: number;
@@ -134,7 +151,18 @@ export interface MarkAtom extends AtomBase {
   name: string;
 }
 
-export type Atom = CharAtom | TabAtom | BreakAtom | ImageAtom | FloatAtom | FieldAtom | MarkAtom;
+/** A typeset object placed like a character: an equation. Its items are relative to its baseline origin. */
+export interface ObjectAtom extends AtomBase {
+  kind: 'object';
+  width: number;
+  ascent: number;
+  descent: number;
+  items: DisplayItem[];
+  /** Display equations sit alone on their line, aligned on their own. */
+  align?: 'left' | 'center' | 'right';
+}
+
+export type Atom = CharAtom | TabAtom | BreakAtom | ImageAtom | FloatAtom | FieldAtom | MarkAtom | ObjectAtom;
 
 // ---------------------------------------------------------------------------------------------
 // Fragments (positioned pieces of a line)
@@ -156,6 +184,13 @@ export interface TextFragment {
   offsets: number[];
   /** Width of trailing spaces that hang past the line end (not underlined). */
   trailing: number;
+  /**
+   * Right-to-left or complex-script text (Arabic, Hebrew, Indic…): its characters in logical
+   * order, for renderers that shape text themselves. `chars` and `xs` are in visual order.
+   */
+  complex?: { text: string; rtl: boolean };
+  /** Shaped glyphs per cluster (same order as `chars`). */
+  glyphs?: PlacedGlyph[][];
 }
 export interface TabFragment {
   kind: 'tab';
@@ -199,7 +234,14 @@ export interface MarkFragment {
   name: string;
 }
 
-export type Fragment = TextFragment | TabFragment | ImageFragment | FloatFragment | FieldFragment | MarkFragment;
+export interface ObjectFragment {
+  kind: 'object';
+  x: number;
+  width: number;
+  items: DisplayItem[];
+  ctx: RangeCtx;
+}
+export type Fragment = TextFragment | TabFragment | ImageFragment | FloatFragment | FieldFragment | MarkFragment | ObjectFragment;
 
 export interface Line {
   fragments: Fragment[];
@@ -213,6 +255,16 @@ export interface Line {
   last: boolean;
   /** Range state at the end of the line (for zero-length ranges at line ends). */
   ctx: RangeCtx;
+  /** Empty space above the line: it was moved below a floating object that left no room. */
+  gapBefore?: number;
+}
+
+/** Horizontal room for a line, relative to the column's left edge (text wrapping around floats). */
+export interface LineBounds {
+  left: number;
+  right: number;
+  /** When there is too little room here: the y (relative to the paragraph top) where room starts. */
+  next?: number;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -263,6 +315,12 @@ function sizeAndShift(style: RunStyle, size: number): { size: number; shift: num
 export function pushText(ctx: AtomContext, atoms: Atom[], text: string, props: RunProps, inline?: TextInline): void {
   const style = resolveRunStyle(props, ctx.theme);
   if (style.hidden) return;
+  const first = atoms.length;
+  pushClusters(ctx, atoms, text, style, inline);
+  shapeAtoms(atoms, first);
+}
+
+function pushClusters(ctx: AtomContext, atoms: Atom[], text: string, style: RunStyle, inline: TextInline | undefined): void {
   let offset = 0;
   for (const cluster of clusters(text)) {
     const cp = cluster.codePointAt(0)!;
@@ -340,6 +398,15 @@ export function buildAtoms(para: DocParagraph, ctx: AtomContext, label?: { text:
         if (inline.float) atoms.push({ kind: 'float', inline, ctx: ctx.tracker.ctx });
         else atoms.push({ kind: 'image', inline, width: inline.width, height: inline.height, ctx: ctx.tracker.ctx });
         break;
+      case 'math': {
+        const style = resolveRunStyle(inline.props, ctx.theme);
+        // An equation alone in its paragraph is a display equation, as in Word.
+        const display = inline.display || para.inlines.every((i) => i.kind === 'math' || (i.kind !== 'text' && i.kind !== 'tab' && i.kind !== 'image' && i.kind !== 'field'));
+        const m = layoutMath(inline.node, { fonts: ctx.fonts, size: style.size, color: style.color === 'auto' ? '000000' : style.color, display });
+        const jc = mathJc(inline.node);
+        atoms.push({ kind: 'object', width: m.width, ascent: m.ascent, descent: m.descent, items: m.items, align: display ? jc : undefined, ctx: ctx.tracker.ctx });
+        break;
+      }
       case 'field': {
         const style = resolveRunStyle(inline.props, ctx.theme);
         if (style.hidden) break;
@@ -362,6 +429,7 @@ export function buildAtoms(para: DocParagraph, ctx: AtomContext, label?: { text:
     }
   }
   markBreakOpportunities(atoms);
+  analyzeBidi(atoms, !!para.props.bidi);
   return atoms;
 }
 
@@ -370,7 +438,7 @@ function markBreakOpportunities(atoms: Atom[]): void {
     const a = atoms[i]!;
     if (a.kind !== 'char') {
       // Images and fields can break on both sides.
-      if (a.kind === 'image' || a.kind === 'field') {
+      if (a.kind === 'image' || a.kind === 'field' || a.kind === 'object') {
         const prev = atoms[i - 1];
         if (prev && prev.kind === 'char') prev.breakAfter = true;
         if (a.kind === 'field') continue;
@@ -392,7 +460,7 @@ function markBreakOpportunities(atoms: Atom[]): void {
     if (nextCp !== undefined && (isEastAsian(cp) || isEastAsian(nextCp)) && !NO_LINE_START.has(nextCp) && !NO_LINE_END.has(cp)) {
       a.breakAfter = true;
     }
-    if (next && next.kind === 'image') a.breakAfter = true;
+    if (next && (next.kind === 'image' || next.kind === 'object')) a.breakAfter = true;
   }
 }
 
@@ -413,7 +481,19 @@ export interface LineGeometry {
   /** Metrics used for empty lines and the paragraph mark. */
   markAscent: number;
   markDescent: number;
+  /** Room at a given height (relative to the paragraph's first line), for wrapping around floats. */
+  bounds?: (top: number, height: number) => LineBounds | undefined;
+  /** The height a finished line will take (to know where the next line starts). */
+  lineHeight?: (line: Line) => number;
+  /**
+   * A right-to-left paragraph: the geometry above is measured from the right edge (start),
+   * and lines are mirrored onto the page within this width.
+   */
+  mirror?: number;
 }
+
+/** Narrowest line worth placing beside a floating object; anything narrower moves below it. */
+const MIN_WRAP_WIDTH = 24;
 
 const EPS = 0.01;
 
@@ -422,6 +502,7 @@ function atomWidth(a: Atom): number {
     case 'char':
       return a.width;
     case 'image':
+    case 'object':
       return a.width;
     case 'field':
       return a.width;
@@ -457,15 +538,41 @@ function segmentWidth(atoms: Atom[], from: number, decimal: boolean): number {
   return w;
 }
 
-export function breakLines(atoms: Atom[], g: LineGeometry): Line[] {
+/** Geometry for the line starting at `top`: the paragraph's own, narrowed around floats. */
+function lineGeometry(g: LineGeometry, first: boolean, top: number): { g: LineGeometry; left: number; gap: number } {
+  const own = first ? g.firstLeft : g.left;
+  if (!g.bounds) return { g, left: own, gap: 0 };
+  const estimate = g.markAscent + g.markDescent;
+  let gap = 0;
+  const W = g.mirror;
+  for (let tries = 0; tries < 20; tries++) {
+    const raw = g.bounds(top + gap, estimate);
+    // Room beside floats is on the page; a right-to-left paragraph measures from the right.
+    const b = raw && W !== undefined ? { ...raw, left: W - raw.right, right: W - raw.left } : raw;
+    if (!b) return { g, left: own, gap };
+    const left = Math.max(own, b.left);
+    const right = Math.min(g.right, b.right);
+    if (right - left >= MIN_WRAP_WIDTH || b.next === undefined || b.next <= top + gap) {
+      return { g: { ...g, right, firstLeft: first ? left : g.firstLeft, left: first ? g.left : left }, left, gap };
+    }
+    gap = b.next - top;
+  }
+  return { g, left: own, gap };
+}
+
+export function breakLines(atoms: Atom[], geometry: LineGeometry): Line[] {
   const lines: Line[] = [];
   let start = 0;
   let first = true;
+  let top = 0;
   if (atoms.length === 0) {
-    return [{ fragments: [], ascent: g.markAscent, descent: g.markDescent, left: g.firstLeft, right: g.right, last: true, ctx: EMPTY_CTX }];
+    const { g, left, gap } = lineGeometry(geometry, true, 0);
+    return [{ fragments: [], ascent: g.markAscent, descent: g.markDescent, left, right: g.right, last: true, ctx: EMPTY_CTX, ...(gap ? { gapBefore: gap } : {}) }];
   }
   while (start < atoms.length) {
-    const left = first ? g.firstLeft : g.left;
+    const lg = lineGeometry(geometry, first, top);
+    const g = lg.g;
+    const left = lg.left;
     const pos = new Map<number, number>();
     const tabWidths = new Map<number, number>();
     const tabStops = new Map<number, TabStop>();
@@ -515,12 +622,15 @@ export function breakLines(atoms: Atom[], g: LineGeometry): Line[] {
       }
       pos.set(i, x);
       x += w;
-      if (w > 0 || a.kind === 'image') visible = true;
+      if (w > 0 || a.kind === 'image' || a.kind === 'object') visible = true;
       if (a.kind === 'char' && a.breakAfter) lastBreak = i;
     }
     if (end <= start) end = start + 1; // always make progress
     const last = end >= atoms.length;
-    lines.push(finishLine(atoms, start, end, pos, tabWidths, tabStops, g, left, forced, last));
+    const line = finishLine(atoms, start, end, pos, tabWidths, tabStops, g, left, forced, last);
+    if (lg.gap) line.gapBefore = lg.gap;
+    lines.push(line);
+    top += lg.gap + (geometry.lineHeight ? geometry.lineHeight(line) : line.ascent + line.descent);
     start = end;
     first = false;
   }
@@ -559,12 +669,20 @@ function finishLine(
     contentEnd = Math.max(contentEnd, p + w);
   }
 
-  // Alignment and justification shift positions.
+  // Alignment and justification shift positions. A display equation alone on its line uses its own alignment.
   const extra = g.right - contentEnd;
   const shift = new Map<number, number>();
-  const justify = (g.jc === 'both' && !last && forced !== 'page' && forced !== 'column') || g.jc === 'distribute';
-  if (extra > EPS && (g.jc === 'center' || g.jc === 'right')) {
-    const offset = g.jc === 'center' ? extra / 2 : extra;
+  let jc = g.jc;
+  const objects = [];
+  for (let i = start; i < end; i++) {
+    const a = atoms[i]!;
+    if (a.kind === 'object' && a.align) objects.push(a);
+    else if (a.kind !== 'mark' && a.kind !== 'break' && a.kind !== 'float' && !(a.kind === 'char' && a.space)) objects.push(undefined);
+  }
+  if (objects.length === 1 && objects[0]) jc = objects[0].align!;
+  const justify = (jc === 'both' && !last && forced !== 'page' && forced !== 'column') || jc === 'distribute';
+  if (extra > EPS && (jc === 'center' || jc === 'right')) {
+    const offset = jc === 'center' ? extra / 2 : extra;
     for (let i = start; i < end; i++) shift.set(i, offset);
   } else if (extra > EPS && justify) {
     let lastContent = start - 1;
@@ -592,7 +710,7 @@ function finishLine(
         const a = atoms[i] as CharAtom;
         a.width += each;
       }
-    } else if (g.jc === 'distribute') {
+    } else if (jc === 'distribute') {
       const chars: number[] = [];
       for (let i = Math.max(start, lastTab + 1); i < lastContent; i++) if (atoms[i]!.kind === 'char') chars.push(i);
       if (chars.length > 0) {
@@ -609,29 +727,78 @@ function finishLine(
     }
   }
 
+  // Visual order: right-to-left runs are reversed (Unicode bidi), and a right-to-left
+  // paragraph's line is mirrored onto the page.
+  let order: number[] = [];
+  for (let i = start; i < end; i++) order.push(i);
+  let xOf = (i: number) => (pos.get(i) ?? left) + (shift.get(i) ?? 0);
+  const levelOf = new Map<number, number>();
+  const info = bidiOf(atoms);
+  if (info || g.mirror !== undefined) {
+    const widthOf = (i: number) => {
+      const a = atoms[i]!;
+      if (a.kind === 'tab') return tabWidths.get(i) ?? 0;
+      if (a.kind === 'char' && a.softHyphen && a.ch !== '-') return 0;
+      return atomWidth(a);
+    };
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const i of order) {
+      if (!pos.has(i)) continue;
+      lo = Math.min(lo, xOf(i));
+      hi = Math.max(hi, xOf(i) + widthOf(i));
+    }
+    if (lo === Infinity) lo = hi = left;
+    if (info) {
+      const visual = visualAtoms(info, start, end);
+      order = visual.map((v) => v.atom);
+      for (const v of visual) levelOf.set(v.atom, v.level);
+    }
+    const placed = new Map<number, number>();
+    let x = g.mirror !== undefined ? g.mirror - hi : lo;
+    for (const i of order) {
+      placed.set(i, x);
+      x += widthOf(i);
+    }
+    xOf = (i) => placed.get(i) ?? left;
+  }
+
   // Group atoms into fragments.
   const fragments: Fragment[] = [];
   let ascent = 0;
   let descent = 0;
   let current: TextFragment | undefined;
   let lineCtx = atoms[start]?.ctx ?? EMPTY_CTX;
-  for (let i = start; i < end; i++) {
+  for (const i of order) {
     const a = atoms[i]!;
-    const x = (pos.get(i) ?? left) + (shift.get(i) ?? 0);
+    const x = xOf(i);
     lineCtx = a.ctx;
     if (a.kind === 'char') {
       if (a.softHyphen && a.ch !== '-') continue;
       ascent = Math.max(ascent, a.font.ascent * a.size + a.shift);
       descent = Math.max(descent, a.font.descent * a.size - a.shift);
-      if (!current || current.font !== a.font || current.size !== a.size || current.shift !== a.shift || current.style !== a.style || current.ctx !== a.ctx || current.inline !== a.inline) {
-        current = { kind: 'text', x, width: 0, chars: [], xs: [], widths: [], font: a.font, size: a.size, shift: a.shift, style: a.style, ctx: a.ctx, inline: a.inline, offsets: [], trailing: 0 };
+      const level = levelOf.get(i) ?? 0;
+      const rtl = level % 2 === 1;
+      const complex = rtl || needsShaping(a.ch);
+      if (!current || current.font !== a.font || current.size !== a.size || current.shift !== a.shift || current.style !== a.style || current.ctx !== a.ctx || current.inline !== a.inline || !!current.complex !== complex || (current.complex && current.complex.rtl !== rtl)) {
+        current = { kind: 'text', x, width: 0, chars: [], xs: [], widths: [], font: a.font, size: a.size, shift: a.shift, style: a.style, ctx: a.ctx, inline: a.inline, offsets: [], trailing: 0, ...(complex ? { complex: { text: '', rtl } } : {}) };
         fragments.push(current);
       }
-      current.chars.push(a.ch);
+      // Rule L4: brackets and similar characters are mirrored in right-to-left text.
+      const shown = rtl && a.ch.length <= 2 ? String.fromCodePoint(mirrorChar(a.ch.codePointAt(0)!) ?? a.ch.codePointAt(0)!) : a.ch;
+      if (a.glyphs || current.glyphs) {
+        // Shaped glyphs per cluster; unshaped clusters in the same fragment get their plain glyphs.
+        const plain = (atom: CharAtom, ch: string): PlacedGlyph[] =>
+          [...ch].map((c, k) => ({ id: atom.font.glyphId(c.codePointAt(0)!), dx: 0, dy: 0, advance: atom.font.advance(c.codePointAt(0)!) * atom.size, text: k === 0 ? ch : '' }));
+        current.glyphs ??= current.chars.map((c) => plain(a, c));
+        current.glyphs.push(a.glyphs ?? plain(a, shown));
+      }
+      current.chars.push(shown);
       current.xs.push(x);
       current.widths.push(a.width);
       current.offsets.push(a.offset);
-      current.width = x + a.width - current.x;
+      current.width = Math.max(current.width, x + a.width - current.x);
+      if (current.complex) current.complex.text = rtl ? a.ch + current.complex.text : current.complex.text + a.ch;
       continue;
     }
     current = undefined;
@@ -649,6 +816,11 @@ function finishLine(
         break;
       case 'float':
         fragments.push({ kind: 'float', x, inline: a.inline });
+        break;
+      case 'object':
+        ascent = Math.max(ascent, a.ascent);
+        descent = Math.max(descent, a.descent);
+        fragments.push({ kind: 'object', x, width: a.width, items: a.items, ctx: a.ctx });
         break;
       case 'field':
         ascent = Math.max(ascent, a.font.ascent * a.size + a.shift);
@@ -685,10 +857,112 @@ function finishLine(
     fragments,
     ascent,
     descent,
-    left,
-    right: g.right,
+    // A right-to-left line's content box, mirrored like its content.
+    left: g.mirror !== undefined ? g.mirror - g.right : left,
+    right: g.mirror !== undefined ? g.mirror - left : g.right,
     breakAfter: forced === 'page' || forced === 'column' ? forced : undefined,
     last,
     ctx: lineCtx,
   };
+}
+
+/** Alignment of a display equation (m:oMathParaPr/m:jc; Word's default centres it). */
+function mathJc(node: XmlElement): 'left' | 'center' | 'right' {
+  const jc = attr(firstChild(firstChild(node, 'm:oMathParaPr'), 'm:jc'), 'm:val');
+  return jc === 'left' ? 'left' : jc === 'right' ? 'right' : 'center';
+}
+
+/** Scripts whose letters join or reorder (Arabic, Syriac, Thaana, N'Ko, Indic, Thai, Lao, Tibetan, Myanmar, Khmer, Mongolian). */
+const SHAPED = /[\u0600-\u08ff\u0900-\u0dff\u0e00-\u0eff\u0f00-\u0fff\u1000-\u109f\u1780-\u18af\ua800-\uabff\ufb50-\ufdff\ufe70-\ufeff]/;
+
+/** Whether a character needs a shaping engine to look right (its renderer should shape the whole run). */
+export function needsShaping(ch: string): boolean {
+  return SHAPED.test(ch);
+}
+
+/** Scripts written right to left (Hebrew, Arabic, Syriac, Thaana, N'Ko, Samaritan, Mandaic). */
+const RTL_SCRIPT = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]/;
+
+/**
+ * Run the OpenType shaping engine over runs of atoms that need it: complex scripts (Arabic
+ * joining, Indic reordering, mark placement), and Latin text where Word turns on kerning
+ * (w:kern, from that size up) or ligatures (w14:ligatures). Each atom keeps its own cluster;
+ * a ligature's glyph goes to the first atom it covers and the others get no glyphs.
+ */
+function shapeAtoms(atoms: Atom[], from: number): void {
+  let i = from;
+  while (i < atoms.length) {
+    const a = atoms[i]!;
+    if (a.kind !== 'char' || !wantsShaping(a)) {
+      i++;
+      continue;
+    }
+    // A run with one font, size and style (spaces included, so kerning and joining see whole words).
+    let j = i + 1;
+    while (j < atoms.length) {
+      const b = atoms[j]!;
+      if (b.kind !== 'char' || b.font !== a.font || b.size !== a.size || b.style !== a.style || b.softHyphen) break;
+      j++;
+    }
+    shapeRun(atoms.slice(i, j) as CharAtom[]);
+    i = j;
+  }
+}
+
+function wantsShaping(a: CharAtom): boolean {
+  if (!a.font.face || a.softHyphen) return false;
+  if (needsShaping(a.ch)) return true;
+  if (a.style.kern !== undefined && a.size >= a.style.kern) return true;
+  return !!a.style.ligatures;
+}
+
+function shapeRun(run: CharAtom[]): void {
+  const first = run[0]!;
+  const font = first.font.face!.font;
+  let text = '';
+  const starts: number[] = [];
+  for (const a of run) {
+    starts.push(text.length);
+    text += a.ch;
+  }
+  const rtl = RTL_SCRIPT.test(text);
+  const features: Record<string, boolean> = {};
+  const complex = run.some((a) => needsShaping(a.ch));
+  if (!complex) {
+    // Latin: only what Word asks for (it applies no ligatures by default).
+    const lig = first.style.ligatures;
+    features.liga = !!lig && lig !== 'none';
+    features.clig = !!lig && /all|contextual/i.test(lig);
+    features.dlig = !!lig && /all|discretional/i.test(lig);
+    features.kern = first.style.kern !== undefined && first.size >= first.style.kern;
+  }
+  let glyphs;
+  try {
+    glyphs = shape(font, text, { direction: rtl ? 'rtl' : 'ltr', features });
+  } catch {
+    return;
+  }
+  const scale = first.size / (font.unitsPerEm || 1000);
+  const owner = (cluster: number) => {
+    let k = 0;
+    while (k + 1 < starts.length && starts[k + 1]! <= cluster) k++;
+    return k;
+  };
+  const per: PlacedGlyph[][] = run.map(() => []);
+  // The text each glyph stands for: from its cluster to the next cluster's start.
+  const clusterStarts = [...new Set(glyphs.map((g) => g.cluster))].sort((x, y) => x - y);
+  const seen = new Set<number>();
+  for (const g of glyphs) {
+    const k = owner(g.cluster);
+    const next = clusterStarts.find((c) => c > g.cluster) ?? text.length;
+    const glyphText = seen.has(g.cluster) ? '' : text.slice(g.cluster, next);
+    seen.add(g.cluster);
+    per[k]!.push({ id: g.glyph, dx: g.offsetX * scale, dy: g.offsetY * scale, advance: g.advance * scale, text: glyphText });
+  }
+  run.forEach((a, k) => {
+    const gl = per[k]!;
+    a.glyphs = gl;
+    const width = gl.reduce((s, g) => s + g.advance, 0);
+    a.width = width * a.style.scale + (gl.length ? a.style.spacing : 0);
+  });
 }

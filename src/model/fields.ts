@@ -72,6 +72,19 @@ export interface LinkTarget {
   tooltip?: string;
 }
 
+const linkSources = new WeakMap<LinkTarget, object>();
+
+/** Remember the w:hyperlink element a link target was read from (links made by fields have none). */
+export function setLinkSource(target: LinkTarget, element: object): LinkTarget {
+  linkSources.set(target, element);
+  return target;
+}
+
+/** The w:hyperlink element a link target came from, so a menu can edit exactly that link. */
+export function linkSource(target: LinkTarget): object | undefined {
+  return linkSources.get(target);
+}
+
 /** Link target expressed by a field, if the field is a link. */
 export function fieldLinkTarget(f: FieldInstruction): LinkTarget | undefined {
   if (f.type === 'HYPERLINK') {

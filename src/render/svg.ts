@@ -3,7 +3,8 @@
  * explicit x for every character so the browser draws exactly what layout computed.
  * All document-derived strings are escaped: documents are untrusted input.
  */
-import type { DisplayItem, LayoutFont, Page, TextItem } from '../layout/types.js';
+import { pngDataUrl } from '../images/png-encode.js';
+import type { DisplayItem, LayoutFont, Page, PathItem, RasterImage, TextItem } from '../layout/types.js';
 
 export interface SvgOptions {
   /** CSS font-family for a layout font (registered FontFace name, or a system family list). */
@@ -36,6 +37,13 @@ function textMarkup(t: TextItem, index: number, o: SvgOptions): string {
   const skew = t.font.syntheticItalic ? ` transform="translate(${n(t.x)} ${n(t.y)}) skewX(-12) translate(${n(-t.x)} ${n(-t.y)})"` : '';
   // xml:space="preserve" keeps leading/trailing spaces, so the per-character x list lines up.
   const common = `xml:space="preserve" font-family="${family}" font-size="${n(t.size)}" fill="${color(t.color)}"${weight}${style}${stroke}${skew}`;
+  if (t.complex && t.chars.length) {
+    // Right-to-left and complex scripts: the browser shapes and orders the run; textLength keeps our width.
+    const left = t.xs[0]!;
+    const right = t.xs[t.xs.length - 1]! + t.widths[t.widths.length - 1]!;
+    const dir = t.complex.rtl ? ` direction="rtl" unicode-bidi="embed"` : '';
+    return `<text data-i="${index}" data-complex="1" x="${n(t.complex.rtl ? right : left)}" y="${n(t.y)}" textLength="${n(right - left)}" lengthAdjust="spacingAndGlyphs"${dir} ${common}>${esc(t.complex.text)}</text>`;
+  }
   if (isSimpleText(t)) {
     return `<text data-i="${index}" x="${t.xs.map(n).join(' ')}" y="${n(t.y)}" ${common}>${esc(t.text)}</text>`;
   }
@@ -56,14 +64,45 @@ function lineMarkup(item: Extract<DisplayItem, { type: 'line' }>): string {
     : base(item.x1 - d / 2, item.y1, item.x2 - d / 2, item.y2, w) + base(item.x1 + d / 2, item.y1, item.x2 + d / 2, item.y2, w);
 }
 
-export function pageToSvg(page: Page, o: SvgOptions): string {
+export function pathData(commands: PathItem['commands']): string {
+  return commands
+    .map((c) => (c.op === 'Z' ? 'Z' : c.op === 'C' ? `C${n(c.x1)} ${n(c.y1)} ${n(c.x2)} ${n(c.y2)} ${n(c.x)} ${n(c.y)}` : `${c.op}${n(c.x)} ${n(c.y)}`))
+    .join('');
+}
+
+function pathMarkup(item: PathItem): string {
+  const attrs = [`d="${pathData(item.commands)}"`];
+  attrs.push(item.fill ? `fill="${color(item.fill)}"` : 'fill="none"');
+  if (item.fill && item.fillOpacity !== undefined && item.fillOpacity < 1) attrs.push(`fill-opacity="${n(item.fillOpacity)}"`);
+  if (item.evenOdd) attrs.push('fill-rule="evenodd"');
+  if (item.stroke) {
+    attrs.push(`stroke="${color(item.stroke)}" stroke-width="${n(item.strokeWidth ?? 0.75)}"`);
+    if (item.strokeOpacity !== undefined && item.strokeOpacity < 1) attrs.push(`stroke-opacity="${n(item.strokeOpacity)}"`);
+    if (item.dash?.length) attrs.push(`stroke-dasharray="${item.dash.map(n).join(' ')}"`);
+    if (item.lineCap) attrs.push(`stroke-linecap="${item.lineCap}"`);
+    if (item.lineJoin) attrs.push(`stroke-linejoin="${item.lineJoin}"`);
+  }
+  return `<path ${attrs.join(' ')}/>`;
+}
+
+/** Decoded pixels become a PNG data URL, cached per image. */
+const rasterUrls = new WeakMap<RasterImage, string>();
+function rasterUrl(image: RasterImage): string {
+  let url = rasterUrls.get(image);
+  if (!url) {
+    url = pngDataUrl(image);
+    rasterUrls.set(image, url);
+  }
+  return url;
+}
+
+/** SVG markup for a list of display items (without the <svg> wrapper). */
+export function itemsToSvg(items: DisplayItem[], o: SvgOptions, indexBase = 0): string {
   const parts: string[] = [];
-  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n(page.width)} ${n(page.height)}" width="100%" height="100%" style="white-space:pre" role="document">`);
-  parts.push(`<rect x="0" y="0" width="${n(page.width)}" height="${n(page.height)}" fill="#fff"/>`);
-  page.items.forEach((item, i) => {
+  items.forEach((item, i) => {
     switch (item.type) {
       case 'text':
-        parts.push(textMarkup(item, i, o));
+        parts.push(textMarkup(item, indexBase + i, o));
         break;
       case 'rect':
         parts.push(`<rect x="${n(item.x)}" y="${n(item.y)}" width="${n(item.w)}" height="${n(item.h)}" fill="${color(item.fill)}"/>`);
@@ -71,10 +110,17 @@ export function pageToSvg(page: Page, o: SvgOptions): string {
       case 'line':
         parts.push(lineMarkup(item));
         break;
+      case 'path':
+        parts.push(pathMarkup(item));
+        break;
       case 'image': {
-        const url = o.imageUrl(item.target, item.external);
+        if (item.frameOnly) break;
+        const url = item.raster ? rasterUrl(item.raster) : o.imageUrl(item.target, item.external);
         if (url) {
-          parts.push(`<image href="${esc(url)}" x="${n(item.x)}" y="${n(item.y)}" width="${n(item.w)}" height="${n(item.h)}" preserveAspectRatio="none"${item.alt ? ` aria-label="${esc(item.alt)}"` : ''}/>`);
+          const cx = item.x + item.w / 2;
+          const cy = item.y + item.h / 2;
+          const turns = [item.rotation ? `rotate(${n(item.rotation)} ${n(cx)} ${n(cy)})` : '', item.flipH || item.flipV ? `translate(${n(cx)} ${n(cy)}) scale(${item.flipH ? -1 : 1} ${item.flipV ? -1 : 1}) translate(${n(-cx)} ${n(-cy)})` : ''].filter(Boolean).join(' ');
+          parts.push(`<image href="${esc(url)}" x="${n(item.x)}" y="${n(item.y)}" width="${n(item.w)}" height="${n(item.h)}" preserveAspectRatio="none"${turns ? ` transform="${turns}"` : ''}${item.alt ? ` aria-label="${esc(item.alt)}"` : ''}/>`);
         } else {
           parts.push(`<rect x="${n(item.x)}" y="${n(item.y)}" width="${n(item.w)}" height="${n(item.h)}" fill="#f1f3f4" stroke="#c0c4c8" stroke-width="0.5"/>`);
         }
@@ -82,6 +128,14 @@ export function pageToSvg(page: Page, o: SvgOptions): string {
       }
     }
   });
+  return parts.join('');
+}
+
+export function pageToSvg(page: Page, o: SvgOptions): string {
+  const parts: string[] = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n(page.width)} ${n(page.height)}" width="100%" height="100%" style="white-space:pre" role="document">`);
+  parts.push(`<rect x="0" y="0" width="${n(page.width)}" height="${n(page.height)}" fill="#fff"/>`);
+  parts.push(itemsToSvg(page.items, o));
   parts.push('</svg>');
   return parts.join('');
 }

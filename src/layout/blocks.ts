@@ -2,11 +2,12 @@
  * Blocks → boxes. A box is an unbreakable vertical slice (a line, some spacing, a table row)
  * with keep rules; the paginator stacks boxes into columns and pages.
  */
-import { blocksToText, type Block, type DocParagraph, type DocTable, type NoteRefInline } from '../model/content.js';
-import type { NumberingCounter } from '../model/numbering.js';
+import { blocksToText, type Block, type DocParagraph, type DocTable, type ImageInline, type NoteRefInline } from '../model/content.js';
+import { normaliseBullet, type NumberingCounter } from '../model/numbering.js';
 import { isVisibleBorder, mergeRunProps, shadingColor, type Border, type ParagraphBorders, type TableBorders } from '../model/props.js';
 import type { Theme } from '../model/theme.js';
-import { breakLines, buildAtoms, styleFont, type Line, type RangeTracker } from './lines.js';
+import { paragraphKey, type LayoutCache } from './cache.js';
+import { breakLines, buildAtoms, styleFont, type Atom, type Line, type LineGeometry, type RangeTracker } from './lines.js';
 import { addItem, borderLine, paintLine, type Painter } from './paint.js';
 import { resolveRunStyle } from './style.js';
 import type { FontProvider } from './types.js';
@@ -31,7 +32,22 @@ export interface Box {
   split?(avail: number): [Box, Box] | undefined;
   /** Table header rows to repeat when this box starts a new page. */
   repeatHeader?: Box[];
+  /** On a paragraph's first box: what pagination needs to wrap it around floating objects. */
+  paragraph?: ParagraphMeta;
   paint(p: Painter, x: number, y: number): void;
+}
+
+export interface ParagraphMeta {
+  /** How many boxes (from this one) belong to the paragraph. */
+  count: number;
+  /** Height of the boxes before the first line (spacing before, top border). */
+  textOffset: number;
+  /** Floating objects anchored in the paragraph. */
+  floats: ImageInline[];
+  /** The paragraph's boxes again, with lines broken around floats (`bounds` relative to the first line's top). */
+  reflow(bounds: NonNullable<LineGeometry['bounds']>): Box[];
+  /** Already laid out around this page's floats. */
+  wrapped?: boolean;
 }
 
 export interface BlockContext {
@@ -41,29 +57,8 @@ export interface BlockContext {
   counter: NumberingCounter;
   defaultTab: number;
   noteLabel(inline: NoteRefInline): string;
-}
-
-/** Private-use symbol-font bullets mapped to Unicode equivalents. */
-const SYMBOL_BULLETS: Record<number, string> = {
-  0xf0b7: '•',
-  0xf0a7: '▪',
-  0xf0a8: '◆',
-  0xf0d8: '➢',
-  0xf076: '❖',
-  0xf0fc: '✓',
-  0xf06e: '■',
-  0xf071: '❑',
-  0xf0e0: '➢',
-  0xf06f: '□',
-};
-
-function normaliseBullet(text: string): string {
-  let out = '';
-  for (const ch of text) {
-    const cp = ch.codePointAt(0)!;
-    out += SYMBOL_BULLETS[cp] ?? (cp >= 0xf000 && cp <= 0xf0ff ? '•' : ch);
-  }
-  return out;
+  /** Paragraph layout kept from earlier runs. */
+  cache?: LayoutCache;
 }
 
 function sameBorders(a: ParagraphBorders | undefined, b: ParagraphBorders | undefined): boolean {
@@ -112,8 +107,17 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
     }
   }
 
-  const atoms = buildAtoms(para, { fonts: ctx.fonts, theme: ctx.theme, tracker: ctx.tracker, noteLabel: ctx.noteLabel }, label);
-  const lines = breakLines(atoms, {
+  // Note numbers depend on order: ask for them even when the paragraph comes from the cache.
+  const noteLabels = para.inlines.filter((i): i is NoteRefInline => i.kind === 'noteRef').map((i) => ctx.noteLabel(i));
+  const cacheKey = ctx.cache ? paragraphKey(para, [width, label, noteLabels, ctx.tracker.ctx, ctx.defaultTab]) : undefined;
+  const cached = cacheKey !== undefined ? ctx.cache!.get(para.el, cacheKey) : undefined;
+  let atoms: Atom[];
+  if (cached) {
+    atoms = cached.atoms;
+    ctx.tracker.ctx = cached.trackerAfter as RangeTracker['ctx'];
+  } else atoms = buildAtoms(para, { fonts: ctx.fonts, theme: ctx.theme, tracker: ctx.tracker, noteLabel: ctx.noteLabel }, label);
+  const spacing = props.spacing ?? {};
+  const geometry: LineGeometry = {
     firstLeft: left + firstLine,
     left,
     right: width - right,
@@ -121,11 +125,18 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
     tabs: props.tabs ?? [],
     defaultTab: ctx.defaultTab,
     jc: props.jc ?? 'left',
+    // Right-to-left: indents, tabs and alignment run from the right edge; lines are mirrored.
+    ...(props.bidi ? { mirror: width } : {}),
     markAscent: mark.font.ascent * mark.size,
     markDescent: mark.font.descent * mark.size,
-  });
+    lineHeight: (line) => lineHeight(line, spacing.line, spacing.lineRule).height,
+  };
+  // Line breaking makes a soft hyphen at a line end visible; remember them for re-breaking.
+  const softHyphens = atoms.filter((a): a is Extract<typeof a, { kind: 'char' }> => a.kind === 'char' && !!a.softHyphen).map((a) => ({ atom: a, ch: a.ch, width: a.width }));
+  const lines = cached ? cached.lines : breakLines(atoms, geometry);
+  // Soft hyphens change their atoms when lines are broken again around floats: not cached.
+  if (cacheKey !== undefined && !cached && !softHyphens.length) ctx.cache!.set(para.el, cacheKey, { atoms, lines, trackerAfter: ctx.tracker.ctx });
 
-  const spacing = props.spacing ?? {};
   let before = spacing.beforeAutospacing ? 14 : (spacing.before ?? 0);
   const after = spacing.afterAutospacing ? 14 : (spacing.after ?? 0);
   if (props.contextualSpacing && state.styleId === para.styleId) before = 0;
@@ -138,8 +149,10 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
   const boxes: Box[] = [];
 
   // Decoration bounds (borders sit outside the text indents).
-  const decoLeft = left - (isVisibleBorder(borders?.left) ? borders!.left!.space + borders!.left!.width : 0);
-  const decoRight = width - right + (isVisibleBorder(borders?.right) ? borders!.right!.space + borders!.right!.width : 0);
+  // In a right-to-left paragraph the start indent (w:left) is on the right.
+  const [startInd, endInd] = props.bidi ? [right, left] : [left, right];
+  const decoLeft = startInd - (isVisibleBorder(borders?.left) ? borders!.left!.space + borders!.left!.width : 0);
+  const decoRight = width - endInd + (isVisibleBorder(borders?.right) ? borders!.right!.space + borders!.right!.width : 0);
 
   const decorate = (p: Painter, x: number, y: number, h: number) => {
     if (shading) addItem(p, { type: 'rect', x: x + decoLeft, y, w: decoRight - decoLeft, h, fill: shading });
@@ -186,18 +199,24 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
     }
   }
 
-  const n = lines.length;
+  const pre = boxes.splice(0);
   const widow = props.widowControl ?? true;
   const outline = props.outlineLevel !== undefined && props.outlineLevel < 9 ? { level: props.outlineLevel, title: blocksToText([para]).replace(/\s+/g, ' ').trim() } : undefined;
+  const lineBoxes = (lines: Line[]): Box[] => {
+    const out: Box[] = [];
+    const n = lines.length;
   lines.forEach((line, i) => {
-    const { height, baseline } = lineHeight(line, spacing.line, spacing.lineRule);
+    const natural = lineHeight(line, spacing.line, spacing.lineRule);
+    const gap = line.gapBefore ?? 0;
+    const height = natural.height + gap;
+    const baseline = natural.baseline + gap;
     const notes: NoteRef[] = [];
     for (const f of line.fragments) if (f.kind === 'mark' && (f.mark === 'footnote' || f.mark === 'endnote')) notes.push({ type: f.mark, id: f.name });
     let keep = false;
     if (props.keepLines && i < n - 1) keep = true;
     if (widow && n >= 2 && (i === 0 || i === n - 2)) keep = true;
     if (i === n - 1 && props.keepNext) keep = true;
-    boxes.push({
+    out.push({
       height,
       keepWithNext: keep,
       breakBefore: i === 0 && props.pageBreakBefore ? 'page' : undefined,
@@ -205,13 +224,16 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
       notes: notes.length ? notes : undefined,
       paint: (p, x, y) => {
         decorate(p, x, y, height);
-        if (i === 0 && outline?.title) p.page.headings.push({ ...outline, x: x + line.left, y });
-        if (p.story === 'body') p.page.lines.push({ x: x + line.left, w: line.right - line.left, y, h: height, baseline: y + baseline, paragraph: para.el });
-        paintLine(p, line, x, { top: y, height, baseline: y + baseline });
+        if (i === 0 && outline?.title) p.page.headings.push({ ...outline, x: x + line.left, y: y + gap });
+        const placed = { x: x + line.left, w: line.right - line.left, y: y + gap, h: natural.height, baseline: y + baseline, paragraph: para.el };
+        if (p.story === 'body') p.page.lines.push(placed);
+        else if (p.storyRef) p.page.storyLines.push({ ...placed, ...p.storyRef, story: p.story });
+        paintLine(p, line, x, { top: y + gap, height: natural.height, baseline: y + baseline });
       },
     });
   });
-  if (props.pageBreakBefore && boxes[0]) boxes[0].breakBefore = 'page';
+    return out;
+  };
 
   let bottomBorderBox: Box | undefined;
   if (hasBorders && isVisibleBorder(borders!.bottom)) {
@@ -230,6 +252,24 @@ export function paragraphBoxes(para: DocParagraph, width: number, ctx: BlockCont
 
   const afterBox: Box = { height: after, keepWithNext: !!props.keepNext, canTruncate: true, paint: () => {} };
   boxes.push(afterBox);
+  const post = boxes.splice(0);
+
+  const floats = atoms.filter((a): a is Extract<typeof a, { kind: 'float' }> => a.kind === 'float').map((a) => a.inline);
+  const assemble = (body: Box[], meta: Omit<ParagraphMeta, 'count'>): Box[] => {
+    const all = [...pre, ...body, ...post];
+    if (props.pageBreakBefore && all[0]) all[0] = { ...all[0], breakBefore: 'page' };
+    if (all[0]) all[0] = { ...all[0], paragraph: { ...meta, count: all.length } };
+    return all;
+  };
+  const textOffset = pre.reduce((sum, b) => sum + b.height, 0);
+  const reflow = (bounds: NonNullable<LineGeometry['bounds']>): Box[] => {
+    for (const h of softHyphens) {
+      h.atom.ch = h.ch;
+      h.atom.width = h.width;
+    }
+    return assemble(lineBoxes(breakLines(atoms, { ...geometry, bounds })), { textOffset, floats, reflow, wrapped: true });
+  };
+  boxes.push(...assemble(lineBoxes(lines), { textOffset, floats, reflow }));
 
   state.styleId = para.styleId;
   state.contextual = props.contextualSpacing;

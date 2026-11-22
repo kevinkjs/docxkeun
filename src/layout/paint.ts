@@ -2,8 +2,9 @@
 import type { Border } from '../model/props.js';
 import type { FloatInfo, ImageInline } from '../model/content.js';
 import { formatNumber } from '../model/numbering.js';
+import { drawObject, translateItems, type DrawingContext } from './drawing.js';
 import type { Fragment, Line, RangeCtx, TextFragment } from './lines.js';
-import type { DisplayItem, LayoutFont, Page, Rect, TextItem } from './types.js';
+import type { DisplayItem, LayoutFont, Page, Rect, TextItem, StoryKind, StoryRef } from './types.js';
 
 export interface Painter {
   page: Page;
@@ -13,8 +14,14 @@ export interface Painter {
   column: { x: number; width: number };
   /** Text of a page-number field at this position. */
   fieldValue(field: string, format?: string): string;
-  /** Which story is being painted; only body lines are recorded for editing. */
-  story: 'body' | 'other';
+  /** Which story is being painted: body lines go to `page.lines`, the others to `page.storyLines`. */
+  story: 'body' | StoryKind;
+  /** The part (and note or text box) of a non-body story. */
+  storyRef?: StoryRef;
+  /** Document and fonts for drawing shapes, charts and metafiles. */
+  drawing?: DrawingContext;
+  /** Where pagination already placed floating objects (so text wrapped around the same spot). */
+  floatRects?: Map<ImageInline, { x: number; y: number }>;
 }
 
 export function colorOf(c: string | undefined, fallback = '000000'): string {
@@ -127,6 +134,8 @@ function paintFragment(p: Painter, frag: Fragment, originX: number, top: number,
         frag.style.scale,
       );
       if (frag.inline) item.source = { inline: frag.inline, offsets: frag.offsets };
+      if (frag.complex) item.complex = frag.complex;
+      if (frag.glyphs) item.clusterGlyphs = frag.glyphs;
       addItem(p, item);
       decorate(p, frag, x, drawnWidth, baseline);
       recordRanges(p, frag.ctx, { x, y: top, w: frag.width, h: height });
@@ -151,13 +160,19 @@ function paintFragment(p: Painter, frag: Fragment, originX: number, top: number,
     case 'image': {
       const x = originX + frag.x;
       const y = baseline - frag.height;
-      addItem(p, { type: 'image', x, y, w: frag.width, h: frag.height, target: frag.inline.target, external: frag.inline.external, alt: frag.inline.alt, inline: frag.inline });
+      for (const item of drawObject(p, frag.inline, { x, y, w: frag.width, h: frag.height })) addItem(p, item);
       recordRanges(p, frag.ctx, { x, y, w: frag.width, h: frag.height });
       break;
     }
     case 'float':
       paintFloat(p, frag.inline.float!, frag.inline, originX + frag.x, top);
       break;
+    case 'object': {
+      const x = originX + frag.x;
+      for (const item of translateItems(frag.items, x, baseline)) addItem(p, item);
+      recordRanges(p, frag.ctx, { x, y: top, w: frag.width, h: height });
+      break;
+    }
     case 'field': {
       const x = originX + frag.x;
       const value = p.fieldValue(frag.field, frag.format);
@@ -183,7 +198,14 @@ function paintFragment(p: Painter, frag: Fragment, originX: number, top: number,
 }
 
 function paintFloat(p: Painter, f: FloatInfo, image: ImageInline, charX: number, lineTop: number): void {
-  const page = p.page;
+  const { x, y } = p.floatRects?.get(image) ?? floatPosition(p.page, p.column, f, image, charX, lineTop);
+  const items = drawObject(p, image, { x, y, w: image.width, h: image.height });
+  if (f.behindDoc) p.behind.push(...items);
+  else for (const item of items) addItem(p, item);
+}
+
+/** Top-left of a floating object on its page, from its anchor position settings. */
+export function floatPosition(page: Page, column: { x: number; width: number }, f: FloatInfo, image: { width: number; height: number }, charX: number, lineTop: number): { x: number; y: number } {
   const m = page.section.margin;
   const area = (rel: string, horizontal: boolean): { start: number; size: number } => {
     if (horizontal) {
@@ -201,7 +223,7 @@ function paintFloat(p: Painter, f: FloatInfo, image: ImageInline, charX: number,
         case 'character':
           return { start: charX, size: 0 };
         default:
-          return { start: p.column.x, size: p.column.width };
+          return { start: column.x, size: column.width };
       }
     }
     switch (rel) {
@@ -225,11 +247,7 @@ function paintFloat(p: Painter, f: FloatInfo, image: ImageInline, charX: number,
     if (al === 'left' || al === 'top' || al === 'inside') return a.start;
     return a.start + offset;
   };
-  const x = align(h, f.hAlign, f.hOffset, image.width);
-  const y = align(v, f.vAlign, f.vOffset, image.height);
-  const item: DisplayItem = { type: 'image', x, y, w: image.width, h: image.height, target: image.target, external: image.external, alt: image.alt, inline: image };
-  if (f.behindDoc) p.behind.push(item);
-  else addItem(p, item);
+  return { x: align(h, f.hAlign, f.hOffset, image.width), y: align(v, f.vAlign, f.vOffset, image.height) };
 }
 
 /** Draw a border segment centred on the given edge. */

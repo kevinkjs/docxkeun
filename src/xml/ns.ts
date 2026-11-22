@@ -24,6 +24,11 @@ export const NS = {
   wps: 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape',
   wpg: 'http://schemas.microsoft.com/office/word/2010/wordprocessingGroup',
   wpc: 'http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas',
+  c: 'http://schemas.openxmlformats.org/drawingml/2006/chart',
+  dgm: 'http://schemas.openxmlformats.org/drawingml/2006/diagram',
+  dsp: 'http://schemas.microsoft.com/office/drawing/2008/diagram',
+  c14: 'http://schemas.microsoft.com/office/drawing/2007/8/2/chart',
+  a14: 'http://schemas.microsoft.com/office/drawing/2010/main',
   cp: 'http://schemas.openxmlformats.org/package/2006/metadata/core-properties',
   dc: 'http://purl.org/dc/elements/1.1/',
   dcterms: 'http://purl.org/dc/terms/',
@@ -43,6 +48,8 @@ const STRICT: Record<string, string> = {
   'http://purl.oclc.org/ooxml/drawingml/main': 'a',
   'http://purl.oclc.org/ooxml/drawingml/picture': 'pic',
   'http://purl.oclc.org/ooxml/officeDocument/math': 'm',
+  'http://purl.oclc.org/ooxml/drawingml/chart': 'c',
+  'http://purl.oclc.org/ooxml/drawingml/diagram': 'dgm',
 };
 
 /** Namespaces whose elements are conventionally unprefixed (package parts); never rewritten. */

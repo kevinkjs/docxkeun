@@ -28,6 +28,10 @@ export interface RunStyle {
   shading?: string;
   rtl: boolean;
   hint?: string;
+  /** Pair kerning from this size up (w:kern), in points. */
+  kern?: number;
+  /** OpenType ligatures Word turns on (w14:ligatures). */
+  ligatures?: string;
 }
 
 export const HIGHLIGHT_COLORS: Record<string, string> = {
@@ -85,6 +89,8 @@ export function resolveRunStyle(props: RunProps, theme: Theme): RunStyle {
     shading: shadingColor(props.shading),
     rtl: props.rtl ?? false,
     hint: f.hint,
+    ...(props.kern !== undefined ? { kern: props.kern } : {}),
+    ...(props.ligatures && props.ligatures !== 'none' ? { ligatures: props.ligatures } : {}),
   };
   cache.set(props, style);
   return style;

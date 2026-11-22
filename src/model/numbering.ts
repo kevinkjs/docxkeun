@@ -264,3 +264,27 @@ export function formatNumber(n: number, format: string): string {
       return String(n);
   }
 }
+
+/** Private-use symbol-font bullets mapped to Unicode equivalents. */
+const SYMBOL_BULLETS: Record<number, string> = {
+  0xf0b7: '•',
+  0xf0a7: '▪',
+  0xf0a8: '◆',
+  0xf0d8: '➢',
+  0xf076: '❖',
+  0xf0fc: '✓',
+  0xf06e: '■',
+  0xf071: '❑',
+  0xf0e0: '➢',
+  0xf06f: '□',
+};
+
+/** A list label with symbol-font bullets (Symbol, Wingdings) replaced by their Unicode look-alikes. */
+export function normaliseBullet(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!;
+    out += SYMBOL_BULLETS[cp] ?? (cp >= 0xf000 && cp <= 0xf0ff ? '•' : ch);
+  }
+  return out;
+}

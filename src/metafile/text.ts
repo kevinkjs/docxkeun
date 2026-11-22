@@ -1,0 +1,141 @@
+/**
+ * Text decoding for metafile text records: 8-bit strings by the font's character set, UTF-16
+ * strings with surrogate pairs, and the Symbol font's private encoding (old Equation Editor
+ * pictures write Greek letters and maths operators as Symbol-font bytes) mapped to Unicode.
+ * Each decoder keeps the per-character advances (Dx) aligned with the characters it returns.
+ */
+
+export interface DecodedText {
+  chars: string[];
+  /** One advance per character (logical units), when the record had them. */
+  dx: number[] | undefined;
+}
+
+/** Windows charset (LOGFONT lfCharSet) → WHATWG encoding label for TextDecoder. */
+const CHARSET_ENCODINGS: Record<number, string> = {
+  0: 'windows-1252',
+  1: 'windows-1252',
+  128: 'shift_jis',
+  129: 'euc-kr',
+  134: 'gbk',
+  136: 'big5',
+  161: 'windows-1253',
+  162: 'windows-1254',
+  163: 'windows-1258',
+  177: 'windows-1255',
+  178: 'windows-1256',
+  186: 'windows-1257',
+  204: 'windows-1251',
+  222: 'windows-874',
+  238: 'windows-1250',
+};
+
+const SYMBOL_CHARSET = 2;
+
+/** Lead bytes of the double-byte charsets: those characters take two bytes (and two Dx entries). */
+function isLeadByte(charset: number, b: number): boolean {
+  if (charset === 128) return (b >= 0x81 && b <= 0x9f) || (b >= 0xe0 && b <= 0xfc);
+  if (charset === 129 || charset === 134 || charset === 136) return b >= 0x81 && b <= 0xfe;
+  return false;
+}
+
+const decoders = new Map<string, TextDecoder | null>();
+
+function decoderFor(label: string): TextDecoder | null {
+  let d = decoders.get(label);
+  if (d === undefined) {
+    try {
+      d = new TextDecoder(label);
+    } catch {
+      // Runtimes without full ICU lack the legacy encodings; fall back to Latin-1 there.
+      d = null;
+    }
+    decoders.set(label, d);
+  }
+  return d;
+}
+
+function latin1(bytes: Uint8Array): string {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return s;
+}
+
+/** Decode an 8-bit string in the given charset; `faceName` picks the Symbol mapping. */
+export function decodeAnsi(bytes: Uint8Array, charset: number, faceName: string, dx: number[] | undefined): DecodedText {
+  const chars: string[] = [];
+  const out: number[] = [];
+  const symbol = isSymbolFace(faceName);
+  if (symbol || charset === SYMBOL_CHARSET) {
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i]!;
+      chars.push(symbol ? symbolChar(b) : String.fromCharCode(b));
+      out.push(dx?.[i] ?? 0);
+    }
+    return { chars, dx: dx ? out : undefined };
+  }
+  const decoder = decoderFor(CHARSET_ENCODINGS[charset] ?? 'windows-1252');
+  for (let i = 0; i < bytes.length; i++) {
+    const n = isLeadByte(charset, bytes[i]!) && i + 1 < bytes.length ? 2 : 1;
+    const unit = bytes.subarray(i, i + n);
+    chars.push(decoder ? decoder.decode(unit) : latin1(unit));
+    out.push((dx?.[i] ?? 0) + (n === 2 ? (dx?.[i + 1] ?? 0) : 0));
+    i += n - 1;
+  }
+  return { chars, dx: dx ? out : undefined };
+}
+
+/** Decode UTF-16 code units, joining surrogate pairs (whose two Dx entries add up). */
+export function decodeWide(units: number[], faceName: string, dx: number[] | undefined): DecodedText {
+  const chars: string[] = [];
+  const out: number[] = [];
+  const symbol = isSymbolFace(faceName);
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i]!;
+    const next = units[i + 1];
+    if (u >= 0xd800 && u <= 0xdbff && next !== undefined && next >= 0xdc00 && next <= 0xdfff) {
+      chars.push(String.fromCharCode(u, next));
+      out.push((dx?.[i] ?? 0) + (dx?.[i + 1] ?? 0));
+      i++;
+      continue;
+    }
+    // Symbol fonts are addressed through U+F020–U+F0FF (or plain bytes) in Unicode text.
+    if (symbol && ((u >= 0xf020 && u <= 0xf0ff) || (u >= 0x20 && u <= 0xff))) chars.push(symbolChar(u & 0xff));
+    else chars.push(String.fromCharCode(u));
+    out.push(dx?.[i] ?? 0);
+  }
+  return { chars, dx: dx ? out : undefined };
+}
+
+export function isSymbolFace(faceName: string): boolean {
+  return faceName.trim().toLowerCase() === 'symbol';
+}
+
+/** Symbol-font byte → Unicode, for the codes that differ from ASCII/Latin-1. */
+const SYMBOL: Record<number, number> = {
+  0x22: 0x2200, 0x24: 0x2203, 0x27: 0x220b, 0x2a: 0x2217, 0x2d: 0x2212, 0x40: 0x2245,
+  0x41: 0x0391, 0x42: 0x0392, 0x43: 0x03a7, 0x44: 0x0394, 0x45: 0x0395, 0x46: 0x03a6, 0x47: 0x0393, 0x48: 0x0397,
+  0x49: 0x0399, 0x4a: 0x03d1, 0x4b: 0x039a, 0x4c: 0x039b, 0x4d: 0x039c, 0x4e: 0x039d, 0x4f: 0x039f, 0x50: 0x03a0,
+  0x51: 0x0398, 0x52: 0x03a1, 0x53: 0x03a3, 0x54: 0x03a4, 0x55: 0x03a5, 0x56: 0x03c2, 0x57: 0x03a9, 0x58: 0x039e,
+  0x59: 0x03a8, 0x5a: 0x0396, 0x5c: 0x2234, 0x5e: 0x22a5, 0x60: 0x203e,
+  0x61: 0x03b1, 0x62: 0x03b2, 0x63: 0x03c7, 0x64: 0x03b4, 0x65: 0x03b5, 0x66: 0x03c6, 0x67: 0x03b3, 0x68: 0x03b7,
+  0x69: 0x03b9, 0x6a: 0x03d5, 0x6b: 0x03ba, 0x6c: 0x03bb, 0x6d: 0x03bc, 0x6e: 0x03bd, 0x6f: 0x03bf, 0x70: 0x03c0,
+  0x71: 0x03b8, 0x72: 0x03c1, 0x73: 0x03c3, 0x74: 0x03c4, 0x75: 0x03c5, 0x76: 0x03d6, 0x77: 0x03c9, 0x78: 0x03be,
+  0x79: 0x03c8, 0x7a: 0x03b6, 0x7e: 0x223c,
+  0xa0: 0x20ac, 0xa1: 0x03d2, 0xa2: 0x2032, 0xa3: 0x2264, 0xa4: 0x2044, 0xa5: 0x221e, 0xa6: 0x0192, 0xa7: 0x2663,
+  0xa8: 0x2666, 0xa9: 0x2665, 0xaa: 0x2660, 0xab: 0x2194, 0xac: 0x2190, 0xad: 0x2191, 0xae: 0x2192, 0xaf: 0x2193,
+  0xb2: 0x2033, 0xb3: 0x2265, 0xb4: 0x00d7, 0xb5: 0x221d, 0xb6: 0x2202, 0xb7: 0x2022, 0xb8: 0x00f7, 0xb9: 0x2260,
+  0xba: 0x2261, 0xbb: 0x2248, 0xbc: 0x2026, 0xbd: 0x23d0, 0xbe: 0x23af, 0xbf: 0x21b5,
+  0xc0: 0x2135, 0xc1: 0x2111, 0xc2: 0x211c, 0xc3: 0x2118, 0xc4: 0x2297, 0xc5: 0x2295, 0xc6: 0x2205, 0xc7: 0x2229,
+  0xc8: 0x222a, 0xc9: 0x2283, 0xca: 0x2287, 0xcb: 0x2284, 0xcc: 0x2282, 0xcd: 0x2286, 0xce: 0x2208, 0xcf: 0x2209,
+  0xd0: 0x2220, 0xd1: 0x2207, 0xd2: 0x00ae, 0xd3: 0x00a9, 0xd4: 0x2122, 0xd5: 0x220f, 0xd6: 0x221a, 0xd7: 0x22c5,
+  0xd8: 0x00ac, 0xd9: 0x2227, 0xda: 0x2228, 0xdb: 0x21d4, 0xdc: 0x21d0, 0xdd: 0x21d1, 0xde: 0x21d2, 0xdf: 0x21d3,
+  0xe0: 0x25ca, 0xe1: 0x27e8, 0xe2: 0x00ae, 0xe3: 0x00a9, 0xe4: 0x2122, 0xe5: 0x2211, 0xe6: 0x239b, 0xe7: 0x239c,
+  0xe8: 0x239d, 0xe9: 0x23a1, 0xea: 0x23a2, 0xeb: 0x23a3, 0xec: 0x23a7, 0xed: 0x23a8, 0xee: 0x23a9, 0xef: 0x23aa,
+  0xf1: 0x27e9, 0xf2: 0x222b, 0xf3: 0x2320, 0xf4: 0x23ae, 0xf5: 0x2321, 0xf6: 0x239e, 0xf7: 0x239f, 0xf8: 0x23a0,
+  0xf9: 0x23a4, 0xfa: 0x23a5, 0xfb: 0x23a6, 0xfc: 0x23ab, 0xfd: 0x23ac, 0xfe: 0x23ad,
+};
+
+export function symbolChar(code: number): string {
+  return String.fromCodePoint(SYMBOL[code] ?? code);
+}

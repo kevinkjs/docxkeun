@@ -125,6 +125,8 @@ export interface RunProps {
   kern?: number;
   lang?: string;
   rtl?: boolean;
+  /** w14:ligatures: which OpenType ligatures Word applies ('standard', 'all'…; absent or 'none': none). */
+  ligatures?: string;
   border?: Border;
   emboss?: boolean;
   imprint?: boolean;
@@ -195,6 +197,8 @@ export function parseRunProps(rPr: XmlElement | undefined): RunProps {
   if (kern !== undefined) p.kern = halfPtToPt(kern);
   p.lang = val(rPr, 'w:lang');
   p.rtl = onOff(rPr, 'w:rtl');
+  const lig = val(rPr, 'w14:ligatures');
+  if (lig) p.ligatures = lig;
   p.border = parseBorder(firstChild(rPr, 'w:bdr'));
   p.emboss = onOff(rPr, 'w:emboss');
   p.imprint = onOff(rPr, 'w:imprint');

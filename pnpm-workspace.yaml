@@ -1,0 +1,6 @@
+packages:
+  - packages/*
+
+# docxkeun-mcp depends on docxkeun and docxkeun-fonts with normal version ranges (so npm publish
+# works unchanged); this makes pnpm use the copies in this repository while developing.
+linkWorkspacePackages: true

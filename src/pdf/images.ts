@@ -1,4 +1,9 @@
-/** Image XObjects: JPEG passes through; PNG is re-packed (alpha goes to a soft mask). */
+/**
+ * Image XObjects: JPEG passes through; PNG is re-packed (alpha goes to a soft mask); GIF, BMP and
+ * TIFF, which PDF has no filter for, are decoded to pixels and embedded like any raster.
+ */
+import { decodeRaster, sniffImage } from '../images/index.js';
+import type { RasterImage } from '../layout/types.js';
 import { ByteReader, concatBytes } from '../util/bytes.js';
 import { inflate } from '../zip/deflate.js';
 import { name, PdfStream, str, type PdfDict, type PdfRef } from './objects.js';
@@ -269,6 +274,37 @@ export async function addImage(writer: PdfWriter, bytes: Uint8Array): Promise<{ 
     );
     return { ref, width: png.width, height: png.height };
   }
-  throw new ImageFormatError('Only JPEG and PNG images can be embedded in PDF');
+  const kind = sniffImage(bytes);
+  if (kind === 'gif' || kind === 'bmp' || kind === 'tiff') {
+    let image: RasterImage;
+    try {
+      image = await decodeRaster(bytes);
+    } catch (error) {
+      // Callers draw a placeholder for an ImageFormatError, so a damaged or unsupported variant must surface as one.
+      throw new ImageFormatError(error instanceof Error ? error.message : String(error), { cause: error });
+    }
+    return addRasterImage(writer, image);
+  }
+  throw new ImageFormatError(`${kind ? kind.toUpperCase() : 'Unrecognised'} images cannot be embedded in PDF`);
 }
 
+/** Add decoded pixels (RGBA) as an image XObject, with a soft mask when any pixel is not opaque. */
+export async function addRasterImage(writer: PdfWriter, image: RasterImage): Promise<{ ref: PdfRef; width: number; height: number }> {
+  const { width, height, rgba } = image;
+  const pixels = width * height;
+  const color = new Uint8Array(pixels * 3);
+  const alpha = new Uint8Array(pixels);
+  let translucent = false;
+  for (let i = 0; i < pixels; i++) {
+    color[i * 3] = rgba[i * 4]!;
+    color[i * 3 + 1] = rgba[i * 4 + 1]!;
+    color[i * 3 + 2] = rgba[i * 4 + 2]!;
+    alpha[i] = rgba[i * 4 + 3]!;
+    if (alpha[i] !== 255) translucent = true;
+  }
+  const smask = translucent
+    ? await writer.stream({ Type: name('XObject'), Subtype: name('Image'), Width: width, Height: height, ColorSpace: name('DeviceGray'), BitsPerComponent: 8 }, alpha)
+    : undefined;
+  const ref = await writer.stream({ Type: name('XObject'), Subtype: name('Image'), Width: width, Height: height, ColorSpace: name('DeviceRGB'), BitsPerComponent: 8, SMask: smask }, color);
+  return { ref, width, height };
+}

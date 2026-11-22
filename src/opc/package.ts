@@ -4,7 +4,7 @@
  */
 import { readZip, writeZip, type ZipRawData, type ZipWriteEntry } from '../zip/zip.js';
 import { decodeXmlBytes, utf8Encode } from '../util/text.js';
-import { el, elements, parseXml, serializeXml, type XmlDocument } from '../xml/index.js';
+import { cloneElement, el, elements, parseXml, serializeXml, type XmlDocument } from '../xml/index.js';
 import { CONTENT_TYPE, IMAGE_CONTENT_TYPES, isRelType, type RelKind, REL } from './constants.js';
 import { extension, normalizePartName, partKey, relsPartFor, relativeTarget, resolveTarget } from './paths.js';
 
@@ -21,6 +21,18 @@ interface Part {
   bytes?: Uint8Array;
   xml?: XmlDocument;
   dirty: boolean;
+  /** Changes whenever the part may have changed; lets checkpoints reuse unchanged snapshots. */
+  rev: number;
+}
+
+/** An opaque snapshot of every part, content type and relationship list (see `OpcPackage.checkpoint`). */
+export interface PackageCheckpoint {
+  readonly parts: Array<[string, Part]>;
+  readonly order: string[];
+  readonly defaults: Array<[string, string]>;
+  readonly overrides: Array<[string, string]>;
+  readonly contentTypesDirty: boolean;
+  readonly rels: Array<[string, Relationship[]]>;
 }
 
 export class OpcError extends Error {
@@ -35,6 +47,9 @@ export class OpcPackage {
   private readonly defaults = new Map<string, string>();
   private readonly overrides = new Map<string, string>();
   private contentTypesDirty = false;
+  private revSeq = 0;
+  /** Last frozen copy per part, with the revision it was taken at. Never handed to live state. */
+  private readonly snapshots = new Map<string, { rev: number; part: Part }>();
   private readonly relsCache = new Map<string, Relationship[]>();
   private readonly readers = new Map<string, () => Promise<Uint8Array>>();
   private contentTypesRaw: ZipRawData | undefined;
@@ -51,7 +66,7 @@ export class OpcPackage {
         continue;
       }
       const name = normalizePartName(entry.name);
-      pkg.parts.set(partKey(name), { name, raw: entry.raw, dirty: false });
+      pkg.parts.set(partKey(name), { name, raw: entry.raw, dirty: false, rev: 0 });
       pkg.order.push(partKey(name));
       // Keep a reader so bytes are inflated lazily.
       pkg.readers.set(partKey(name), entry.read);
@@ -77,6 +92,44 @@ export class OpcPackage {
     pkg.defaults.set('xml', CONTENT_TYPE.xml);
     pkg.contentTypesDirty = true;
     return pkg;
+  }
+
+  /**
+   * Snapshot the whole package so `restore` can bring it back. Parsed XML is deep-cloned; bytes are shared
+   * because they are replaced, never mutated in place.
+   */
+  checkpoint(): PackageCheckpoint {
+    return {
+      parts: [...this.parts].map(([key, part]) => [key, this.frozenCopy(key, part)]),
+      order: [...this.order],
+      defaults: [...this.defaults],
+      overrides: [...this.overrides],
+      contentTypesDirty: this.contentTypesDirty,
+      rels: [...this.relsCache].map(([key, list]) => [key, list.map((r) => ({ ...r }))]),
+    };
+  }
+
+  private frozenCopy(key: string, part: Part): Part {
+    const cached = this.snapshots.get(key);
+    if (cached && cached.rev === part.rev) return cached.part;
+    const copy = copyPart(part);
+    this.snapshots.set(key, { rev: part.rev, part: copy });
+    return copy;
+  }
+
+  /** Put the package back as it was at `checkpoint()`. The same checkpoint can be restored again. */
+  restore(cp: PackageCheckpoint): void {
+    this.parts.clear();
+    for (const [key, part] of cp.parts) this.parts.set(key, { ...copyPart(part), rev: ++this.revSeq });
+    this.snapshots.clear();
+    this.order.splice(0, this.order.length, ...cp.order);
+    this.defaults.clear();
+    for (const [k, v] of cp.defaults) this.defaults.set(k, v);
+    this.overrides.clear();
+    for (const [k, v] of cp.overrides) this.overrides.set(k, v);
+    this.contentTypesDirty = cp.contentTypesDirty;
+    this.relsCache.clear();
+    for (const [key, list] of cp.rels) this.relsCache.set(key, list.map((r) => ({ ...r })));
   }
 
   partNames(): string[] {
@@ -125,7 +178,9 @@ export class OpcPackage {
   }
 
   markDirty(name: string): void {
-    this.requirePart(name).dirty = true;
+    const part = this.requirePart(name);
+    part.dirty = true;
+    part.rev = ++this.revSeq;
   }
 
   isDirty(name: string): boolean {
@@ -137,6 +192,7 @@ export class OpcPackage {
     part.xml = doc;
     part.bytes = undefined;
     part.dirty = true;
+    part.rev = ++this.revSeq;
   }
 
   setBytes(name: string, bytes: Uint8Array, contentType?: string): void {
@@ -144,11 +200,13 @@ export class OpcPackage {
     part.bytes = bytes;
     part.xml = undefined;
     part.dirty = true;
+    part.rev = ++this.revSeq;
   }
 
   removePart(name: string): void {
     const key = partKey(name);
     if (!this.parts.delete(key)) return;
+    this.snapshots.delete(key);
     this.order.splice(this.order.indexOf(key), 1);
     if (this.overrides.delete(key)) this.contentTypesDirty = true;
     this.relsCache.delete(key);
@@ -161,7 +219,7 @@ export class OpcPackage {
     const key = partKey(clean);
     let part = this.parts.get(key);
     if (!part) {
-      part = { name: clean, dirty: true };
+      part = { name: clean, dirty: true, rev: 0 };
       this.parts.set(key, part);
       this.order.push(key);
     }
@@ -310,3 +368,9 @@ export class OpcPackage {
 }
 
 export { REL };
+
+function copyPart(part: Part): Part {
+  const copy: Part = { ...part };
+  if (part.xml) copy.xml = { ...part.xml, root: cloneElement(part.xml.root) };
+  return copy;
+}

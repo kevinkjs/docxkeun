@@ -1,0 +1,23 @@
+{
+  "name": "docxkeun-chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A small web app: chat with Claude about a .docx while docxkeun shows the document live. Bring your own Anthropic API key.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "node server/serve.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.11.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}

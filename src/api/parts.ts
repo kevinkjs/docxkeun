@@ -19,6 +19,7 @@ export const PART_SPECS: Partial<Record<keyof WordParts, PartSpec>> = {
   people: { name: 'word/people.xml', rel: REL.people, contentType: CONTENT_TYPE.people, root: 'w15:people' },
   settings: { name: 'word/settings.xml', rel: REL.settings, contentType: CONTENT_TYPE.settings, root: 'w:settings' },
   styles: { name: 'word/styles.xml', rel: REL.styles, contentType: CONTENT_TYPE.styles, root: 'w:styles' },
+  numbering: { name: 'word/numbering.xml', rel: REL.numbering, contentType: CONTENT_TYPE.numbering, root: 'w:numbering' },
 };
 
 /** Namespace declarations put on the roots of parts docxkeun creates. */

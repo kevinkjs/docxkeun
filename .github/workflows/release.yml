@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag like v0.1.0 to publish. Each package is published only if its version
-# is not on npm yet, so the fonts package is skipped when it did not change.
+# is not on npm yet, so docxkeun-fonts and docxkeun-mcp are skipped when they did not change.
 on:
   push:
     tags: ['v*']
@@ -27,8 +27,10 @@ jobs:
       - name: Tag must match the package version
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
       - run: pnpm typecheck
-      - run: pnpm test
       - run: pnpm build
+      - run: pnpm build:mcp
+      - run: pnpm typecheck:mcp
+      - run: pnpm test
       - name: Publish
         env:
           # Only needed until trusted publishing is set up on npmjs.com (then delete the secret).
@@ -45,5 +47,7 @@ jobs:
               npm publish "$1" $PROVENANCE --access public --ignore-scripts
             fi
           }
+          # docxkeun-mcp last: it depends on the other two.
           publish ./packages/fonts
           publish .
+          publish ./packages/mcp

@@ -1,7 +1,7 @@
 {
   "name": "docxkeun",
   "version": "0.1.3",
-  "description": "Read, render, edit and convert .docx files in the browser: a DOCX viewer, editor and DOCX-to-PDF converter with zero runtime dependencies.",
+  "description": "Read, render, edit and convert .docx files in the browser with zero runtime dependencies: a DOCX viewer and editor (toolbar, comments, tracked changes, undo), a DOCX-to-PDF converter, and live effects for AI edits.",
   "author": "Kevin Jeremia (https://github.com/kevinkjs)",
   "license": "MIT",
   "repository": {
@@ -89,6 +89,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:mcp": "pnpm -C packages/mcp build",
+    "typecheck:mcp": "pnpm -C packages/mcp typecheck",
+    "dev:chat": "pnpm -C packages/chat dev",
+    "build:chat": "pnpm -C packages/chat build",
+    "start:chat": "pnpm -C packages/chat start",
+    "typecheck:chat": "pnpm -C packages/chat typecheck",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -101,6 +107,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "happy-dom": "21.0.4",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
