@@ -11,11 +11,13 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 - The AI's marks and effects now follow zoom changes and the comment column's width (they kept their old positions before), and the change map's ticks show the text from before.
 - **Tables:** `DocxEditor.insertTable()` adds a table that spans the text width, with an optional bold header row that repeats on each page, relative column widths and alignment. It uses Word's "Table Grid" style when the document has it, or plain borders. `insertTableRows()` adds rows formatted like the row they copy, `deleteTableRows()` and `deleteTable()` remove them, and `tableOf()` finds the table a cell paragraph is in. All of them record tracked changes when Track Changes is on, and rejecting an inserted table removes it whole.
 - **Copying content:** `DocxEditor.copyBlocks()` copies paragraphs and tables with their formatting, lists and pictures, optionally starting on a new page. Lists in the copy start again at 1 (or continue with `restartLists: false`). Bookmarks, comment anchors and note references are left out and counted, and ids that must be unique are renewed.
+- `DocxEditor.replaceRange()` also takes pieces of text, each formatted like a run you point to (`{ text, like, format }`), so rewritten text can keep which words were bold, underlined or coloured.
 - `setList` with `sameListAs` now accepts the joined list's own `format`, and its errors say what to do instead: join a paragraph that is not in a list yet by making it one first; use `start` without `sameListAs` to number from a given value.
 
 ### docxkeun chat
 
 - "Appearance" also picks the effect style and whether marks stay after each change, with a live sample. A reply's marks cover all its changes; opening a document or undoing a reply clears them.
+- Claude now sees which words are bold, italic, underlined, struck through, superscript or subscript, and keeps them when it rewrites or translates text (it used to flatten a rewritten paragraph to one formatting).
 - Claude can now copy content with its formatting and make and change tables, so "translate this document onto a new page" keeps the tables and lists instead of retyping them as plain text.
 
 ### docxkeun-mcp
@@ -23,6 +25,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 - The live preview's header has a **Style** list and a **Marks** switch next to "AI effects", remembered in the browser. Marks build up while the AI works on a document and start over when you open another one.
 - New tools: `copy_paragraphs` copies paragraphs and tables with their formatting and lists (for example onto a new page, to translate a document), `insert_table` makes a table, and `edit_table` adds or deletes rows or deletes a table.
 - `set_list` explains how to join paragraphs that are not next to each other into one list, and accepts the list's own format with `sameListAs`.
+- **Text formatting is visible and kept.** `read_document` tags text formatted differently from the rest of its paragraph (`<b>`, `<i>`, `<u>`, `<s>`, `<sup>`, `<sub>`) and names a paragraph's alignment and whole-paragraph formatting in its description, e.g. `[1] (centered; bold, underlined) AGREEMENT`. `edit_paragraph`, `insert_paragraphs`, `create_document` and `replace_text` take the same tags. When `edit_paragraph` rewrites a paragraph, each tagged part copies the formatting (font, size and colour too) of the matching phrase in the original, in order. Before, rewriting a paragraph gave all of it the first run's formatting, so bold names and amounts were lost in translations and small edits alike.
 - New tool `copy_document` copies a document to a new file exactly as it is (an encrypted one stays encrypted), so "make a copy" or "translate it into a new file" keeps every bit of formatting. Before, the AI could only retype the text into `create_document`, which made a blank document and lost the text and paragraph formatting, lists and tables. `create_document`'s description now sends copies to `copy_document`.
 
 ## 0.2.0 (2026-11-22)

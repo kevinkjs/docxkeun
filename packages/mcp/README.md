@@ -116,6 +116,8 @@ Each role gets only the tools it may use.
 | `protect_document` | Word's editing restrictions: read-only, comments only, tracked changes only, forms only | owner |
 | `set_open_password` | Encrypt with a password to open (AES-256), or remove it | owner |
 
+`read_document` shows text formatting as tags: text formatted differently from the rest of its paragraph is wrapped in `<b>`, `<i>`, `<u>`, `<s>`, `<sup>` or `<sub>`, and a paragraph's alignment and whole-paragraph formatting are in its description (`[1] (centered; bold, underlined) AGREEMENT`). `edit_paragraph`, `insert_paragraphs`, `create_document` and `replace_text` take the same tags, so an AI that rewrites or translates a paragraph keeps its bold, underlined and other formatted words; each tagged part copies the font, size and colour of the matching phrase. Searches ignore the tags.
+
 Editing tools save to the file straight away; every one of them takes `output` to write a copy instead. Encrypted documents take `password`, and stay encrypted when they are changed.
 
 ## Safety

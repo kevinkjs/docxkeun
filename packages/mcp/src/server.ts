@@ -21,7 +21,8 @@ import {
   type Role,
 } from 'docxkeun/security';
 import { fontsFor } from './fonts.js';
-import { activityLabel, describeOperation, newParagraph, operationsFor, plural, targetParagraphs, type DocContext } from './operations.js';
+import { activityLabel, describeOperation, newParagraph, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext } from './operations.js';
+import { parseMarkup } from './markup.js';
 import { commentThreads, listParagraphs, locksByParagraph, paragraphStyles, quote, resolveStyle, tableCount, wordCount } from './outline.js';
 import type { Preview } from './preview.js';
 import { Queue, Workspace, WorkspaceError } from './workspace.js';
@@ -98,7 +99,8 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
         'Start with read_document. It numbers paragraphs from 1, including paragraphs in table cells; tools that take `paragraph` use those numbers.',
         'Numbers shift after insert_paragraphs, delete_paragraphs, copy_paragraphs and table changes, so read the document again before reusing numbers from earlier.',
         ...(role === 'editor' || role === 'owner'
-          ? ['Tables: insert_table makes one and edit_table adds or deletes rows; cells are paragraphs, so edit their text like any paragraph. To duplicate content with its formatting, lists and tables (for example to translate a document onto a new page), use copy_paragraphs and then change the copies\u2019 text, rather than retyping it with insert_paragraphs. For a copy or new version of a whole document in another file (for example a translation), use copy_document and then change the copy; create_document makes a blank document without the original\u2019s formatting.']
+          ? ['Tables: insert_table makes one and edit_table adds or deletes rows; cells are paragraphs, so edit their text like any paragraph. To duplicate content with its formatting, lists and tables (for example to translate a document onto a new page), use copy_paragraphs and then change the copies\u2019 text, rather than retyping it with insert_paragraphs. For a copy or new version of a whole document in another file (for example a translation), use copy_document and then change the copy; create_document makes a blank document without the original\u2019s formatting.',
+             'read_document shows text formatted differently from the rest of its paragraph with <b>, <i>, <u>, <s>, <sup> and <sub> tags, and formatting of the whole paragraph in its description. Keep those tags when you rewrite or translate a paragraph with edit_paragraph, so the bold, underlined and other text stays where it was; the paragraph\u2019s own formatting stays by itself.']
           : []),
         'Changes are saved to the file straight away; pass `output` to write a copy instead.',
         `Your role is ${role}: you may ${ROLE_SUMMARY[role]}. Comments you add are signed "${author}".`,
@@ -424,11 +426,13 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
           let prev = first;
           args.paragraphs.forEach((p, i) => {
             const style = styles[i];
+            const segments = parseMarkup(p.text);
             if (i === 0) {
               if (style) editor.setParagraphStyle(first, style);
-              if (p.text) editor.appendText(first, p.text);
+              writeTagged(editor, first, segments);
             } else {
-              prev = editor.insertParagraph({ after: prev }, p.text, style ? { style } : {});
+              prev = editor.insertParagraph({ after: prev }, segments.map((x) => x.text).join(''), style ? { style } : {});
+              tagParagraph(editor, prev, segments);
             }
           });
           await ws.write(dest, await doc.save({ modified: new Date() }));

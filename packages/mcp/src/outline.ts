@@ -4,6 +4,7 @@
  */
 import { readComments, type Block, type CommentInfo, type DocParagraph, type DocxDocument } from 'docxkeun';
 import type { ListItem, LockedRegion } from 'docxkeun/editor';
+import { markupOf, wholeFormatting } from './markup.js';
 
 type XmlElement = DocParagraph['el'];
 
@@ -195,6 +196,8 @@ export function quote(text: string, max = 80): string {
   return `"${flat.length > max ? flat.slice(0, max - 1) + '…' : flat}"`;
 }
 
+const ALIGNMENT: Record<string, string> = { center: 'centered', right: 'right-aligned', both: 'justified', distribute: 'justified' };
+
 export function describeParagraph(
   doc: DocxDocument,
   e: ParagraphEntry,
@@ -207,6 +210,10 @@ export function describeParagraph(
   if (list) tags.push(`${list.format === 'bullet' ? 'bullet' : 'list item'}${list.label ? ' ' + list.label : ''}${list.level ? `, level ${list.level + 1}` : ''}`);
   else if (e.para.numbering) tags.push(`list level ${e.para.numbering.ilvl + 1}`);
   if (e.cell) tags.push(`table ${e.cell.table}, row ${e.cell.row}, cell ${e.cell.cell}`);
+  const align = ALIGNMENT[e.para.props.jc ?? ''];
+  if (align) tags.push(align);
+  const whole = e.text.trim() ? wholeFormatting(e.para) : [];
+  if (whole.length) tags.push(whole.join(', '));
   for (const { region, whole } of extras.locks ?? []) {
     const name = region.title ? ` "${region.title}"` : '';
     tags.push(`${whole ? 'locked' : 'partly locked'}${name}, lock ${region.id}`);
@@ -215,7 +222,8 @@ export function describeParagraph(
   if (e.para.props.bidi) tags.push('right-to-left');
   if (extras.revisions) tags.push(`${extras.revisions} tracked change${extras.revisions > 1 ? 's' : ''}`);
   const objects = extras.objects?.length ? ` ${extras.objects.map((o) => `{${o}}`).join(' ')}` : '';
-  return `[${e.n}]${tags.length ? ` (${tags.join('; ')})` : ''}${e.text ? ' ' + e.text : ''}${objects}`;
+  const text = e.text ? markupOf(e.para) : '';
+  return `[${e.n}]${tags.length ? ` (${tags.join('; ')})` : ''}${text ? ' ' + text : ''}${objects}`;
 }
 
 export function wordCount(entries: ParagraphEntry[]): number {

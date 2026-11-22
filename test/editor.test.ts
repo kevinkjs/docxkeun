@@ -74,6 +74,35 @@ describe('text editing', () => {
     expect(heading.name).toBe('w:p');
   });
 
+  it('replaces a range with pieces, each formatted like a given run', async () => {
+    const body =
+      '<w:p><w:r><w:rPr><w:rFonts w:ascii="Arial Narrow" w:hAnsi="Arial Narrow"/><w:b/><w:color w:val="C00000"/></w:rPr><w:t>PT Swadaya</w:t></w:r>' +
+      '<w:r><w:rPr><w:rFonts w:ascii="Arial Narrow" w:hAnsi="Arial Narrow"/></w:rPr><w:t xml:space="preserve">, Badan Hukum</w:t></w:r></w:p>';
+    for (const trackChanges of [false, true]) {
+      const doc = await DocxDocument.open(await buildDocx({ body }));
+      const editor = new DocxEditor(doc, undefined, { trackChanges, author: 'Claude' });
+      const para = doc.body().blocks[0] as DocParagraph;
+      const [bold, plain] = para.inlines.flatMap((i) => (i.kind === 'text' ? [i.run] : []));
+      editor.replaceRange(editor.paragraphRange(para)!, [
+        { text: 'PT Swadaya', like: bold },
+        { text: ', a legal entity\tof ', like: plain },
+        { text: 'Indonesia', like: plain, format: { italic: true } },
+        { text: '' },
+      ]);
+      const reopened = await roundTrip(doc);
+      const runs = (reopened.body().blocks[0] as DocParagraph).inlines.flatMap((i) => (i.kind === 'text' ? [i] : []));
+      expect(runs.map((r) => r.text)).toEqual(['PT Swadaya', ', a legal entity', 'of ', 'Indonesia']);
+      expect(runs.map((r) => [r.props.bold ?? false, r.props.italic ?? false, r.props.color, r.props.fonts?.ascii])).toEqual([
+        [true, false, 'C00000', 'Arial Narrow'],
+        [false, false, undefined, 'Arial Narrow'],
+        [false, false, undefined, 'Arial Narrow'],
+        [false, true, undefined, 'Arial Narrow'],
+      ]);
+      // One insertion holds all the pieces; the old text is deleted run by run.
+      if (trackChanges) expect(new Set(new DocxEditor(reopened).revisions().map((r) => `${r.kind}:${r.kind === 'insert' ? r.text : ''}`))).toEqual(new Set(['insert:PT Swadaya, a legal entity\tof Indonesia', 'delete:']));
+    }
+  });
+
   it('preserves unknown markup when editing', async () => {
     const body = '<w:p><w:r><w:t>Keep </w:t></w:r><mc:AlternateContent><mc:Choice Requires="w14"><w:r><w:t>new</w:t></w:r></mc:Choice><mc:Fallback><w:r><w:t>old</w:t></w:r></mc:Fallback></mc:AlternateContent><w:customXml w:element="x"><w:r><w:t> me</w:t></w:r></w:customXml></w:p>';
     const { doc, editor } = await open(body);

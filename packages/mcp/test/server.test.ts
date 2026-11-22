@@ -365,6 +365,101 @@ describe('editing', () => {
   });
 });
 
+describe('text formatting', () => {
+  const R = (text: string, rPr = '') => `<w:r>${rPr ? `<w:rPr>${rPr}</w:rPr>` : ''}<w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const NARROW = '<w:rFonts w:ascii="Arial Narrow" w:hAnsi="Arial Narrow"/>';
+  const RED_BOLD = NARROW + '<w:b/><w:color w:val="C00000"/>';
+  const TITLE = NARROW + '<w:b/><w:u w:val="single"/>';
+  const FORMATTED =
+    `<w:p><w:pPr><w:jc w:val="center"/></w:pPr>${R('KESEPAKATAN', TITLE)}${R(' KOMPENSASI', TITLE)}</w:p>` +
+    `<w:p><w:pPr><w:jc w:val="both"/></w:pPr>${R('1.', NARROW)}<w:r><w:tab/></w:r>${R('PT Swadaya', RED_BOLD)}${R(' ', NARROW + '<w:b/>')}${R('Usaha Persada', RED_BOLD)}` +
+    `${R(', Badan Hukum, disebut ', NARROW)}${R('“Pihak Pertama”', NARROW + '<w:b/>')}${R('; luas 6.337 M', NARROW)}${R('2', NARROW + '<w:vertAlign w:val="superscript"/>')}${R(' (a&lt;b&gt; &amp;lt;)', NARROW)}</w:p>`;
+  const ORIGINAL = '1.\t<b>PT Swadaya Usaha Persada</b>, Badan Hukum, disebut <b>“Pihak Pertama”</b>; luas 6.337 M<sup>2</sup> (a&lt;b> &amp;lt;)';
+
+  async function formatted(): Promise<string> {
+    const file = join(dir, 'kesepakatan.docx');
+    await writeFile(file, await buildDocx({ body: FORMATTED, styles: STYLES, settings: '' }));
+    return file;
+  }
+
+  /** Paragraph n's text runs: text, bold, italic, underline, superscript, colour and font. */
+  async function runsOf(file: string, n: number): Promise<Array<[string, boolean, boolean, boolean, boolean, string | undefined, string | undefined]>> {
+    const doc = await DocxDocument.open(new Uint8Array(await readFile(file)));
+    const { listParagraphs } = await import('../src/outline.js');
+    return listParagraphs(doc)[n - 1]!.para.inlines.flatMap((i) =>
+      i.kind === 'text'
+        ? [[i.text, !!i.props.bold, !!i.props.italic, !!i.props.underline && i.props.underline !== 'none', i.props.vertAlign === 'superscript', i.props.color, i.props.fonts?.ascii] as const]
+        : [],
+    ) as never;
+  }
+
+  it('shows formatting: tags inside a paragraph, and what the whole paragraph has in its description', async () => {
+    await formatted();
+    const read = await ok(await connect(), 'read_document', { path: 'kesepakatan.docx' });
+    expect(read).toContain('[1] (centered; bold, underlined) KESEPAKATAN KOMPENSASI\n');
+    expect(read).toContain(`[2] (justified) ${ORIGINAL}`);
+  });
+
+  it('keeps bold, underline, colours and fonts when paragraphs are rewritten with the tags', async () => {
+    const file = await formatted();
+    const client = await connect();
+    await ok(client, 'edit_paragraph', { path: 'kesepakatan.docx', paragraph: 1, text: 'AGREEMENT ON COMPENSATION' });
+    const english = '1.\t<b>PT Swadaya Usaha Persada</b>, a legal entity, called <b>“First Party”</b>; area 6,337 m<sup>2</sup> (a&lt;b> &amp;lt;)';
+    await ok(client, 'edit_paragraph', { path: 'kesepakatan.docx', paragraph: 2, text: english });
+
+    const read = await ok(client, 'read_document', { path: 'kesepakatan.docx' });
+    expect(read).toContain('[1] (centered; bold, underlined) AGREEMENT ON COMPENSATION\n');
+    expect(read).toContain(`[2] (justified) ${english}`);
+    expect(await runsOf(file, 1)).toEqual([['AGREEMENT ON COMPENSATION', true, false, true, false, undefined, 'Arial Narrow']]);
+    expect(await runsOf(file, 2)).toEqual([
+      ['1.', false, false, false, false, undefined, 'Arial Narrow'],
+      // Each bold part copies the bold phrase in the same place: the first is red, the second is not.
+      ['PT Swadaya Usaha Persada', true, false, false, false, 'C00000', 'Arial Narrow'],
+      [', a legal entity, called ', false, false, false, false, undefined, 'Arial Narrow'],
+      ['“First Party”', true, false, false, false, undefined, 'Arial Narrow'],
+      ['; area 6,337 m', false, false, false, false, undefined, 'Arial Narrow'],
+      ['2', false, false, false, true, undefined, 'Arial Narrow'],
+      [' (a<b> &lt;)', false, false, false, false, undefined, 'Arial Narrow'],
+    ]);
+  });
+
+  it('formats new text from tags, and leaves plain text plain', async () => {
+    const file = await formatted();
+    const client = await connect();
+    await ok(client, 'edit_paragraph', { path: 'kesepakatan.docx', paragraph: 2, text: 'A plain sentence with <i>one italic</i> word.' });
+    expect(await runsOf(file, 2)).toEqual([
+      ['A plain sentence with ', false, false, false, false, undefined, 'Arial Narrow'],
+      ['one italic', false, true, false, false, undefined, 'Arial Narrow'],
+      [' word.', false, false, false, false, undefined, 'Arial Narrow'],
+    ]);
+    await ok(client, 'insert_paragraphs', { path: 'kesepakatan.docx', paragraphs: [{ text: 'Total: <b>Rp 201.801.600</b> <u>only</u>' }] });
+    const added = await runsOf(file, 3);
+    expect(added.map(([t, b, , u]) => [t, b, u])).toEqual([
+      ['Total: ', false, false],
+      ['Rp 201.801.600', true, false],
+      [' ', false, false],
+      ['only', false, true],
+    ]);
+  });
+
+  it('creates documents with formatted text', async () => {
+    const client = await connect();
+    await ok(client, 'create_document', { path: 'note.docx', paragraphs: [{ text: '<b>Note</b>' }, { text: 'Pay <u>before</u> the 5<sup>th</sup>.' }] });
+    const read = await ok(client, 'read_document', { path: 'note.docx' });
+    expect(read).toContain('[1] (bold) Note\n');
+    expect(read).toContain('[2] Pay <u>before</u> the 5<sup>th</sup>.');
+  });
+
+  it('finds and replaces text written with tags', async () => {
+    const file = await formatted();
+    const client = await connect();
+    expect(await ok(client, 'find_text', { path: 'kesepakatan.docx', query: '<b>“Pihak Pertama”</b>' })).toContain('1 match');
+    await ok(client, 'replace_text', { path: 'kesepakatan.docx', find: '<b>“Pihak Pertama”</b>', replace: '<u>“First Party”</u>' });
+    const run = (await runsOf(file, 2)).find(([t]) => t === '“First Party”');
+    expect(run?.slice(1, 4)).toEqual([true, false, true]);
+  });
+});
+
 describe('comments', () => {
   it('adds, lists, replies to and resolves comments', async () => {
     await fixture();

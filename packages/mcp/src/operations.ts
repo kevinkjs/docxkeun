@@ -21,6 +21,7 @@ import {
   wordCount,
   type ParagraphEntry,
 } from './outline.js';
+import { formatFor, hasMarkup, parseMarkup, piecesFor, plainText, type Segment } from './markup.js';
 
 /** One open document and who is acting on it. */
 export interface DocContext {
@@ -90,6 +91,8 @@ export function escapeRegExp(s: string): string {
 
 export function searchPattern(query: string, options: { regex?: boolean | undefined; matchCase?: boolean | undefined }): string | RegExp {
   const matchCase = options.matchCase ?? true;
+  // read_document's formatting tags are not part of the text.
+  if (!options.regex && hasMarkup(query)) query = plainText(query);
   if (!options.regex) return matchCase ? query : new RegExp(escapeRegExp(query), 'gi');
   try {
     return new RegExp(query, matchCase ? 'g' : 'gi');
@@ -159,7 +162,7 @@ const target = {
 };
 
 export const newParagraph = z.object({
-  text: z.string().describe('Paragraph text; "\\n" makes a line break and "\\t" a tab'),
+  text: z.string().describe('Paragraph text; "\\n" makes a line break and "\\t" a tab. <b>, <i>, <u>, <s>, <sup> and <sub> tags format parts of it'),
   style: z.string().optional().describe('Paragraph style name or id, e.g. "Heading 1" (default: the normal style)'),
 });
 
@@ -188,8 +191,10 @@ const readDocument = define({
   name: 'read_document',
   title: 'Read a document',
   description:
-    'Read a Word document as numbered paragraphs. Each line is "[number] (style; list label; table position; locks; comments) text", ' +
-    'e.g. "[4] (list item a.) …" or "[7] (bullet •, level 2) …". ' +
+    'Read a Word document as numbered paragraphs. Each line is "[number] (style; list label; table position; alignment; formatting of the whole paragraph; locks; comments) text", ' +
+    'e.g. "[1] (centered; bold, underlined) AGREEMENT" or "[4] (list item a.; justified) …". ' +
+    'Text formatted differently from the rest of its paragraph is tagged: <b>bold</b>, <i>italic</i>, <u>underlined</u>, <s>struck through</s>, <sup>superscript</sup>, <sub>subscript</sub>. ' +
+    'The tags are not part of the text (find_text and replace_text ignore them); edit_paragraph and insert_paragraphs take them, so keep them when you rewrite or translate text. ' +
     'Long documents come in pages of paragraphs: pass `from` to continue.',
   role: 'viewer',
   kind: 'read',
@@ -394,7 +399,7 @@ const replaceText = define({
   kind: 'change',
   schema: z.object({
     find: z.string().min(1).describe('Text to replace'),
-    replace: z.string().describe('Replacement text (empty deletes the matches)'),
+    replace: z.string().describe('Replacement text (empty deletes the matches); <b>, <i>, <u>… tags add formatting to parts of it'),
     regex: z.boolean().optional().describe('Treat find as a JavaScript regular expression'),
     matchCase: z.boolean().optional().describe('Match upper/lower case exactly (default true)'),
     paragraph: paragraphNumber.optional().describe('Only replace in this paragraph'),
@@ -415,7 +420,9 @@ const replaceText = define({
         skipped++;
         continue;
       }
-      ctx.editor.replaceRange(m, args.regex ? expandReplacement(args.replace, m) : args.replace);
+      const replacement = args.regex ? expandReplacement(args.replace, m) : args.replace;
+      // Untagged text keeps the formatting of what it replaces; tags add to it.
+      ctx.editor.replaceRange(m, hasMarkup(replacement) ? parseMarkup(replacement).map((x) => ({ text: x.text, ...(x.tags.size ? { format: formatFor(x.tags, new Set())! } : {}) })) : replacement);
     }
     const done = chosen.length - skipped;
     if (done === 0) throw new Error(`${plural(skipped, 'match is', 'matches are')} inside locked regions; nothing changed.`);
@@ -454,12 +461,15 @@ const fillTemplate = define({
 const editParagraph = define({
   name: 'edit_paragraph',
   title: 'Edit a paragraph',
-  description: "Replace a paragraph's text (keeping the formatting of its first run) and/or change its style.",
+  description:
+    "Replace a paragraph's text and/or change its style. The paragraph keeps its own formatting (alignment, indents, list, whole-paragraph bold and so on). " +
+    'Use the tags read_document shows (<b>, <i>, <u>, <s>, <sup>, <sub>) for text formatted differently from the rest: each tagged part takes the formatting ' +
+    '(font, size and colour too) of the text that had the same tags. Keep the tags when rewriting or translating, or that formatting is lost.',
   role: 'editor',
   kind: 'change',
   schema: z.object({
     paragraph: paragraphNumber.describe('Paragraph number from read_document'),
-    text: z.string().optional().describe('New text for the whole paragraph'),
+    text: z.string().optional().describe('New text for the whole paragraph, with formatting tags as read_document shows them'),
     style: z.string().optional().describe('New paragraph style name or id, e.g. "Heading 2"'),
   }),
   run(ctx, args) {
@@ -472,9 +482,10 @@ const editParagraph = define({
       done.push(`style set to ${args.style}`);
     }
     if (args.text !== undefined) {
+      const segments = parseMarkup(args.text);
       const range = ctx.editor.paragraphRange(e.para);
-      if (range) ctx.editor.replaceRange(range, args.text);
-      else if (args.text) ctx.editor.appendText(e.para.el, args.text);
+      if (range) ctx.editor.replaceRange(range, piecesFor(e.para, segments));
+      else if (args.text) writeTagged(ctx.editor, e.para.el, segments);
       done.push('text replaced');
     }
     return `Paragraph ${args.paragraph}: ${done.join(', ')}.`;
@@ -509,7 +520,10 @@ const insertParagraphs = define({
             : args.before !== undefined
               ? { before: entry(ctx, args.before).para.el }
               : ('end' as const);
-      els.push(ctx.editor.insertParagraph(where, p.text, opts));
+      const segments = parseMarkup(p.text);
+      const el = ctx.editor.insertParagraph(where, segments.map((x) => x.text).join(''), opts);
+      tagParagraph(ctx.editor, el, segments);
+      els.push(el);
     });
     return `Inserted ${plural(els.length, 'paragraph')} (now ${newNumbers(ctx, els)}).`;
   },
@@ -1129,6 +1143,32 @@ const replaceStoryText = define({
     return `Replaced ${plural(count, 'match', 'matches')} of ${quote(args.find)} in ${story.label}.`;
   },
 });
+
+/** Write tagged text into an empty paragraph. */
+export function writeTagged(editor: DocxEditor, paragraph: DocParagraph['el'], segments: Segment[]): void {
+  const text = segments.map((x) => x.text).join('');
+  if (!text) return;
+  editor.appendText(paragraph, text);
+  tagParagraph(editor, paragraph, segments);
+}
+
+/** Format the parts of a paragraph's new text that `segments` tag (its text is their text, in order). */
+export function tagParagraph(editor: DocxEditor, paragraph: DocParagraph['el'], segments: Segment[]): void {
+  if (!segments.some((x) => x.tags.size)) return;
+  const para = editor.paragraphs().find((p) => p.el === paragraph);
+  if (!para) return;
+  const pt = paragraphText(para);
+  const parts: Array<{ range: DocRange; format: TextFormat }> = [];
+  let at = 0;
+  for (const seg of segments) {
+    const format = seg.tags.size ? formatFor(seg.tags, new Set()) : undefined;
+    const range = format ? rangeIn(pt, at, at + seg.text.length) : undefined;
+    at += seg.text.length;
+    if (range && format) parts.push({ range, format });
+  }
+  // Later parts first, so earlier positions stay valid as runs are split.
+  for (const { range, format } of parts.reverse()) editor.formatRange(range, format);
+}
 
 /** A range for characters [a, b) of a paragraph's text. */
 function rangeIn(pt: ReturnType<typeof paragraphText>, a: number, b: number): DocRange | undefined {

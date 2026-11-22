@@ -141,6 +141,14 @@ export interface TextFormat {
   hidden?: boolean;
 }
 
+/** A piece of new text for `replaceRange`: formatted like the run `like` (default: the range's first run), then `format`. */
+export interface TextPiece {
+  text: string;
+  /** A w:r element whose formatting the piece copies. */
+  like?: XmlElement;
+  format?: TextFormat;
+}
+
 /** Paragraph formatting for `formatParagraph` (lengths in points; undefined leaves a property alone). */
 export interface ParagraphFormat {
   align?: 'left' | 'center' | 'right' | 'justify';
@@ -1089,23 +1097,34 @@ export class DocxEditor {
     this.changed();
   }
 
-  /** Replace a range with text formatted like the range's first run. */
-  replaceRange(range: DocRange, text: string, format?: TextFormat): void {
+  /**
+   * Replace a range with text formatted like the range's first run, or with pieces of text that are
+   * each formatted like their own `like` run (for example to rewrite a sentence and keep which words
+   * were bold). `format` is applied on top.
+   */
+  replaceRange(range: DocRange, text: string | TextPiece[], format?: TextFormat): void {
     this.check('edit', range);
     const index = this.index();
     const template = index.parentOf(range.start.node);
+    // Built before the cut, from the runs as they are now.
+    const runs =
+      typeof text === 'string'
+        ? text || format
+          ? [newRun(text, template, format)]
+          : []
+        : text.filter((p) => p.text).map((p) => newRun(p.text, p.like ?? template, format || p.format ? { ...format, ...p.format } : undefined));
     const track = this.tracking();
     if (track) {
       // The old text stays as a deletion; the new text follows it as an insertion.
       const { startMark, endMark } = this.trackedCut(range, track);
       replaceMark(this.index(), startMark, []);
       this.liftOutOfInsertion(endMark, this.index());
-      replaceMark(this.index(), endMark, text || format ? [this.placed(newRun(text, template, format), track)] : []);
+      replaceMark(this.index(), endMark, runs.length ? [insertedRuns(runs, track.nextId(), track.who)] : []);
       this.changed();
       return;
     }
     const { startMark, endMark, idx } = this.cut(range);
-    replaceMark(idx, startMark, text || format ? [newRun(text, template, format)] : []);
+    replaceMark(idx, startMark, runs);
     replaceMark(idx, endMark, []);
     this.changed();
   }

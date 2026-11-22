@@ -195,7 +195,7 @@ await editor.resolveComment(id);
 const bytes = await viewer.document!.save();
 ```
 
-Also available: `insertText`, `appendText`, `replaceRange`, `replaceAll`, `deleteRange` (across paragraphs), `insertParagraph`, `deleteParagraph`, `setParagraphStyle`, `formatParagraph` (alignment, right-to-left, indents, spacing, keep rules), `insertImage`, `addFootnote`, `setHeader` / `setFooter` / `removeHeader` / `removeFooter` / `headersAndFooters()`, `await removeHyperlink` (async since it also drops the link's relationship when unused), `setHyperlinkTarget`, `setImageAlt`, `clearFormatting`, `hyperlinks()`, `bookmarks()`, `removeBookmark`, `editComment`, `deleteComment`, `addEditableRange`, `removeEditableRange`.
+Also available: `insertText`, `appendText`, `replaceRange` (text, or pieces each formatted like a given run: `[{ text, like: boldRun }, { text, like: plainRun }]`), `replaceAll`, `deleteRange` (across paragraphs), `insertParagraph`, `deleteParagraph`, `setParagraphStyle`, `formatParagraph` (alignment, right-to-left, indents, spacing, keep rules), `insertImage`, `addFootnote`, `setHeader` / `setFooter` / `removeHeader` / `removeFooter` / `headersAndFooters()`, `await removeHyperlink` (async since it also drops the link's relationship when unused), `setHyperlinkTarget`, `setImageAlt`, `clearFormatting`, `hyperlinks()`, `bookmarks()`, `removeBookmark`, `editComment`, `deleteComment`, `addEditableRange`, `removeEditableRange`.
 
 ```ts
 // Tracked changes: record edits as Word revisions, then review them.
