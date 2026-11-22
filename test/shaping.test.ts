@@ -548,8 +548,9 @@ const arabicFontPath = [`${SUPPLEMENTAL}/Times New Roman.ttf`, `${SUPPLEMENTAL}/
 const devanagariFontPath = ['/System/Library/Fonts/Kohinoor.ttc', `${SUPPLEMENTAL}/ITFDevanagari.ttc`, `${SUPPLEMENTAL}/Devanagari Sangam MN.ttc`].find(existsSync);
 const nastaliqPath = '/System/Library/Fonts/NotoNastaliq.ttc';
 
+// A skipped describe still runs its body to collect the tests: load a system font only where it exists.
 describe.skipIf(!arabicFontPath)('system Arabic font', () => {
-  const font = loadFace(arabicFontPath!);
+  const font = arabicFontPath ? loadFace(arabicFontPath) : (undefined as unknown as Font);
   const rtl: ShapeOptions = { direction: 'rtl' };
   const gid = (ch: string) => font.glyphId(ch.codePointAt(0)!);
 
@@ -601,7 +602,7 @@ describe.skipIf(!existsSync(nastaliqPath))('system Nastaliq font', () => {
 });
 
 describe.skipIf(!devanagariFontPath)('system Devanagari font', () => {
-  const font = loadFace(devanagariFontPath!);
+  const font = devanagariFontPath ? loadFace(devanagariFontPath) : (undefined as unknown as Font);
   const deva: ShapeOptions = { direction: 'ltr' };
   const gid = (ch: string) => font.glyphId(ch.codePointAt(0)!);
 
