@@ -2,7 +2,7 @@
 
 All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic versioning](https://semver.org); while the version is 0.x, minor versions may contain breaking changes.
 
-## Unreleased
+## 0.2.0 (2026-11-22)
 
 ### docxkeun
 
