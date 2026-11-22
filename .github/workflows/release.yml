@@ -21,8 +21,10 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later. npm 12 drops docxkeun-mcp's "bin" entry when
+      # it publishes, which would break `npx docxkeun-mcp`, so stay on 11 until that is sorted out.
       - name: Use an npm that supports trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
       - run: pnpm install --frozen-lockfile
       - name: Tag must match the package version
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
