@@ -5,3 +5,4 @@ export { EditError, TreeIndex, type DocPosition, type DocRange } from './positio
 export { ensurePart, randomHexId } from './parts.js';
 export { selectionInfoFor, describeSelection, type SelectionInfo, type SelectedParagraph, type TextSpot } from './selection.js';
 export type { HeaderFooterInfo, HeaderFooterKind, HeaderFooterOptions, HeaderFooterType } from './headers.js';
+export type { TableOptions, CopyDropped } from './tables.js';

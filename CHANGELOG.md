@@ -9,14 +9,21 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 - **AI effect styles:** `aiActivity: { style }` and `viewer.activity.style` pick how the paragraph the AI is changing looks: `highlight` (the band, as before), `words` (the letters themselves shimmer), `underline`, `edge`, `spotlight`, `quiet` or `sparkles`. `ACTIVITY_STYLES` lists them with labels for a picker. The mark that stays after a change follows the style: a soft tint on the paragraph (`highlight`), glowing changed words (`words`), underlined changed words (`underline`), or the ✦ margin bar (the others); `marks: false` / `viewer.activity.marksShown` turn the marks off. Every style has a still form for `animate: false` and `prefers-reduced-motion`.
 - The AI's marks now build up over a run of changes instead of showing only the latest one: each follows its paragraph as others are added or removed, a paragraph changed twice is marked against its text before the first change, and `clearMarks()` starts over. `ParagraphChange.from` gives a changed paragraph's index in the old text.
 - The AI's marks and effects now follow zoom changes and the comment column's width (they kept their old positions before), and the change map's ticks show the text from before.
+- **Tables:** `DocxEditor.insertTable()` adds a table that spans the text width, with an optional bold header row that repeats on each page, relative column widths and alignment. It uses Word's "Table Grid" style when the document has it, or plain borders. `insertTableRows()` adds rows formatted like the row they copy, `deleteTableRows()` and `deleteTable()` remove them, and `tableOf()` finds the table a cell paragraph is in. All of them record tracked changes when Track Changes is on, and rejecting an inserted table removes it whole.
+- **Copying content:** `DocxEditor.copyBlocks()` copies paragraphs and tables with their formatting, lists and pictures, optionally starting on a new page. Lists in the copy start again at 1 (or continue with `restartLists: false`). Bookmarks, comment anchors and note references are left out and counted, and ids that must be unique are renewed.
+- `setList` with `sameListAs` now accepts the joined list's own `format`, and its errors say what to do instead: join a paragraph that is not in a list yet by making it one first; use `start` without `sameListAs` to number from a given value.
 
 ### docxkeun chat
 
 - "Appearance" also picks the effect style and whether marks stay after each change, with a live sample. A reply's marks cover all its changes; opening a document or undoing a reply clears them.
+- Claude can now copy content with its formatting and make and change tables, so "translate this document onto a new page" keeps the tables and lists instead of retyping them as plain text.
 
 ### docxkeun-mcp
 
 - The live preview's header has a **Style** list and a **Marks** switch next to "AI effects", remembered in the browser. Marks build up while the AI works on a document and start over when you open another one.
+- New tools: `copy_paragraphs` copies paragraphs and tables with their formatting and lists (for example onto a new page, to translate a document), `insert_table` makes a table, and `edit_table` adds or deletes rows or deletes a table.
+- `set_list` explains how to join paragraphs that are not next to each other into one list, and accepts the list's own format with `sameListAs`.
+- New tool `copy_document` copies a document to a new file exactly as it is (an encrypted one stays encrypted), so "make a copy" or "translate it into a new file" keeps every bit of formatting. Before, the AI could only retype the text into `create_document`, which made a blank document and lost the text and paragraph formatting, lists and tables. `create_document`'s description now sends copies to `copy_document`.
 
 ## 0.2.0 (2026-11-22)
 

@@ -30,6 +30,11 @@ const BODY =
   p('Signed by {{signer}}.') +
   p('The Supplier shall deliver on time. ACME Ltd. agrees.');
 
+/** One list: a., b., c. */
+const NUMBERING =
+  '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>' +
+  '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>';
+
 let dir: string;
 const clients: Client[] = [];
 
@@ -324,6 +329,40 @@ describe('editing', () => {
     expect(read).toContain('[2] Line one\nLine two');
     expect((await call(client, 'create_document', { path: 'memo.docx', paragraphs: [] })).text).toContain('already exists');
   });
+
+  it('copies a document exactly, to edit the copy', async () => {
+    const file = await fixture();
+    const client = await connect();
+    const copied = await ok(client, 'copy_document', { path: 'contract.docx', to: 'contract (English).docx' });
+    expect(copied).toBe('Copied contract.docx to contract (English).docx: an exact copy with all its formatting, tables, lists, pictures, headers, footers and comments. Change the copy with path "contract (English).docx".');
+    const copy = join(dir, 'contract (English).docx');
+    expect(new Uint8Array(await readFile(copy))).toEqual(new Uint8Array(await readFile(file)));
+    // Editing the copy leaves the original alone.
+    await ok(client, 'replace_text', { path: 'contract (English).docx', find: 'ACME Ltd.', replace: 'Contoso GmbH' });
+    expect((await bodyText(file)).join('\n')).toContain('ACME Ltd.');
+    expect((await bodyText(copy)).join('\n')).toContain('Contoso GmbH');
+
+    const again = await call(client, 'copy_document', { path: 'contract.docx', to: 'contract (English).docx' });
+    expect(again).toMatchObject({ isError: true });
+    expect(again.text).toContain('contract (English).docx already exists; pass overwrite: true to replace it');
+    await ok(client, 'copy_document', { path: 'contract.docx', to: 'contract (English).docx', overwrite: true });
+    expect(new Uint8Array(await readFile(copy))).toEqual(new Uint8Array(await readFile(file)));
+    expect((await call(client, 'copy_document', { path: 'contract.docx', to: 'contract.docx', overwrite: true })).text).toContain('is the same file');
+    expect((await call(client, 'copy_document', { path: 'missing.docx', to: 'x.docx' })).isError).toBe(true);
+  });
+
+  it('keeps an encrypted copy encrypted, and tells the AI to use the copy rather than retype', async () => {
+    await fixture();
+    const client = await connect({ role: 'owner' });
+    await ok(client, 'set_open_password', { path: 'contract.docx', action: 'set', newPassword: 'pw-1' });
+    const copied = await ok(client, 'copy_document', { path: 'contract.docx', to: 'locked copy.docx' });
+    expect(copied).toContain('It opens with the same password.');
+    expect((await bodyText(join(dir, 'locked copy.docx'), 'pw-1')).join('\n')).toContain('ACME Ltd.');
+
+    const { tools } = await client.listTools();
+    expect(tools.find((t) => t.name === 'create_document')!.description).toContain('To copy a document, use copy_document');
+    expect(client.getInstructions()).toContain('copy_document');
+  });
 });
 
 describe('comments', () => {
@@ -434,9 +473,6 @@ describe('PDF export', () => {
 });
 
 describe('lists', () => {
-  const NUMBERING =
-    '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>' +
-    '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>';
   const listItem = (text: string) => p(text, '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>');
 
   async function letter(): Promise<void> {
@@ -473,6 +509,67 @@ describe('lists', () => {
   it('is an editing tool', async () => {
     const names = (await (await connect({ role: 'commenter' })).listTools()).tools.map((t) => t.name);
     expect(names).not.toContain('set_list');
+  });
+
+  it('joins a list with its own format, and says how to build a list that is not a list yet', async () => {
+    await letter();
+    const client = await connect();
+    await ok(client, 'set_list', { path: 'letter.docx', from: 2, format: 'decimal' });
+    expect(await ok(client, 'set_list', { path: 'letter.docx', from: 3, sameListAs: 2, format: 'decimal' })).toContain('Paragraph 3 is now labelled "2.".');
+    const notYet = await call(client, 'set_list', { path: 'letter.docx', from: 4, sameListAs: 1 });
+    expect(notYet).toMatchObject({ isError: true });
+    expect(notYet.text).toContain('Paragraph 1 is not in a list yet. Make it one first (set_list from 1 with a format), then add the others with sameListAs: 1.');
+    const other = await call(client, 'set_list', { path: 'letter.docx', from: 3, sameListAs: 2, format: 'bullet' });
+    expect(other.text).toContain('That list is numbered 1.; to continue it leave out format');
+  });
+});
+
+describe('tables and copies', () => {
+  it('copies everything onto a new page with lists and tables, for a translation', async () => {
+    const body =
+      p('Agreement', '<w:jc w:val="center"/>', '<w:b/>') +
+      p('Terms:') +
+      p('First term', '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>') +
+      p('Second term', '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>') +
+      `<w:tbl><w:tblPr><w:tblW w:w="8000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr>${cell('No')}${cell('Total')}</w:tr></w:tbl>` +
+      p('Signed.');
+    await writeFile(join(dir, 'deal.docx'), await buildDocx({ body, styles: STYLES, numbering: NUMBERING }));
+    const client = await connect();
+    expect(await ok(client, 'copy_paragraphs', { path: 'deal.docx', from: 1, to: 7, pageBreak: true })).toBe(
+      'Copied paragraphs 1–7 (with 1 table) at the end, starting on a new page: the copy is paragraphs 8–14. Lists in the copy start again at 1.\nSaved deal.docx.',
+    );
+    const read = await ok(client, 'read_document', { path: 'deal.docx' });
+    expect(read).toContain('[10] (list item a.) First term');
+    expect(read).toContain('[11] (list item b.) Second term');
+    expect(read).toContain('[12] (table 2, row 1, cell 1) No');
+    // Translate a copied cell like any paragraph.
+    await ok(client, 'edit_paragraph', { path: 'deal.docx', paragraph: 12, text: 'Nomor' });
+    expect((await bodyText(join(dir, 'deal.docx'))).slice(7)).toEqual(['Agreement', 'Terms:', 'First term', 'Second term', 'Nomor', 'Total', 'Signed.']);
+  });
+
+  it('inserts a table, adds and deletes rows, and deletes the table', async () => {
+    const file = await fixture();
+    const client = await connect();
+    expect(await ok(client, 'insert_table', { path: 'contract.docx', after: 4, rows: [['No', 'Description', 'Total'], ['1', 'Land', 'Rp 201.801.600']], header: true, widths: [1, 4, 2] })).toBe(
+      'Inserted a 2×3 table after paragraph 4 (table 1): its cells are paragraphs 5–10.\nSaved contract.docx.',
+    );
+    expect(await ok(client, 'edit_table', { path: 'contract.docx', table: 1, action: 'add_rows', rows: [['2', 'Trees', 'Rp 1.000.000']] })).toBe(
+      'Added 1 row to table 1 (now 3 rows): the new cells are paragraphs 11–13.\nSaved contract.docx.',
+    );
+    expect((await bodyText(file)).slice(4, 13)).toEqual(['No', 'Description', 'Total', '1', 'Land', 'Rp 201.801.600', '2', 'Trees', 'Rp 1.000.000']);
+    expect(await ok(client, 'edit_table', { path: 'contract.docx', table: 1, action: 'delete_rows', fromRow: 2 })).toBe('Deleted row 2 of table 1 (2 rows left).\nSaved contract.docx.');
+    expect(await ok(client, 'edit_table', { path: 'contract.docx', table: 1, action: 'delete_table' })).toBe('Deleted table 1.\nSaved contract.docx.');
+    // The fixture's own table is table 1 again.
+    expect(await ok(client, 'read_document', { path: 'contract.docx' })).toContain('(table 1, row 1, cell 1) Name');
+    const missing = await call(client, 'edit_table', { path: 'contract.docx', table: 5, action: 'delete_table' });
+    expect(missing.text).toContain('There is no table 5; the document has 1 table.');
+  });
+
+  it('are editing tools', async () => {
+    const names = (await (await connect({ role: 'commenter' })).listTools()).tools.map((t) => t.name);
+    for (const name of ['copy_paragraphs', 'insert_table', 'edit_table']) expect(names).not.toContain(name);
+    const editor = (await (await connect({ role: 'editor' })).listTools()).tools.map((t) => t.name);
+    for (const name of ['copy_paragraphs', 'insert_table', 'edit_table']) expect(editor).toContain(name);
   });
 });
 

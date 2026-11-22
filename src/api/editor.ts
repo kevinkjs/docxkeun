@@ -10,6 +10,8 @@ import type { DocParagraph, Block, Inline } from '../model/content.js';
 import type { DocxDocument } from '../model/document.js';
 import { attr, el, elements, ensureChild, findAll, firstChild, insertOrdered, NS, removeChildren, textContent, type XmlElement, type XmlNode } from '../xml/index.js';
 import { createList, listItems, type ListFormat, type ListItem } from './lists.js';
+import { buildTable, cleanCopy, columnWidths, markInserted, markRow, type CopyDropped, type TableOptions } from './tables.js';
+import { cloneElement } from '../xml/index.js';
 import {
   acceptRevisions,
   cleanRunProps,
@@ -304,6 +306,19 @@ function endOfRun(run: XmlElement, fallback: XmlElement): DocPosition {
   const last = items[items.length - 1];
   if (!last) return { node: fallback, offset: 0 };
   return last.name === 'w:t' ? { node: last, offset: textContent(last).length } : { node: last, offset: 1 };
+}
+
+/** Whether a list level is in a set_list format (decimal "1." and decimalParen "1)" differ by their text). */
+function levelMatches(level: { format: string; text: string }, format: ListFormat): boolean {
+  if (format === 'decimal') return level.format === 'decimal' && !/\)\s*$/.test(level.text);
+  if (format === 'decimalParen') return level.format === 'decimal' && /\)\s*$/.test(level.text);
+  return level.format === format;
+}
+
+function describeLevel(level: { format: string; text: string }): string {
+  if (level.format === 'bullet') return 'bulleted';
+  if (level.format === 'decimal') return /\)\s*$/.test(level.text) ? 'numbered 1)' : 'numbered 1.';
+  return `numbered with ${level.format}`;
 }
 
 function newRun(text: string, template?: XmlElement, format?: TextFormat): XmlElement {
@@ -1299,6 +1314,266 @@ export class DocxEditor {
     this.changed();
   }
 
+  // ---- copies and tables -----------------------------------------------------------------------
+
+  /** The block (paragraph, table or content control) of the body that holds `node`. */
+  private topBlock(node: XmlElement, idx = this.index()): XmlElement {
+    let n = node;
+    for (let p = idx.parent.get(n); p && p !== this.body; p = idx.parent.get(p)) n = p;
+    if (idx.parent.get(n) !== this.body) throw new EditError('That paragraph is not in the body of the document');
+    return n;
+  }
+
+  /** Put new blocks into the body before/after the block holding `ref`, or at the start or end. */
+  private placeBlocks(blocks: XmlElement[], where: { before?: XmlElement; after?: XmlElement } | 'start' | 'end'): void {
+    const body = this.body;
+    const sect = firstChild(body, 'w:sectPr');
+    let at: number;
+    if (where === 'start') at = 0;
+    else if (where === 'end') at = sect ? body.children.indexOf(sect) : body.children.length;
+    else {
+      const ref = where.before ?? where.after;
+      if (!ref) throw new EditError('Pass the paragraph to place it before or after');
+      const top = this.topBlock(ref);
+      at = body.children.indexOf(top) + (where.after ? 1 : 0);
+    }
+    body.children.splice(at, 0, ...blocks);
+    // Word wants a paragraph after a table that ends the document.
+    const last = blocks[blocks.length - 1];
+    const next = body.children[at + blocks.length];
+    if (last?.name === 'w:tbl' && (!next || (next.type === 'element' && next.name === 'w:sectPr'))) body.children.splice(at + blocks.length, 0, el('w:p'));
+  }
+
+  /** Permission to add content next to `where`. */
+  private checkPlace(where: { before?: XmlElement; after?: XmlElement } | 'start' | 'end'): void {
+    const ref = typeof where === 'object' ? (where.before ?? where.after) : undefined;
+    this.check('edit', ref ? { start: { node: ref, offset: 0 }, end: { node: ref, offset: 0 } } : undefined);
+  }
+
+  /**
+   * Copy the body's blocks from the one holding `from` to the one holding `to` (a table is copied
+   * whole) and put the copies at `where`, with their formatting, lists, tables and pictures. Lists
+   * in the copy number from the start again unless `restartLists` is false, and `pageBreak` starts
+   * the copy on a new page. What may exist only once (bookmarks, comment anchors, note references)
+   * is left out of the copy and counted in `dropped`.
+   */
+  async copyBlocks(
+    from: XmlElement,
+    to: XmlElement,
+    where: { before?: XmlElement; after?: XmlElement } | 'start' | 'end',
+    options: { pageBreak?: boolean; restartLists?: boolean } = {},
+  ): Promise<{ blocks: XmlElement[]; dropped: CopyDropped }> {
+    this.checkPlace(where);
+    const idx = this.index();
+    const kids = this.body.children;
+    const first = kids.indexOf(this.topBlock(from, idx));
+    const last = kids.indexOf(this.topBlock(to, idx));
+    if (last < first) throw new EditError('The last paragraph to copy comes before the first');
+    const originals = kids.slice(first, last + 1).filter((c): c is XmlElement => c.type === 'element' && c.name !== 'w:sectPr');
+    const copies = originals.map(cloneElement);
+
+    // Ids that must stay unique in the document.
+    const revision = nextRevisionId(this.root);
+    let drawing = 0;
+    for (const d of findAll(this.root, 'wp:docPr')) drawing = Math.max(drawing, Number(attr(d, 'id')) || 0);
+    const sdtIds = new Set(findAll(this.root, 'w:sdtPr').map((s) => attr(firstChild(s, 'w:id'), 'w:val')));
+    const sdt = () => {
+      let id: string;
+      do id = String(1 + Math.floor(Math.random() * 2147483646));
+      while (sdtIds.has(id));
+      sdtIds.add(id);
+      return id;
+    };
+    const dropped: CopyDropped = { comments: 0, notes: 0, bookmarks: 0 };
+    for (const c of copies) cleanCopy(c, { revision, drawing: () => String(++drawing), sdt }, dropped);
+
+    // Lists in the copy: a new list of the same look for each list copied, so numbering restarts.
+    if (options.restartLists ?? true) {
+      const styleNumId = (s: string) => this.doc.styles.get(s)?.pPr.numId;
+      const renumbered = new Map<string, string>();
+      for (const p of copies.flatMap((c) => (c.name === 'w:p' ? [c] : findAll(c, 'w:p')))) {
+        const pPr = firstChild(p, 'w:pPr');
+        const numPr = firstChild(pPr, 'w:numPr');
+        const styleId = attr(firstChild(pPr, 'w:pStyle'), 'w:val');
+        const numId = numPr ? attr(firstChild(numPr, 'w:numId'), 'w:val') : styleId ? this.doc.styles.get(styleId)?.pPr.numId : undefined;
+        if (!numId || numId === '0') continue;
+        let fresh = renumbered.get(numId);
+        if (!fresh) {
+          const abstractId = this.doc.numbering.abstractFor(numId, styleNumId)?.id;
+          fresh = await createList(this.doc, { format: 'keep', levels: new Set(), base: { numId, abstractId } });
+          renumbered.set(numId, fresh);
+        }
+        const ilvl = numPr ? attr(firstChild(numPr, 'w:ilvl'), 'w:val') ?? '0' : String(styleId ? (this.doc.styles.get(styleId)?.pPr.ilvl ?? 0) : 0);
+        const target = ensureChild(p, 'w:pPr');
+        if (p.children[0] !== target) {
+          p.children.splice(p.children.indexOf(target), 1);
+          p.children.unshift(target);
+        }
+        removeChildren(target, 'w:numPr');
+        insertOrdered(target, el('w:numPr', {}, [el('w:ilvl', { 'w:val': ilvl }), el('w:numId', { 'w:val': fresh })]), PPR_ORDER);
+      }
+    }
+
+    const blocks = [...copies];
+    if (options.pageBreak) {
+      const head = blocks[0];
+      if (head?.name === 'w:p') {
+        const pPr = ensureChild(head, 'w:pPr');
+        if (head.children[0] !== pPr) {
+          head.children.splice(head.children.indexOf(pPr), 1);
+          head.children.unshift(pPr);
+        }
+        removeChildren(pPr, 'w:pageBreakBefore');
+        insertOrdered(pPr, el('w:pageBreakBefore'), PPR_ORDER);
+      } else blocks.unshift(el('w:p', {}, [el('w:pPr', {}, [el('w:pageBreakBefore')])]));
+    }
+    const track = this.tracking();
+    if (track) for (const b of blocks) markInserted(b, track.nextId, track.who, (p) => markParagraph(p, 'ins', track.nextId(), track.who));
+    this.placeBlocks(blocks, where);
+    this.changed();
+    return { blocks, dropped };
+  }
+
+  /**
+   * Insert a table of text (`rows` of cell texts; "\n" in a cell starts a new paragraph) before or
+   * after the block holding a paragraph, or at the start or end. It spans the text width.
+   */
+  insertTable(where: { before?: XmlElement; after?: XmlElement } | 'start' | 'end', rows: string[][], options: TableOptions = {}): XmlElement {
+    this.checkPlace(where);
+    const columns = Math.max(0, ...rows.map((r) => r.length));
+    if (!rows.length || !columns) throw new EditError('A table needs at least one row and one column');
+    if (rows.length > 500 || columns > 63) throw new EditError('A table can have at most 500 rows and 63 columns');
+    if (options.widths && (options.widths.length !== columns || options.widths.some((w) => !(w > 0)))) {
+      throw new EditError(`widths needs ${columns} positive numbers, one per column`);
+    }
+    const sections = sectionProperties(this.body);
+    const total = textWidth(sections[sections.length - 1]);
+    const grid = this.doc.styles.get('TableGrid') ? 'TableGrid' : undefined;
+    const style = options.style ?? (options.borders === false ? undefined : grid);
+    if (options.style && !this.doc.styles.get(options.style)) throw new EditError(`There is no table style "${options.style}"`);
+    const track = this.tracking();
+    const table = buildTable(rows, columnWidths(columns, total, options.widths), {
+      header: !!options.header,
+      style,
+      borders: options.borders !== false,
+      align: options.align,
+      paragraph: (text, header) =>
+        el('w:p', {}, [
+          // Without a table style, cells get Table Grid's tight spacing.
+          ...(style ? [] : [el('w:pPr', {}, [el('w:spacing', { 'w:before': '0', 'w:after': '0' })])]),
+          ...(text ? [newRun(text, undefined, header ? { bold: true } : undefined)] : []),
+        ]),
+    });
+    if (track) markInserted(table, track.nextId, track.who, (p) => markParagraph(p, 'ins', track.nextId(), track.who));
+    this.placeBlocks([table], where);
+    this.changed();
+    return table;
+  }
+
+  /** The table holding a paragraph (the innermost one). */
+  tableOf(paragraph: XmlElement): XmlElement {
+    const idx = this.index();
+    const table = idx.ancestor(paragraph, 'w:tbl');
+    if (!table) throw new EditError('That paragraph is not in a table');
+    return table;
+  }
+
+  /** Permission to change a table: its whole text. */
+  private checkTable(table: XmlElement): void {
+    const paras = findAll(table, 'w:p');
+    const a = this.paragraphRange(paras[0]!);
+    const b = this.paragraphRange(paras[paras.length - 1]!);
+    this.check('edit', a && b ? { start: a.start, end: b.end } : { start: { node: table, offset: 0 }, end: { node: table, offset: 0 } });
+  }
+
+  /**
+   * Insert rows into a table before row `at` (0-based; the row count appends). Each new row copies
+   * the formatting of the row next to it and gets the texts of one entry of `rows`.
+   */
+  insertTableRows(table: XmlElement, at: number, rows: string[][]): XmlElement[] {
+    this.checkTable(table);
+    const existing = elements(table, 'w:tr');
+    if (!Number.isInteger(at) || at < 0 || at > existing.length) throw new EditError(`Rows go from 0 to ${existing.length}`);
+    if (!rows.length) throw new EditError('Pass at least one row');
+    const template = existing[at - 1] ?? existing[at];
+    if (!template) throw new EditError('The table has no rows to copy the formatting of');
+    const cells = elements(template, 'w:tc');
+    const widest = Math.max(...rows.map((r) => r.length));
+    if (widest > cells.length) throw new EditError(`That row has ${cells.length} cells, so a new row can have at most ${cells.length} texts`);
+    const track = this.tracking();
+    const made = rows.map((texts) => {
+      const row = cloneElement(template);
+      delete row.attrs['w14:paraId'];
+      delete row.attrs['w14:textId'];
+      // Only the first rows of a table repeat as a header.
+      const trPr = firstChild(row, 'w:trPr');
+      if (trPr && at > 0) {
+        removeChildren(trPr, 'w:tblHeader');
+        removeChildren(trPr, 'w:ins');
+        removeChildren(trPr, 'w:del');
+      }
+      elements(row, 'w:tc').forEach((tc, i) => {
+        const tcPr = firstChild(tc, 'w:tcPr');
+        if (tcPr) removeChildren(tcPr, 'w:vMerge');
+        const p = firstChild(tc, 'w:p') ?? el('w:p');
+        const pPr = firstChild(p, 'w:pPr');
+        const runTemplate = findAll(p, 'w:r')[0];
+        const text = texts[i] ?? '';
+        const lines = text.split('\n');
+        const paragraphs = lines.map((line) => el('w:p', {}, [...(pPr ? [cloneElement(pPr)] : []), ...(line ? [newRun(line, runTemplate)] : [])]));
+        tc.children = [...(tcPr ? [tcPr] : []), ...paragraphs];
+      });
+      if (track) markInserted(row, track.nextId, track.who, (p) => markParagraph(p, 'ins', track.nextId(), track.who));
+      return row;
+    });
+    const anchor = existing[at];
+    table.children.splice(anchor ? table.children.indexOf(anchor) : table.children.length, 0, ...made);
+    this.changed();
+    return made;
+  }
+
+  /** Delete rows `from` to `to` (0-based, inclusive) of a table; deleting them all deletes the table. */
+  deleteTableRows(table: XmlElement, from: number, to = from): void {
+    this.checkTable(table);
+    const rows = elements(table, 'w:tr');
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to >= rows.length || to < from) throw new EditError(`Rows go from 0 to ${rows.length - 1}`);
+    if (from === 0 && to === rows.length - 1) {
+      this.deleteTable(table);
+      return;
+    }
+    const doomed = rows.slice(from, to + 1);
+    const track = this.tracking();
+    if (track) for (const row of doomed) this.markRowDeleted(row, track);
+    else table.children = table.children.filter((c) => !(c.type === 'element' && doomed.includes(c)));
+    this.changed();
+  }
+
+  /** Delete a whole table. */
+  deleteTable(table: XmlElement): void {
+    this.checkTable(table);
+    const track = this.tracking();
+    if (track) for (const row of elements(table, 'w:tr')) this.markRowDeleted(row, track);
+    else {
+      const idx = this.index();
+      const parent = idx.parentOf(table);
+      parent.children.splice(indexOfChild(parent, table), 1);
+      // A table cell, and the body, must keep a paragraph.
+      if (parent.name === 'w:tc' && !elements(parent, 'w:p').length) parent.children.push(el('w:p'));
+      if (parent === this.body && !elements(parent).some((c) => c.name === 'w:p' || c.name === 'w:tbl' || c.name === 'w:sdt')) {
+        const sect = firstChild(parent, 'w:sectPr');
+        parent.children.splice(sect ? parent.children.indexOf(sect) : parent.children.length, 0, el('w:p'));
+      }
+    }
+    this.changed();
+  }
+
+  private markRowDeleted(row: XmlElement, track: { who: RevisionAuthor; nextId: () => string }): void {
+    const idx = this.index();
+    for (const run of findAll(row, 'w:r')) deleteRun(run, (n) => idx.parent.get(n), track.nextId, track.who);
+    for (const p of findAll(row, 'w:p')) markParagraph(p, 'del', track.nextId(), track.who);
+    markRow(row, 'del', track.nextId(), track.who);
+  }
+
   setParagraphStyle(paragraph: XmlElement, styleId: string): void {
     this.check('format', this.paragraphRange(paragraph));
     const track = this.tracking();
@@ -1416,9 +1691,17 @@ export class DocxEditor {
       return undefined;
     }
     if (sameListAs) {
-      if (format !== undefined || start !== undefined) throw new EditError('sameListAs cannot be combined with format or start');
       const target = all.get(sameListAs)?.numbering;
-      if (!target) throw new EditError('The paragraph to join is not in a list');
+      if (!target) throw new EditError('The paragraph to join is not in a list yet: make it one first (with a format), then join the others to it');
+      if (start !== undefined) throw new EditError("sameListAs continues that list's numbering; to number from a given value, use start without sameListAs");
+      if (format !== undefined) {
+        // Naming the list's own format is harmless; another format would start a different list.
+        const styleNumId = (s: string) => this.doc.styles.get(s)?.pPr.numId;
+        const lvl = this.doc.numbering.level(target.numId, level ?? target.ilvl, styleNumId);
+        if (!lvl || !levelMatches(lvl, format)) {
+          throw new EditError(`That list is ${lvl ? describeLevel(lvl) : 'in another format'}; to continue it leave out format, or to start a new list use format without sameListAs`);
+        }
+      }
       for (const p of paras) this.writeNumPr(p, { numId: target.numId, ilvl: level ?? (p.numbering ? p.numbering.ilvl : target.ilvl) });
       this.changed();
       return target.numId;

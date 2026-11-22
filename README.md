@@ -234,6 +234,21 @@ await editor.setList([extra], { sameListAs: items[1]! });      // continue an ex
 await editor.setList(items, { format: 'none' });               // no longer a list
 ```
 
+Tables and copies: `insertTable` builds a table that spans the text width (Word's "Table Grid" style when the document has it, otherwise plain borders), `insertTableRows` / `deleteTableRows` / `deleteTable` change one, and `tableOf(paragraph)` finds the table a cell paragraph is in. `copyBlocks` copies paragraphs and tables with their formatting, lists and pictures, for example to translate a document onto a new page. With Track Changes on, all of these are recorded as revisions.
+
+```ts
+const [first, last] = [editor.paragraphs()[0]!.el, editor.paragraphs().at(-1)!.el];
+const { blocks, dropped } = await editor.copyBlocks(first, last, 'end', { pageBreak: true });  // lists in the copy start again at 1
+// dropped: { comments, notes, bookmarks } left out of the copy, since they can exist only once
+
+const table = editor.insertTable({ after: blocks.at(-1)! }, [
+  ['No', 'Description', 'Total'],
+  ['1', 'Land benefit value', 'Rp 201.801.600'],
+], { header: true, widths: [1, 4, 2] });                           // bold header row, repeated on each page
+editor.insertTableRows(table, 2, [['2', 'Admin fee', 'Rp 500.000']]);  // copies the formatting of the row above
+editor.deleteTableRows(table, 2);                                  // 0-based; deleting every row deletes the table
+```
+
 ### PDF
 
 ```ts
@@ -374,7 +389,7 @@ Known limits:
 - **Pictures:** only the first frame of a GIF and the first page of a TIFF; JPEG-compressed and CMYK TIFFs are not decoded. EMF+-only pictures (some Office 2007+ charts pasted as pictures) and clipping inside metafiles are not supported.
 - **Equations:** no line breaks inside an equation and no equation numbers. Math symbols missing from your fonts fall back to other fonts (the bundled fonts have no math font such as Cambria Math).
 - **Right-to-left and complex scripts:** the bundled fonts have no Arabic or Indic letters; register a font that has them (for example Arial, Times New Roman or Noto) for PDF export. The viewer leaves shaping these scripts to the browser.
-- **Editing:** creating or changing shapes, charts and equations, moving or resizing pictures, and editing table structure (rows, columns, merging) are not supported. A keystroke still paginates the whole document, re-using the measured lines of unchanged paragraphs.
+- **Editing:** creating or changing shapes, charts and equations, moving or resizing pictures, and changing a table's columns or merged cells are not supported. Rows can be added and deleted from code, not yet on the page. A keystroke still paginates the whole document, re-using the measured lines of unchanged paragraphs.
 
 ## Development
 

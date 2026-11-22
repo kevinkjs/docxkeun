@@ -96,7 +96,10 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       instructions: [
         `This server reads and changes Word documents (.docx) in: ${ws.roots.join(', ')}.`,
         'Start with read_document. It numbers paragraphs from 1, including paragraphs in table cells; tools that take `paragraph` use those numbers.',
-        'Numbers shift after insert_paragraphs or delete_paragraphs, so read the document again before reusing numbers from earlier.',
+        'Numbers shift after insert_paragraphs, delete_paragraphs, copy_paragraphs and table changes, so read the document again before reusing numbers from earlier.',
+        ...(role === 'editor' || role === 'owner'
+          ? ['Tables: insert_table makes one and edit_table adds or deletes rows; cells are paragraphs, so edit their text like any paragraph. To duplicate content with its formatting, lists and tables (for example to translate a document onto a new page), use copy_paragraphs and then change the copies\u2019 text, rather than retyping it with insert_paragraphs. For a copy or new version of a whole document in another file (for example a translation), use copy_document and then change the copy; create_document makes a blank document without the original\u2019s formatting.']
+          : []),
         'Changes are saved to the file straight away; pass `output` to write a copy instead.',
         `Your role is ${role}: you may ${ROLE_SUMMARY[role]}. Comments you add are signed "${author}".`,
         "Locked regions and the document's own protection are enforced. If an edit is refused, tell the user rather than working around it.",
@@ -401,7 +404,8 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       'create_document',
       {
         title: 'Create a document',
-        description: 'Create a new Word document from paragraphs. The new document has the styles Normal, Heading 1 and Heading 2.',
+        description:
+          'Create a new, blank Word document from paragraphs of plain text. The new document has the styles Normal, Heading 1 and Heading 2 and none of any other document\'s formatting. To copy a document, use copy_document (an exact copy), never retype it here.',
         inputSchema: z.object({
           path,
           paragraphs: z.array(newParagraph).describe('The paragraphs, in order'),
@@ -430,6 +434,38 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
           await ws.write(dest, await doc.save({ modified: new Date() }));
           const message = `Created ${ws.display(dest)} with ${plural(Math.max(args.paragraphs.length, 1), 'paragraph')}.`;
           preview?.notify({ path: dest, message });
+          return message;
+        }),
+    );
+
+    tool(
+      'copy_document',
+      {
+        title: 'Copy a document',
+        description:
+          'Copy a document to a new file, exactly as it is: formatting, styles, tables, lists, pictures, headers, footers, comments and page setup. Use it whenever the user wants a copy or a new version of a document (for example a translation in a new file), then change the copy with the other tools.',
+        inputSchema: z.object({
+          path,
+          to: z.string().describe('The new file, a .docx inside the allowed folders'),
+          overwrite: z.boolean().optional().describe('Allow `to` to replace an existing file (default false)'),
+        }),
+        annotations: ADD,
+      },
+      async (args) =>
+        queue.run(async () => {
+          const source = await ws.resolve(args.path, 'document', true);
+          const dest = await ws.resolve(args.to, 'document', false);
+          if (dest === source) throw new Error(`${ws.display(dest)} is the same file as the original; give the copy another name`);
+          if (!args.overwrite && (await ws.exists(dest))) throw new Error(`${ws.display(dest)} already exists; pass overwrite: true to replace it`);
+          // The bytes as they are: nothing is re-saved, so nothing can be lost.
+          const bytes = await ws.read(source);
+          await ws.write(dest, bytes);
+          const encrypted = bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0;
+          const shown = ws.display(dest);
+          const message =
+            `Copied ${ws.display(source)} to ${shown}: an exact copy with all its formatting, tables, lists, pictures, headers, footers and comments. ` +
+            `Change the copy with path "${shown}".${encrypted ? ' It opens with the same password.' : ''}`;
+          preview?.notify({ path: dest, message: `Copied from ${ws.display(source)}.` });
           return message;
         }),
     );

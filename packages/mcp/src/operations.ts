@@ -539,13 +539,169 @@ const deleteParagraphs = define({
   },
 });
 
+/** Where new content goes: after or before a paragraph (its table, if it is in one), or at the end. */
+function placeOf(ctx: DocContext, args: { after?: number; before?: number }): { where: { after?: Element; before?: Element } | 'end'; said: string } {
+  if (args.after !== undefined && args.before !== undefined) throw new Error('Pass after or before, not both.');
+  if (args.after !== undefined) {
+    const e = entry(ctx, args.after);
+    return { where: { after: e.para.el }, said: e.cell ? `after table ${e.cell.table}` : `after paragraph ${args.after}` };
+  }
+  if (args.before !== undefined) {
+    const e = entry(ctx, args.before);
+    return { where: { before: e.para.el }, said: e.cell ? `before table ${e.cell.table}` : `before paragraph ${args.before}` };
+  }
+  return { where: 'end', said: 'at the end' };
+}
+type Element = ParagraphEntry['para']['el'];
+
+/** The descendants of an element with a name (document order). */
+function findAll(node: Element, name: string): Element[] {
+  const out: Element[] = [];
+  for (const c of node.children) {
+    if (c.type !== 'element') continue;
+    if (c.name === name) out.push(c);
+    out.push(...findAll(c, name));
+  }
+  return out;
+}
+
+/** Table `n` (1-based), counted as read_document counts them. */
+function tableAt(ctx: DocContext, n: number): Element {
+  const tables: Element[] = [];
+  const walk = (blocks: ReturnType<DocxDocument['body']>['blocks']): void => {
+    for (const b of blocks) {
+      if (b.kind !== 'table') continue;
+      tables.push(b.el);
+      for (const row of b.rows) for (const c of row.cells) walk(c.blocks);
+    }
+  };
+  walk(ctx.doc.body().blocks);
+  const t = tables[n - 1];
+  if (!t) throw new Error(`There is no table ${n}; the document has ${plural(tables.length, 'table')}.`);
+  return t;
+}
+
+const copyParagraphs = define({
+  name: 'copy_paragraphs',
+  title: 'Copy paragraphs',
+  description:
+    'Copy paragraphs, with their formatting, lists, tables and pictures, to another place (default: the end of the document). ' +
+    'A table the range starts or ends in is copied whole. Use it to duplicate content, for example to translate a document on a new page: ' +
+    'copy everything with pageBreak, then change the copies’ text with edit_paragraph or replace_text (table cells are paragraphs too). ' +
+    'Lists in the copy number from 1 again unless restartLists is false. Comments, bookmarks and footnote references are not copied. Paragraph numbers after the copy shift.',
+  role: 'editor',
+  kind: 'add',
+  schema: z.object({
+    from: paragraphNumber.describe('First paragraph to copy'),
+    to: paragraphNumber.optional().describe('Last paragraph to copy (default: same as from)'),
+    after: paragraphNumber.optional().describe('Put the copy after this paragraph (after its table, if it is in one). Default: at the end'),
+    before: paragraphNumber.optional().describe('Put the copy before this paragraph (before its table, if it is in one)'),
+    pageBreak: z.boolean().optional().describe('Start the copy on a new page'),
+    restartLists: z.boolean().optional().describe('Number lists in the copy from 1 again (default true); false continues the original lists'),
+  }),
+  async run(ctx, args) {
+    const to = args.to ?? args.from;
+    if (to < args.from) throw new Error('`to` must not be before `from`.');
+    const { where, said } = placeOf(ctx, args);
+    const { blocks, dropped } = await ctx.editor.copyBlocks(entry(ctx, args.from).para.el, entry(ctx, to).para.el, where, {
+      ...(args.pageBreak !== undefined ? { pageBreak: args.pageBreak } : {}),
+      ...(args.restartLists !== undefined ? { restartLists: args.restartLists } : {}),
+    });
+    const paragraphs = blocks.flatMap((b) => (b.name === 'w:p' ? [b] : findAll(b, 'w:p')));
+    const tables = blocks.filter((b) => b.name === 'w:tbl').length;
+    const left = [
+      dropped.comments ? plural(dropped.comments, 'comment anchor') : '',
+      dropped.bookmarks ? plural(dropped.bookmarks, 'bookmark') : '',
+      dropped.notes ? plural(dropped.notes, 'footnote reference') : '',
+    ].filter(Boolean);
+    return (
+      `Copied ${to === args.from ? `paragraph ${args.from}` : `paragraphs ${args.from}–${to}`}${tables ? ` (with ${plural(tables, 'table')})` : ''} ${said}` +
+      `${args.pageBreak ? ', starting on a new page' : ''}: the copy is ${newNumbers(ctx, paragraphs)}.` +
+      (args.restartLists === false ? '' : ' Lists in the copy start again at 1.') +
+      (left.length ? ` Not copied: ${left.join(', ')}.` : '')
+    );
+  },
+});
+
+const insertTableOp = define({
+  name: 'insert_table',
+  title: 'Insert a table',
+  description:
+    'Insert a table of text before or after a paragraph (default: at the end of the document). It spans the text width, with grid lines unless borders is false. ' +
+    'Its cells become paragraphs in read_document (“table N, row R, cell C”), so their text can be changed and formatted like any paragraph. Paragraph numbers after it shift.',
+  role: 'editor',
+  kind: 'add',
+  schema: z.object({
+    rows: z.array(z.array(z.string()).min(1)).min(1).max(500).describe('The rows, each a list of cell texts; "\\n" in a cell starts a new line. Short rows get empty cells'),
+    header: z.boolean().optional().describe('The first row is a header: bold, and repeated at the top of each page the table runs onto'),
+    widths: z.array(z.number().positive()).optional().describe('Relative column widths, one per column (e.g. [1, 4, 2]); default: equal'),
+    borders: z.boolean().optional().describe('Grid lines (default true)'),
+    align: z.enum(['left', 'center', 'right']).optional().describe('Position between the margins (default left)'),
+    after: paragraphNumber.optional().describe('Insert after this paragraph (after its table, if it is in one). Default: at the end'),
+    before: paragraphNumber.optional().describe('Insert before this paragraph (before its table, if it is in one)'),
+  }),
+  run(ctx, args) {
+    const { where, said } = placeOf(ctx, args);
+    const table = ctx.editor.insertTable(where, args.rows, {
+      ...(args.header !== undefined ? { header: args.header } : {}),
+      ...(args.widths ? { widths: args.widths } : {}),
+      ...(args.borders !== undefined ? { borders: args.borders } : {}),
+      ...(args.align ? { align: args.align } : {}),
+    });
+    const columns = Math.max(...args.rows.map((r) => r.length));
+    const first = listParagraphs(ctx.doc).find((e) => e.para.el === findAll(table, 'w:p')[0]);
+    return `Inserted a ${args.rows.length}×${columns} table ${said}${first?.cell ? ` (table ${first.cell.table})` : ''}: its cells are ${newNumbers(ctx, findAll(table, 'w:p'))}.`;
+  },
+});
+
+const editTable = define({
+  name: 'edit_table',
+  title: 'Add or delete table rows',
+  description:
+    'Change a table’s rows: add rows (they copy the formatting of the row next to them), delete rows, or delete the whole table. ' +
+    'Tables are numbered as read_document shows them (“table 2, row 1, cell 1”); to change a cell’s text, edit its paragraph. Paragraph numbers after the table shift.',
+  role: 'editor',
+  kind: 'change',
+  schema: z.object({
+    table: z.number().int().min(1).describe('Table number from read_document'),
+    action: z.enum(['add_rows', 'delete_rows', 'delete_table']),
+    rows: z.array(z.array(z.string())).min(1).optional().describe('add_rows: the new rows, each a list of cell texts'),
+    beforeRow: z.number().int().min(1).optional().describe('add_rows: put the new rows before this row (default: after the last row)'),
+    fromRow: z.number().int().min(1).optional().describe('delete_rows: first row to delete'),
+    toRow: z.number().int().min(1).optional().describe('delete_rows: last row to delete (default: same as fromRow)'),
+  }),
+  run(ctx, args) {
+    const table = tableAt(ctx, args.table);
+    const rowsOf = () => table.children.filter((c) => c.type === 'element' && c.name === 'w:tr').length;
+    if (args.action === 'delete_table') {
+      ctx.editor.deleteTable(table);
+      return `Deleted table ${args.table}.`;
+    }
+    if (args.action === 'add_rows') {
+      if (!args.rows) throw new Error('Pass rows: the new rows’ cell texts.');
+      const at = args.beforeRow === undefined ? rowsOf() : args.beforeRow - 1;
+      const made = ctx.editor.insertTableRows(table, at, args.rows);
+      return `Added ${plural(made.length, 'row')} to table ${args.table} (now ${plural(rowsOf(), 'row')}): the new cells are ${newNumbers(ctx, made.flatMap((r) => findAll(r, 'w:p')))}.`;
+    }
+    if (args.fromRow === undefined) throw new Error('Pass fromRow: the first row to delete.');
+    const toRow = args.toRow ?? args.fromRow;
+    if (toRow < args.fromRow) throw new Error('`toRow` must not be before `fromRow`.');
+    ctx.editor.deleteTableRows(table, args.fromRow - 1, toRow - 1);
+    const which = toRow === args.fromRow ? `row ${args.fromRow}` : `rows ${args.fromRow}–${toRow}`;
+    const left = table.children.some((c) => c.type === 'element' && c.name === 'w:tr') && listParagraphs(ctx.doc).some((e) => findAll(table, 'w:p').includes(e.para.el));
+    return left ? `Deleted ${which} of table ${args.table} (${plural(rowsOf(), 'row')} left).` : `Deleted ${which}, the whole table ${args.table}.`;
+  },
+});
+
 const setList = define({
   name: 'set_list',
   title: 'Change list formatting',
   description:
     'Make paragraphs a bulleted or numbered list, or switch a list between bullets, numbers (1. or 1)), letters (a. A.) and roman numerals (i. I.). ' +
     'Also restarts numbering, changes the list level (indent), adds paragraphs to an existing list, or takes them out of a list. ' +
-    'Every paragraph from `from` to `to` is affected. A changed list keeps its indentation. read_document shows the labels.',
+    'Every paragraph from `from` to `to` is affected. A changed list keeps its indentation. read_document shows the labels. ' +
+    'To make one list of paragraphs that are not next to each other (other paragraphs between them), give the first a format, then add each of the others with sameListAs pointing at the first. ' +
+    '(To copy a list as it is, copy_paragraphs keeps lists, formatting and tables.)',
   role: 'editor',
   kind: 'change',
   schema: z.object({
@@ -564,6 +720,11 @@ const setList = define({
     if (to < args.from) throw new Error('`to` must not be before `from`.');
     const targets: Array<ParagraphEntry['para']['el']> = [];
     for (let n = args.from; n <= to; n++) targets.push(entry(ctx, n).para.el);
+    if (args.sameListAs !== undefined && !entry(ctx, args.sameListAs).para.numbering) {
+      throw new Error(
+        `Paragraph ${args.sameListAs} is not in a list yet. Make it one first (set_list from ${args.sameListAs} with a format), then add the others with sameListAs: ${args.sameListAs}.`,
+      );
+    }
     await ctx.editor.setList(targets, {
       format: args.format,
       start: args.start,
@@ -1191,6 +1352,7 @@ export function activityLabel(name: string): string {
   if (/comment/.test(name)) return 'commenting';
   if (/^(read|list|get)_/.test(name)) return 'reading';
   if (/^format_|set_list/.test(name)) return 'formatting';
+  if (/^copy_/.test(name)) return 'copying';
   if (/^delete_|reject_/.test(name)) return 'deleting';
   if (/^(insert|add|create)_/.test(name)) return 'writing';
   if (/revisions/.test(name)) return 'reviewing';
@@ -1215,6 +1377,9 @@ export const OPERATIONS: readonly Operation[] = [
   editParagraph,
   insertParagraphs,
   deleteParagraphs,
+  copyParagraphs,
+  insertTableOp,
+  editTable,
   setList,
   formatText,
   addHyperlink,

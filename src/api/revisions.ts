@@ -328,6 +328,16 @@ function joinWithNext(p: Parents, para: XmlElement): void {
   parent.children.splice(i, 1);
 }
 
+/** Remove a table row; a table left without rows goes too (a cell that held it keeps a paragraph). */
+function removeRow(p: Parents, row: XmlElement): void {
+  const table = p.parent.get(row);
+  remove(p, row);
+  if (!table || elements(table, 'w:tr').length) return;
+  const holder = p.parent.get(table);
+  remove(p, table);
+  if (holder?.name === 'w:tc' && !elements(holder, 'w:p').length) holder.children.push(el('w:p'));
+}
+
 function restoreProperties(p: Parents, change: XmlElement): void {
   const owner = p.parent.get(change);
   if (!owner) return;
@@ -373,13 +383,13 @@ function apply(root: XmlElement, filter: RevisionFilter | undefined, accept: boo
       case 'row-insert': {
         const row = p.parent.get(p.parent.get(node)!);
         remove(p, node);
-        if (!accept && row) remove(p, row);
+        if (!accept && row) removeRow(p, row);
         break;
       }
       case 'row-delete': {
         const row = p.parent.get(p.parent.get(node)!);
         remove(p, node);
-        if (accept && row) remove(p, row);
+        if (accept && row) removeRow(p, row);
         break;
       }
     }

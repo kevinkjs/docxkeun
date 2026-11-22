@@ -95,10 +95,13 @@ Each role gets only the tools it may use.
 | `get_preview_link` | A link to the live preview of a document (only with `--preview`) | viewer |
 | `get_selection` | What the user selected (or clicked) in the live preview: paragraph numbers, page and text. Also the resource `docxkeun://selection` (only with `--preview`) | viewer |
 | `add_comment`, `reply_to_comment`, `resolve_comment`, `delete_comment` | Comments (a commenter may delete only its own) | commenter |
-| `create_document` | A new document from paragraphs | editor |
+| `create_document` | A new, blank document from paragraphs | editor |
+| `copy_document` | An exact copy of a document in a new file (formatting, tables, lists, pictures, headers, footers, comments), for example to translate the copy | editor |
 | `replace_text` | Find and replace, keeping formatting; regex with `$1` | editor |
 | `fill_template` | `{{placeholder}}` fields and content controls | editor |
 | `edit_paragraph`, `insert_paragraphs`, `delete_paragraphs` | Paragraph text and styles | editor |
+| `copy_paragraphs` | Copy paragraphs and tables with their formatting and lists, optionally onto a new page (for example to translate a document); lists in the copy start again | editor |
+| `insert_table`, `edit_table` | Make a table (header row, column widths, borders, alignment); add or delete rows, or delete a table. Cells are paragraphs, so the text tools edit them | editor |
 | `format_text` | Bold, italic, underline, colour, highlight, size, font | editor |
 | `format_paragraph` | Alignment, right-to-left direction, indents, spacing, line spacing, keep and page-break rules | editor |
 | `replace_story_text` | Edit text in a header, footer, footnote, endnote or text box | editor |
@@ -107,7 +110,7 @@ Each role gets only the tools it may use.
 | `add_footnote` | A footnote at a place in a paragraph | editor |
 | `set_track_changes` | Turn Word's Track Changes on or off; while on, every edit is a tracked change signed with `--author` | editor |
 | `accept_revisions`, `reject_revisions` | Review tracked changes by id, by author, or all | editor |
-| `set_list` | Bullets, numbers (1. 1)), letters (a. A.) or roman numerals; restart numbering, change level, join or leave a list | editor |
+| `set_list` | Bullets, numbers (1. 1)), letters (a. A.) or roman numerals; restart numbering, change level, join paragraphs that are not next to each other into one list, or leave a list | editor |
 | `add_hyperlink`, `add_bookmark` | Links to web addresses or bookmarks | editor |
 | `lock_region`, `unlock_region` | Lock text or paragraphs against editing (Word content controls) | owner |
 | `protect_document` | Word's editing restrictions: read-only, comments only, tracked changes only, forms only | owner |
