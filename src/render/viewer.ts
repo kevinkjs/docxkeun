@@ -511,6 +511,8 @@ export class DocxViewer {
     });
     this.root.scrollTop = scrollRatio * this.root.scrollHeight;
     this.commentsCtl.rowsBuilt();
+    // The AI's marks and effects sit at page positions: follow the new rows (zoom, column width).
+    this.activityLayer?.rowsBuilt();
   }
 
   private onIntersect(entries: IntersectionObserverEntry[]): void {

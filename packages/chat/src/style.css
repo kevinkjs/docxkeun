@@ -93,7 +93,28 @@ button.link { border: 0; padding: 0; background: none; color: var(--accent); tex
 .look-sample { position: relative; padding: 26px 12px 12px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 13px; }
 .look-caret { position: absolute; left: 12px; top: 26px; width: 2px; height: 18px; border-radius: 1px; background: linear-gradient(var(--look-1), var(--look-2)); }
 .look-label { position: absolute; left: 12px; top: 6px; font: 600 11px/1 system-ui, sans-serif; color: var(--look-text, #fff); padding: 3px 6px; border-radius: 4px 4px 4px 0; background: linear-gradient(90deg, var(--look-1), var(--look-2)); }
-.look-shimmer { display: inline-block; margin-left: 6px; padding: 1px 2px; border-radius: 3px; background: linear-gradient(100deg, color-mix(in srgb, var(--look-1) 22%, transparent), color-mix(in srgb, var(--look-2) 22%, transparent)); }
+.look-style { width: 100%; margin-bottom: 4px; }
+.look-note { margin: 0 0 10px !important; min-height: 1.3em; }
+.look-shimmer { position: relative; display: inline-block; margin-left: 6px; padding: 1px 2px; border-radius: 3px; }
+.look-other { display: block; margin: 8px 0 0 8px; color: var(--muted); transition: opacity .3s; }
+.look-spark { display: none; position: absolute; font-size: 11px; color: var(--look-2); animation: look-float 2.4s ease-in-out infinite both; }
+.look-spark.s1 { left: 40px; top: 30px; }
+.look-spark.s2 { left: 120px; top: 22px; animation-delay: .8s; color: var(--look-1); }
+.look-spark.s3 { left: 170px; top: 34px; animation-delay: 1.6s; }
+@keyframes look-float { 0% { opacity: 0; transform: translateY(4px) scale(.4); } 30% { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-12px) scale(.6); } }
+@keyframes look-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes look-wave { from { background-position: -40% 100%; } to { background-position: 140% 100%; } }
+@keyframes look-aura { 0%, 100% { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--look-1) 70%, transparent), 0 0 10px color-mix(in srgb, var(--look-1) 35%, transparent); } 50% { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--look-2) 70%, transparent), 0 0 14px color-mix(in srgb, var(--look-2) 40%, transparent); } }
+@keyframes look-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+/* The sample, in the chosen effect. */
+.look-sample[data-style='highlight'] .look-shimmer { background-image: linear-gradient(100deg, transparent 25%, color-mix(in srgb, var(--look-1) 30%, transparent) 42%, color-mix(in srgb, var(--look-2) 30%, transparent) 58%, transparent 75%); background-color: color-mix(in srgb, var(--look-1) 7%, transparent); background-size: 300% 100%; animation: look-sweep 1.6s ease-in-out infinite; }
+.look-sample[data-style='words'] .look-shimmer { background: linear-gradient(100deg, #202124 35%, var(--look-1) 45%, var(--look-2) 55%, #202124 65%); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: look-sweep 1.8s linear infinite; }
+.look-sample[data-style='underline'] .look-shimmer { background-image: linear-gradient(90deg, transparent, var(--look-1), var(--look-2), transparent); background-size: 35% 2px; background-repeat: no-repeat; animation: look-wave 1.4s ease-in-out infinite; }
+.look-sample[data-style='edge'] .look-shimmer { animation: look-aura 2.2s ease-in-out infinite; }
+.look-sample[data-style='spotlight'] .look-other { opacity: .35; }
+.look-sample[data-style='quiet'] .look-shimmer::before { content: ''; position: absolute; left: -12px; top: 1px; bottom: 1px; width: 3px; border-radius: 2px; background: linear-gradient(var(--look-1), var(--look-2)); animation: look-pulse 1.2s ease-in-out infinite; }
+.look-sample[data-style='sparkles'] .look-spark { display: block; }
+@media (prefers-reduced-motion: reduce) { .look-sample * { animation: none !important; } }
 
 @media (max-width: 860px) {
   .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: 45vh minmax(0, 1fr); }

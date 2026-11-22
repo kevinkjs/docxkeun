@@ -68,7 +68,7 @@ Ask Claude for the preview link (the `get_preview_link` tool), or open `http://1
 
 To watch a folder without an AI client, run `npx docxkeun-mcp --preview-only ~/Documents/contracts`; it redraws documents whenever they are saved.
 
-The "AI effects" menu in the header picks how the AI's work shows: animated, still (highlights without motion) or off; the browser remembers it.
+The "AI effects" menu in the header picks how the AI's work shows: animated, still (highlights without motion) or off. **Style** picks the effect (highlight band, word shimmer, underline wave, edge glow, spotlight, quiet or sparkles), and **Marks** whether a mark stays on what the AI changed. The browser remembers all three.
 
 While a tool runs, the preview shows where the AI is working: a shimmer over the paragraphs and its own caret ("Claude is editing…"), or a scan line while it reads. When the change lands, new text inks in, removed paragraphs float away, and change bars with a ✦ (hover: what the text was) stay in the margin until the next change.
 

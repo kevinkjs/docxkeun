@@ -125,6 +125,20 @@ The effects are optional: `new DocxViewer(el, { aiActivity: false })` turns them
 
 Name and colours: `aiActivity: { name: 'Aria', color: ['#0b57d0', '#1e8e3e'] }` puts "Aria is editing…" on the caret and draws the caret, shimmer, glow and change marks from blue to green; one colour (`color: '#0b57d0'`) is used for both ends. Change them at run time with `viewer.activity.name` and `viewer.activity.color` (`undefined` goes back to the default purple to orange), or from CSS with `--docxkeun-ai-color-1` and `--docxkeun-ai-color-2` (any CSS colour). The caret's label turns dark when white text would be hard to read on the colours you pick.
 
+Effect styles: `aiActivity: { style: 'words' }` (or `viewer.activity.style = 'words'` at run time) picks how the paragraph being changed looks, and so which mark stays after the change. `ACTIVITY_STYLES` lists them with a label and a line for a picker:
+
+| Style | While the AI works | After the change |
+|---|---|---|
+| `highlight` (default) | a tinted band sweeps over the lines | the paragraph keeps a soft tint |
+| `words` | the letters themselves shimmer | the changed words glow |
+| `underline` | a streak runs under each line | the changed words stay underlined |
+| `edge` | a soft glow breathes around the paragraph | the ✦ bar in the margin |
+| `spotlight` | the rest of the page dims | the ✦ bar in the margin |
+| `quiet` | only the caret and a pulsing margin bar | the ✦ bar in the margin |
+| `sparkles` | small ✦ drift over the paragraph | the ✦ bar in the margin |
+
+Marks build up over a run of changes, each following its paragraph as others are added or removed (a paragraph changed twice is marked against its text before the first change), until `viewer.activity.clearMarks()`: the chat app clears them when you send a new message, the live preview when you open another document. `marks: false` (or `viewer.activity.marksShown = false`) leaves nothing behind. The change map on the right edge jumps to each change, and its ticks show the text from before.
+
 ### Viewer UI
 
 Four optional parts share one look and one frame: a toolbar, a navigation panel, a comment column and a right-click menu. With none enabled the viewer's DOM is unchanged.

@@ -69,17 +69,24 @@
     <dialog id="lookDialog" class="key-dialog" aria-labelledby="lookTitle">
       <form method="dialog">
         <h2 id="lookTitle">How Claude shows in the document</h2>
-        <p>The name on its caret, and the colours of its caret, shimmer and change marks. Changes apply right away and are remembered in this browser.</p>
+        <p>The name on its caret, its colours, how its work shows, and the marks it leaves after a change. Changes apply right away and are remembered in this browser.</p>
         <label for="lookName">Name</label>
         <input id="lookName" type="text" maxlength="40" autocomplete="off" spellcheck="false" />
         <div class="look-colors">
           <label>From <input id="lookColor1" type="color" /></label>
           <label>To <input id="lookColor2" type="color" /></label>
         </div>
+        <label for="lookStyle">Effect</label>
+        <select id="lookStyle" class="look-style"></select>
+        <p id="lookStyleNote" class="small look-note"></p>
         <div class="look-sample" aria-hidden="true">
           <span class="look-caret"></span><span id="lookLabel" class="look-label"></span>
           <span class="look-shimmer">A paragraph being changed</span>
+          <span class="look-other">The rest of the page</span>
+          <span class="look-spark s1">✦</span><span class="look-spark s2">✦</span><span class="look-spark s3">✦</span>
         </div>
+        <label class="check"><input id="lookMarks" type="checkbox" /> Show marks after each change</label>
+        <p id="lookMarksNote" class="small look-note"></p>
         <div class="dialog-actions">
           <button type="button" id="lookReset">Reset</button>
           <button type="submit" class="primary">Done</button>

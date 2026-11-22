@@ -27,6 +27,8 @@ export interface ParagraphChange {
   cuts: number[];
   /** The paragraph's text before (changed paragraphs). */
   before?: string;
+  /** Index (0-based) of the paragraph in the old text (changed paragraphs). */
+  from?: number;
   /** Only the formatting changed (bold, style, alignment, list). */
   formatting?: boolean;
 }
@@ -155,7 +157,7 @@ export function diffParagraphs(before: string[], after: string[]): ParagraphDiff
       if (match >= 0) {
         for (let i = k; i < match; i++) deleted.push({ at: para, text: oldGap[i]! });
         const d = diffText(oldGap[match]!, text);
-        changes.push({ para, kind: 'changed', ranges: d.ranges, cuts: d.cuts, before: oldGap[match]! });
+        changes.push({ para, kind: 'changed', ranges: d.ranges, cuts: d.cuts, before: oldGap[match]!, from: p + ai + match });
         k = match + 1;
       } else {
         changes.push({ para, kind: 'inserted', ranges: text ? [[0, text.length]] : [], cuts: [] });
@@ -189,17 +191,41 @@ function still(prefix: string): string {
     `${prefix}.docxkeun-ai-caret{transition:none;animation:none}`,
     `${prefix}.docxkeun-ai-ghost,${prefix}.docxkeun-ai-cut{animation:docxkeun-ai-fade 2.4s both}`,
     `${prefix}.docxkeun-ai-bar,${prefix}.docxkeun-ai-spark{animation:none}`,
+    // The other working styles, held still.
+    `${prefix}.docxkeun-ai-words{animation:none;background-image:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2))}`,
+    `${prefix}.docxkeun-ai-underline{animation:none;background-image:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2));background-size:100% 100%}`,
+    `${prefix}.docxkeun-ai-edge{animation:none;box-shadow:0 0 0 1.5px color-mix(in srgb,var(--dk-ai-1) 70%,transparent),0 0 10px color-mix(in srgb,var(--dk-ai-1) 30%,transparent)}`,
+    `${prefix}.docxkeun-ai-spot,${prefix}.docxkeun-ai-pulse,${prefix}.docxkeun-ai-intro{animation:none}`,
+    `${prefix}.docxkeun-ai-sparkle{animation:none;opacity:.75}`,
   ].join('\n');
 }
 const CSS = `
 .docxkeun-viewer{--dk-ai-1:var(--docxkeun-ai-color-1,#7c5cff);--dk-ai-2:var(--docxkeun-ai-color-2,var(--docxkeun-ai-color-1,#d97757));--dk-ai-text:var(--docxkeun-ai-text,#fff);--docxkeun-ai-page:#fff}
-.docxkeun-ai-layer{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:5}
+.docxkeun-ai-layer{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none}
 .docxkeun-ai-layer>*{position:absolute;pointer-events:none}
+.docxkeun-ai-words{border-radius:2px;background-image:linear-gradient(100deg,#000 30%,var(--dk-ai-1) 44%,var(--dk-ai-2) 56%,#000 70%);background-size:300% 100%;mix-blend-mode:lighten;animation:docxkeun-ai-shimmer 1.8s linear infinite}
+.docxkeun-ai-underline{border-radius:1px;background-color:color-mix(in srgb,var(--dk-ai-1) 18%,transparent);background-image:linear-gradient(90deg,transparent,var(--dk-ai-1),var(--dk-ai-2),transparent);background-size:35% 100%;background-repeat:no-repeat;animation:docxkeun-ai-wave 1.4s ease-in-out infinite}
+@keyframes docxkeun-ai-wave{from{background-position:-40% 0}to{background-position:140% 0}}
+.docxkeun-ai-edge{border-radius:6px;animation:docxkeun-ai-aura 2.2s ease-in-out infinite}
+@keyframes docxkeun-ai-aura{0%,100%{box-shadow:0 0 0 1.5px color-mix(in srgb,var(--dk-ai-1) 70%,transparent),0 0 12px color-mix(in srgb,var(--dk-ai-1) 35%,transparent)}50%{box-shadow:0 0 0 1.5px color-mix(in srgb,var(--dk-ai-2) 70%,transparent),0 0 16px color-mix(in srgb,var(--dk-ai-2) 40%,transparent)}}
+.docxkeun-ai-spot{border-radius:4px;box-shadow:0 0 0 4000px rgba(255,255,255,.55);animation:docxkeun-ai-in .4s ease-out both}
+.docxkeun-ai-pulse{width:3px;border-radius:2px;background:linear-gradient(var(--dk-ai-1),var(--dk-ai-2));animation:docxkeun-ai-pulse 1.2s ease-in-out infinite}
+@keyframes docxkeun-ai-pulse{0%,100%{opacity:.35;transform:scaleY(.85)}50%{opacity:1;transform:none}}
+.docxkeun-ai-sparkle{width:12px;height:12px;margin:-6px 0 0 -6px;font:11px/12px system-ui,sans-serif;text-align:center;animation:docxkeun-ai-float 2.4s ease-in-out var(--t) infinite both}
+@keyframes docxkeun-ai-float{0%{opacity:0;transform:translateY(4px) scale(.4) rotate(-40deg)}30%{opacity:1;transform:translateY(-2px) scale(1)}to{opacity:0;transform:translateY(-14px) scale(.6) rotate(40deg)}}
+.docxkeun-ai-mark-tint{border-radius:3px;background:linear-gradient(90deg,color-mix(in srgb,var(--dk-ai-1) 14%,transparent),color-mix(in srgb,var(--dk-ai-2) 14%,transparent));mix-blend-mode:multiply}
+.docxkeun-ai-mark-halo{border-radius:6px;background:linear-gradient(90deg,color-mix(in srgb,var(--dk-ai-1) 24%,transparent),color-mix(in srgb,var(--dk-ai-2) 24%,transparent));filter:blur(4px);mix-blend-mode:multiply}
+.docxkeun-ai-mark-words{border-radius:2px;background:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2));mix-blend-mode:lighten}
+.docxkeun-ai-mark-underline{border-radius:1px;background:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2))}
+.docxkeun-ai-intro{animation:docxkeun-ai-in .9s ease-out var(--t,0ms) both}
+.docxkeun-ai-mark-underline.docxkeun-ai-intro{transform-origin:left;animation-name:docxkeun-ai-draw}
+@keyframes docxkeun-ai-in{from{opacity:0}}
+@keyframes docxkeun-ai-draw{from{transform:scaleX(0)}}
 .docxkeun-ai-shimmer{border-radius:3px;background-color:color-mix(in srgb,var(--dk-ai-1) 7%,transparent);background-image:linear-gradient(100deg,color-mix(in srgb,var(--dk-ai-1) 0%,transparent) 25%,color-mix(in srgb,var(--dk-ai-1) 30%,transparent) 42%,color-mix(in srgb,var(--dk-ai-2) 30%,transparent) 58%,color-mix(in srgb,var(--dk-ai-2) 0%,transparent) 75%);background-size:300% 100%;mix-blend-mode:multiply;animation:docxkeun-ai-shimmer 1.6s ease-in-out infinite}
 @keyframes docxkeun-ai-shimmer{from{background-position:100% 0}to{background-position:0 0}}
 .docxkeun-ai-scan{height:46px;background:linear-gradient(180deg,color-mix(in srgb,var(--dk-ai-1) 0%,transparent),color-mix(in srgb,var(--dk-ai-1) 16%,transparent) 60%,color-mix(in srgb,var(--dk-ai-2) 45%,transparent) 96%,color-mix(in srgb,var(--dk-ai-2) 0%,transparent));mix-blend-mode:multiply;animation:docxkeun-ai-scan 1.3s cubic-bezier(.4,0,.2,1) forwards}
 @keyframes docxkeun-ai-scan{from{transform:translateY(0);opacity:0}12%{opacity:1}85%{opacity:1}to{transform:translateY(var(--travel));opacity:0}}
-.docxkeun-ai-caret{width:2px;border-radius:1px;background:linear-gradient(var(--dk-ai-1),var(--dk-ai-2));transition:left .45s cubic-bezier(.3,.7,.2,1),top .45s cubic-bezier(.3,.7,.2,1),height .2s,opacity .4s;box-shadow:0 0 6px color-mix(in srgb,var(--dk-ai-1) 60%,transparent)}
+.docxkeun-ai-caret{z-index:2;width:2px;border-radius:1px;background:linear-gradient(var(--dk-ai-1),var(--dk-ai-2));transition:left .45s cubic-bezier(.3,.7,.2,1),top .45s cubic-bezier(.3,.7,.2,1),height .2s,opacity .4s;box-shadow:0 0 6px color-mix(in srgb,var(--dk-ai-1) 60%,transparent)}
 .docxkeun-ai-caret.working{animation:docxkeun-ai-blink 1s steps(2,jump-none) infinite}
 @keyframes docxkeun-ai-blink{50%{opacity:.35}}
 .docxkeun-ai-caret span{position:absolute;left:0;bottom:100%;margin-bottom:2px;white-space:nowrap;font:600 11px/1 system-ui,sans-serif;color:var(--dk-ai-text);padding:3px 6px;border-radius:4px 4px 4px 0;background:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2));box-shadow:0 1px 3px rgba(0,0,0,.2)}
@@ -281,12 +307,52 @@ function labelText(colors: string[], host: HTMLElement): string | undefined {
   return onWhite < 3 && onDark > onWhite ? DARK_TEXT : undefined;
 }
 
+/** The bounding box of some lines on each page they are on. */
+function boxesByPage(lines: Array<{ page: Page } & Rect>): Array<{ page: Page } & Rect> {
+  const byPage = new Map<Page, Array<{ page: Page } & Rect>>();
+  for (const l of lines) byPage.set(l.page, [...(byPage.get(l.page) ?? []), l]);
+  return [...byPage].map(([page, ls]) => {
+    const x = Math.min(...ls.map((l) => l.x));
+    const y = Math.min(...ls.map((l) => l.y));
+    return { page, x, y, w: Math.max(...ls.map((l) => l.x + l.w)) - x, h: Math.max(...ls.map((l) => l.y + l.h)) - y };
+  });
+}
+
+/** A fixed, even-looking spread in [0.1, 0.9) for the i-th item (no randomness: redraws match). */
+function spread(i: number, axis: number): number {
+  const golden = axis === 1 ? 0.6180339887 : 0.7548776662;
+  return 0.1 + (((i + 1) * golden) % 1) * 0.8;
+}
+
 const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 const nextFrame = () => new Promise<void>((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok())));
+
+/** How the AI's work shows on the paragraphs it is changing (see `ACTIVITY_STYLES`). */
+export type ActivityStyle = 'highlight' | 'words' | 'underline' | 'edge' | 'spotlight' | 'quiet' | 'sparkles';
+
+/** The styles, with a label and a line to show in a picker, in the order to show them. */
+export const ACTIVITY_STYLES: ReadonlyArray<{ style: ActivityStyle; label: string; description: string }> = [
+  { style: 'highlight', label: 'Highlight band', description: 'A tinted band sweeps over the lines; the changed paragraph keeps a soft tint.' },
+  { style: 'words', label: 'Word shimmer', description: 'The letters themselves shimmer; the changed words keep a glow.' },
+  { style: 'underline', label: 'Underline wave', description: 'A streak runs under each line; the changed words stay underlined.' },
+  { style: 'edge', label: 'Edge glow', description: 'A soft glow breathes around the paragraph.' },
+  { style: 'spotlight', label: 'Spotlight', description: 'The rest of the page dims while the paragraph is changed.' },
+  { style: 'quiet', label: 'Quiet', description: 'Only the named caret and a pulsing bar in the margin.' },
+  { style: 'sparkles', label: 'Sparkles', description: 'Small ✦ drift over the paragraph.' },
+];
+
+/** Styles whose own mark stays on the changed text; the others leave the ✦ margin bar. */
+const OWN_MARK: ReadonlySet<ActivityStyle> = new Set(['highlight', 'words', 'underline']);
 
 export interface ActivityOptions {
   /** The name on the caret and in the change marks' tooltips (default "Claude"). */
   name?: string;
+  /**
+   * How the AI's work shows (default `'highlight'`), and so which mark stays after a change:
+   * highlight → a still tint on the changed paragraph, words → the changed words glow,
+   * underline → the changed words stay underlined, the others → the ✦ margin bar.
+   */
+  style?: ActivityStyle;
   /**
    * Colour of the caret, shimmer, glow and change marks: one CSS colour, or two for a gradient
    * (default `['#7c5cff', '#d97757']`). The caret's label text turns dark on light colours.
@@ -296,20 +362,25 @@ export interface ActivityOptions {
   enabled?: boolean;
   /** Motion: shimmer sweep, ink, ghosts, scan line, the gliding caret (default true). Off: static highlights. */
   animate?: boolean;
-  /** Change bars and the change map that stay after a change (default true). */
+  /** The marks that stay after a change, and the change map on the right edge (default true). */
   marks?: boolean;
 }
 
 interface Mark {
   para: number;
+  /** Character ranges of the new text (none: formatting only, or only deletions). */
+  ranges: Array<[number, number]>;
   before?: string;
   formatting?: boolean;
 }
+
+const isStyle = (value: unknown): value is ActivityStyle => ACTIVITY_STYLES.some((s) => s.style === value);
 
 /** The AI's presence on the pages: see the module comment. Get it from `viewer.activity`. */
 export class AiActivity {
   private aiName: string;
   private aiColor: string | [string, string] | undefined;
+  private aiStyle: ActivityStyle = 'highlight';
   private readonly layer: HTMLDivElement;
   private readonly map: HTMLDivElement;
   private readonly caret: HTMLDivElement;
@@ -346,6 +417,7 @@ export class AiActivity {
     this.caret.appendChild(this.label);
     this.layer.appendChild(this.caret);
     if (options.color !== undefined) this.color = options.color;
+    if (options.style !== undefined) this.style = options.style;
     // Positions depend on the layout and zoom: redraw what lasts.
     this.cleanup.push(viewer.on('layout', () => requestAnimationFrame(() => this.redraw())));
     const onScroll = () => this.drawMap();
@@ -364,7 +436,7 @@ export class AiActivity {
     this.aiName = name;
     this.label.textContent = this.working ? this.workingText(this.working) : name;
     // The change marks' tooltips name the AI too.
-    if (this.marks.length) this.drawMarks(false);
+    if (this.marks.length) this.drawMarks();
   }
 
   /**
@@ -394,6 +466,21 @@ export class AiActivity {
     const text = labelText([first, second], this.viewer.root);
     if (text) style.setProperty('--docxkeun-ai-text', text);
     else style.removeProperty('--docxkeun-ai-text');
+  }
+
+  /**
+   * How the AI's work shows, and so which mark stays after a change (see `ActivityOptions.style`).
+   * Changing it redraws the work in progress and the marks. Throws a TypeError for an unknown style.
+   */
+  get style(): ActivityStyle {
+    return this.aiStyle;
+  }
+
+  set style(style: ActivityStyle) {
+    if (!isStyle(style)) throw new TypeError(`Unknown AI effect style "${String(style)}" (use ${ACTIVITY_STYLES.map((s) => s.style).join(', ')})`);
+    this.aiStyle = style;
+    if (this.working) this.drawWorking(false);
+    if (this.marks.length) this.drawMarks();
   }
 
   /** Show the AI's activity at all. Turning it off clears everything on screen. */
@@ -430,7 +517,7 @@ export class AiActivity {
 
   set marksShown(on: boolean) {
     this.keepMarks = on;
-    this.drawMarks(false);
+    this.drawMarks();
   }
 
   // ---- geometry ----
@@ -562,26 +649,69 @@ export class AiActivity {
     const w = this.working;
     if (!w) return;
     const all = this.paragraphs();
-    let first: ({ page: Page } & Rect) | undefined;
-    let line = 0;
-    for (const n of w.paras) {
-      const para = all[n - 1];
-      if (!para) continue;
-      for (const r of this.lineRects(para.el)) {
-        first ??= r;
-        const el = this.add('docxkeun-ai-shimmer', r, 1.5);
-        if (el) {
-          // Ripple down the paragraph.
-          el.style.animationDelay = `${(line++ % 12) * 70}ms`;
-          this.shimmers.push(el);
-        }
-      }
-    }
+    // The lines of each paragraph being worked on.
+    const groups = w.paras.map((n) => all[n - 1]).filter((p): p is DocParagraph => !!p).map((p) => this.lineRects(p.el));
+    const first = groups.flat()[0];
+    this.drawStyle(groups, first);
     this.label.textContent = this.workingText(w);
     if (first) {
       this.moveCaret(first.page, first.x, first.y, first.h, true);
       if (scroll) this.ensureVisible(first);
     } else if (w.mode === 'read') this.parkCaret();
+  }
+
+  /** The working effect of the current style over each paragraph's lines. */
+  private drawStyle(groups: Array<Array<{ page: Page } & Rect>>, first: ({ page: Page } & Rect) | undefined): void {
+    const keep = (el: HTMLElement | undefined): HTMLElement | undefined => {
+      if (el) this.shimmers.push(el);
+      return el;
+    };
+    // Ripple down the lines.
+    let line = 0;
+    const ripple = (el: HTMLElement | undefined) => {
+      if (el) el.style.animationDelay = `${(line++ % 12) * 70}ms`;
+    };
+    const lines = groups.flat();
+    switch (this.aiStyle) {
+      case 'highlight':
+        for (const r of lines) ripple(keep(this.add('docxkeun-ai-shimmer', r, 1.5)));
+        break;
+      case 'words':
+        // A band blended with "lighten": white stays white, only the letters take its colours.
+        for (const r of lines) ripple(keep(this.add('docxkeun-ai-words', r, 0.5)));
+        break;
+      case 'underline':
+        for (const r of lines) ripple(keep(this.add('docxkeun-ai-underline', { ...r, y: r.y + r.h - 0.4, h: 1.6 })));
+        break;
+      case 'edge':
+        for (const g of groups) for (const box of boxesByPage(g)) keep(this.add('docxkeun-ai-edge', box, 3));
+        break;
+      case 'spotlight': {
+        // One clear window around the lines on the caret's page; the rest of the view dims.
+        const box = first ? boxesByPage(lines).find((b) => b.page === first.page) : undefined;
+        if (box) keep(this.add('docxkeun-ai-spot', box, 4));
+        break;
+      }
+      case 'quiet':
+        for (const g of groups) {
+          for (const box of boxesByPage(g)) keep(this.add('docxkeun-ai-pulse', { page: box.page, x: Math.max(4, box.page.content.x - 12), y: box.y, w: 3, h: box.h }));
+        }
+        break;
+      case 'sparkles': {
+        let i = 0;
+        for (const r of lines) {
+          for (let k = 0, n = Math.min(6, Math.max(1, Math.round(r.w / 70))); k < n && i < 40; k++, i++) {
+            const el = keep(this.add('docxkeun-ai-sparkle', { page: r.page, x: r.x + spread(i, 1) * r.w, y: r.y + spread(i, 2) * r.h, w: 0, h: 0 }));
+            if (!el) continue;
+            el.textContent = '✦';
+            el.style.width = el.style.height = '12px';
+            el.style.color = i % 2 ? 'var(--dk-ai-1)' : 'var(--dk-ai-2)';
+            el.style.setProperty('--t', `${(i * 370) % 2400}ms`);
+          }
+        }
+        break;
+      }
+    }
   }
 
   private workingText(w: { mode: 'edit' | 'read'; label?: string }): string {
@@ -656,7 +786,7 @@ export class AiActivity {
     // Same text, other formatting (bold, a style, alignment, a list): the whole paragraph glows.
     if (old.formats.length) {
       for (const [o, n] of diff.same) {
-        if (old.formats[o] !== undefined && old.formats[o] !== formatSignature(paras[n]!)) diff.changes.push({ para: n, kind: 'changed', ranges: [], cuts: [], formatting: true });
+        if (old.formats[o] !== undefined && old.formats[o] !== formatSignature(paras[n]!)) diff.changes.push({ para: n, kind: 'changed', ranges: [], cuts: [], formatting: true, before: old.texts[o]!, from: o });
       }
       diff.changes.sort((x, y) => x.para - y.para);
     }
@@ -664,8 +794,11 @@ export class AiActivity {
     this.working = undefined;
     for (const el of this.shimmers) el.remove();
     this.shimmers = [];
-    this.marks = diff.changes.map((c) => ({ para: c.para, ...(c.before !== undefined ? { before: c.before } : {}), ...(c.formatting ? { formatting: true } : {}) }));
-    this.drawMarks(true);
+    // The marks of earlier changes stay (following their paragraphs); this change's join them.
+    this.marks = this.mergeMarks(diff, after);
+    this.drawMarks(new Set(diff.changes.map((c) => c.para)));
+    // A style with its own mark lets the mark fade in; the others get the passing glow.
+    const glow = !(OWN_MARK.has(this.aiStyle) && this.keepMarks);
 
     // Ink in the new text, line after line, as if written (about 2.5 s at most).
     const pieces: Array<{ r: { page: Page } & Rect; para: number }> = [];
@@ -681,7 +814,7 @@ export class AiActivity {
     for (const { r } of pieces) {
       const d = Math.min(900, Math.max(140, (r.w / speed) * 1000));
       const vars = { '--d': `${d}ms`, '--t': `${t}ms`, '--w': `${r.w * this.viewer.scale}px` };
-      this.add('docxkeun-ai-glow', r, 1, vars, t + d + 2600);
+      if (glow) this.add('docxkeun-ai-glow', r, 1, vars, t + d + 2600);
       this.add('docxkeun-ai-ink', r, 0.5, vars, t + d);
       const pen = this.add('docxkeun-ai-pen', { ...r, w: 0, h: 0, y: r.y + r.h / 2 }, 0, vars, t + d);
       if (pen) pen.style.width = pen.style.height = '9px';
@@ -727,20 +860,94 @@ export class AiActivity {
     return diff;
   }
 
-  /** Remove the change bars and the change map. */
+  /**
+   * Remove every mark and the change map. Marks build up over a run of changes (each follows its
+   * paragraph as others are added or removed) until this is called, e.g. when a new request starts.
+   */
   clearMarks(): void {
     this.marks = [];
-    this.drawMarks(false);
+    this.drawMarks();
   }
 
-  private drawMarks(animate: boolean): void {
+  /**
+   * The marks after a change: earlier marks follow their paragraphs (and go with deleted ones), a
+   * paragraph changed again is marked against its text before the first change, and new ones join.
+   */
+  private mergeMarks(diff: ParagraphDiff, after: string[]): Mark[] {
+    const earlier = new Map(this.marks.map((m) => [m.para, m]));
+    const out = new Map<number, Mark>();
+    for (const [o, n] of diff.same) {
+      const m = earlier.get(o);
+      if (m) out.set(n, { ...m, para: n });
+    }
+    for (const c of diff.changes) {
+      const prev = c.from !== undefined ? earlier.get(c.from) : undefined;
+      if (!prev) {
+        out.set(c.para, { para: c.para, ranges: c.ranges, ...(c.before !== undefined ? { before: c.before } : {}), ...(c.formatting ? { formatting: true } : {}) });
+        continue;
+      }
+      const text = after[c.para] ?? '';
+      const formatting = !!(prev.formatting || c.formatting);
+      // A paragraph the AI added stays added; otherwise compare with the text before the first change.
+      const d = prev.before === undefined ? { ranges: text ? ([[0, text.length]] as Array<[number, number]>) : [], cuts: [] } : diffText(prev.before, text);
+      if (!d.ranges.length && !d.cuts.length && !formatting) {
+        // Changed back to how it was: no mark.
+        out.delete(c.para);
+        continue;
+      }
+      out.set(c.para, { para: c.para, ranges: d.ranges, ...(prev.before !== undefined ? { before: prev.before } : {}), ...(formatting ? { formatting: true } : {}) });
+    }
+    return [...out.values()].sort((a, b) => a.para - b.para);
+  }
+
+  /** What a mark's tooltip says. */
+  private markTitle(m: Mark): string {
+    if (m.formatting && !m.ranges.length) return `Formatting changed by ${this.name}`;
+    if (m.before !== undefined) return `Changed by ${this.name}. Before: ${m.before.replace(/￼/g, '').slice(0, 300) || '(empty)'}`;
+    return `Added by ${this.name}`;
+  }
+
+  /** Draw the marks; those of the paragraphs in `fresh` (just changed) appear with a short animation. */
+  private drawMarks(fresh: ReadonlySet<number> = new Set()): void {
     for (const el of this.markEls) el.remove();
     this.markEls = [];
     const paras = this.paragraphs();
+    let n = 0;
+    let animate = false;
+    // Marks of the style's own kind fade (or draw) in one after another.
+    const intro = (el: HTMLElement | undefined) => {
+      if (!el) return;
+      if (animate) {
+        el.classList.add('docxkeun-ai-intro');
+        el.style.setProperty('--t', `${Math.min(n++ * 90, 1500)}ms`);
+      }
+      this.markEls.push(el);
+    };
     for (const m of this.keepMarks ? this.marks : []) {
+      animate = fresh.has(m.para);
       const para = paras[m.para];
       if (!para) continue;
       const lines = this.lineRects(para.el);
+      const style = this.aiStyle;
+      if (style === 'highlight') {
+        // The changed paragraph keeps a still tint.
+        for (const r of lines) intro(this.add('docxkeun-ai-mark-tint', r, 1.5));
+        continue;
+      }
+      if (style === 'words' || style === 'underline') {
+        // The changed words; the whole paragraph when only its formatting changed.
+        const rects = m.ranges.length ? m.ranges.flatMap(([from, to]) => this.charRects(para, from, to)) : m.formatting ? lines : [];
+        if (rects.length) {
+          for (const r of rects) {
+            if (style === 'words') {
+              intro(this.add('docxkeun-ai-mark-halo', r, 2));
+              intro(this.add('docxkeun-ai-mark-words', r, 0.5));
+            } else intro(this.add('docxkeun-ai-mark-underline', { ...r, y: r.y + r.h - 0.2, h: 1.4 }));
+          }
+          continue;
+        }
+        // Only deletions in this paragraph: nothing to colour, so the margin bar marks it.
+      }
       // One bar per page the paragraph is on, in the left margin.
       const byPage = new Map<Page, Array<{ page: Page } & Rect>>();
       for (const l of lines) byPage.set(l.page, [...(byPage.get(l.page) ?? []), l]);
@@ -752,11 +959,7 @@ export class AiActivity {
         const bar = this.add('docxkeun-ai-bar', { page, x, y: top, w: 3, h: bottom - top });
         if (!bar) continue;
         if (!animate) bar.style.animation = 'none';
-        bar.title = m.formatting
-          ? `Formatting changed by ${this.name}`
-          : m.before !== undefined
-            ? `Changed by ${this.name}. Before: ${m.before.replace(/￼/g, '').slice(0, 300) || '(empty)'}`
-            : `Added by ${this.name}`;
+        bar.title = this.markTitle(m);
         this.markEls.push(bar);
         if (firstBar && animate) {
           const spark = this.add('docxkeun-ai-spark', { page, x: x + 1.5, y: top, w: 0, h: 0 });
@@ -788,10 +991,18 @@ export class AiActivity {
       if (!r || !p) continue;
       const tick = document.createElement('i');
       tick.style.top = `${(p.top / height) * root.clientHeight}px`;
-      tick.title = `Changed by ${this.name}`;
+      tick.title = this.markTitle(m);
       tick.addEventListener('click', () => root.scrollTo({ top: Math.max(0, p.top - root.clientHeight / 3), behavior: reducedMotion() ? 'auto' : 'smooth' }));
       this.map.appendChild(tick);
     }
+  }
+
+  /**
+   * The viewer rebuilt its page rows (zoom, the comment column's width): redraw at the new positions.
+   * @internal
+   */
+  rowsBuilt(): void {
+    requestAnimationFrame(() => this.redraw());
   }
 
   private redraw(): void {
@@ -799,7 +1010,7 @@ export class AiActivity {
     for (const el of [...this.layer.children]) {
       if (el !== this.caret && !this.markEls.includes(el as HTMLElement) && !this.shimmers.includes(el as HTMLElement)) el.remove();
     }
-    this.drawMarks(false);
+    this.drawMarks();
     if (this.working) this.drawWorking(false);
   }
 

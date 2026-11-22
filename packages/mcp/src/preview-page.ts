@@ -46,6 +46,8 @@ export const PREVIEW_HTML: string = `<!doctype html>
   <span id="status">Connecting…</span>
   <label><input type="checkbox" id="follow" checked> Follow changes</label>
   <label title="How the AI's work shows: shimmer, caret and change marks">AI effects <select id="effects"><option value="animated">Animated</option><option value="still">Still</option><option value="off">Off</option></select></label>
+  <label title="How the paragraph the AI is changing looks">Style <select id="aiStyle"></select></label>
+  <label title="Keep a mark on what the AI changed until its next change"><input type="checkbox" id="aiMarks" checked> Marks</label>
   <span class="zoom"><button id="zoomOut" aria-label="Zoom out">−</button><span id="zoom">100%</span><button id="zoomIn" aria-label="Zoom in">+</button><button id="fit" aria-pressed="true">Fit width</button></span>
   <span id="sel" hidden title="The AI can read this selection with get_selection"><span></span></span>
   <span id="pages"></span>
@@ -60,7 +62,7 @@ export const PREVIEW_HTML: string = `<!doctype html>
 `;
 
 export const PREVIEW_SCRIPT: string = `import { FontRegistry, loadBundledFonts } from './lib/index.js';
-import { DocxViewer } from './lib/render/index.js';
+import { ACTIVITY_STYLES, DocxViewer } from './lib/render/index.js';
 
 const $ = (id) => document.getElementById(id);
 const picker = $('doc');
@@ -104,6 +106,34 @@ effects.addEventListener('change', () => {
   applyEffects(effects.value);
   try {
     localStorage.setItem('docxkeun-ai-effects', effects.value);
+  } catch {}
+});
+
+// The style of the AI's work and whether its marks stay; remembered in this browser.
+const aiStyle = $('aiStyle');
+const aiMarks = $('aiMarks');
+for (const s of ACTIVITY_STYLES) {
+  const option = new Option(s.label, s.style);
+  option.title = s.description;
+  aiStyle.add(option);
+}
+try {
+  const saved = localStorage.getItem('docxkeun-ai-style');
+  if (saved && ACTIVITY_STYLES.some((s) => s.style === saved)) aiStyle.value = saved;
+  aiMarks.checked = localStorage.getItem('docxkeun-ai-marks') !== 'off';
+} catch {}
+viewer.activity.style = aiStyle.value;
+viewer.activity.marksShown = aiMarks.checked;
+aiStyle.addEventListener('change', () => {
+  viewer.activity.style = aiStyle.value;
+  try {
+    localStorage.setItem('docxkeun-ai-style', aiStyle.value);
+  } catch {}
+});
+aiMarks.addEventListener('change', () => {
+  viewer.activity.marksShown = aiMarks.checked;
+  try {
+    localStorage.setItem('docxkeun-ai-marks', aiMarks.checked ? 'on' : 'off');
   } catch {}
 });
 
@@ -205,6 +235,8 @@ async function load(path, focus) {
   const bytes = new Uint8Array(await res.arrayBuffer());
   // Let the "working" shimmer show for a moment before the result appears.
   if (before) await sleep(Math.max(0, workingSince + 700 - Date.now()));
+  // The AI's marks build up while it works on a document; another document starts clean.
+  if (loaded !== path) viewer.activity.clearMarks();
   await viewer.load(bytes);
   loaded = path;
   document.title = path + ' · docxkeun live preview';

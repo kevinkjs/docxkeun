@@ -14,4 +14,4 @@ export { ToolbarController, FormatToolbar, type ToolbarOptions } from './toolbar
 export { InlineEditing, type CaretFormat, type EditStory, type EditingOptions, type Caret } from './editing.js';
 export { htmlToParagraphs, type PastedParagraph, type PastedRun } from './clipboard.js';
 export { selectionInfoFor, describeSelection, type SelectionInfo, type SelectedParagraph, type TextSpot } from '../api/selection.js';
-export { AiActivity, diffParagraphs, diffText, type ParagraphDiff, type ParagraphChange, type ParagraphSnapshot, type ActivityOptions } from './activity.js';
+export { AiActivity, ACTIVITY_STYLES, diffParagraphs, diffText, type ActivityStyle, type ParagraphDiff, type ParagraphChange, type ParagraphSnapshot, type ActivityOptions } from './activity.js';

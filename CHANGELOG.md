@@ -2,6 +2,22 @@
 
 All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic versioning](https://semver.org); while the version is 0.x, minor versions may contain breaking changes.
 
+## Unreleased
+
+### docxkeun
+
+- **AI effect styles:** `aiActivity: { style }` and `viewer.activity.style` pick how the paragraph the AI is changing looks: `highlight` (the band, as before), `words` (the letters themselves shimmer), `underline`, `edge`, `spotlight`, `quiet` or `sparkles`. `ACTIVITY_STYLES` lists them with labels for a picker. The mark that stays after a change follows the style: a soft tint on the paragraph (`highlight`), glowing changed words (`words`), underlined changed words (`underline`), or the ✦ margin bar (the others); `marks: false` / `viewer.activity.marksShown` turn the marks off. Every style has a still form for `animate: false` and `prefers-reduced-motion`.
+- The AI's marks now build up over a run of changes instead of showing only the latest one: each follows its paragraph as others are added or removed, a paragraph changed twice is marked against its text before the first change, and `clearMarks()` starts over. `ParagraphChange.from` gives a changed paragraph's index in the old text.
+- The AI's marks and effects now follow zoom changes and the comment column's width (they kept their old positions before), and the change map's ticks show the text from before.
+
+### docxkeun chat
+
+- "Appearance" also picks the effect style and whether marks stay after each change, with a live sample. A reply's marks cover all its changes; opening a document or undoing a reply clears them.
+
+### docxkeun-mcp
+
+- The live preview's header has a **Style** list and a **Marks** switch next to "AI effects", remembered in the browser. Marks build up while the AI works on a document and start over when you open another one.
+
 ## 0.2.0 (2026-11-22)
 
 ### docxkeun

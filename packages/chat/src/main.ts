@@ -8,7 +8,7 @@ import { DocxDocument, FontRegistry, loadBundledFonts } from 'docxkeun';
 import { describeSelection, type SelectionInfo } from 'docxkeun/editor';
 import { exportPdf } from 'docxkeun/pdf';
 import { PasswordRequiredError, WrongPasswordError } from 'docxkeun/security';
-import { DocxViewer } from 'docxkeun/viewer';
+import { ACTIVITY_STYLES, DocxViewer, type ActivityStyle } from 'docxkeun/viewer';
 import { sampleDocx } from '../../../playground/sample.js';
 import { activityLabel, targetParagraphs } from '../../mcp/src/operations.js';
 import { listParagraphs } from '../../mcp/src/outline.js';
@@ -95,23 +95,30 @@ const toolbox = createToolbox(() => current);
   });
 }
 
-// Claude's name and colours on the pages; remembered in this browser.
+// How Claude shows on the pages (name, colours, effect, marks); remembered in this browser.
 {
-  type Look = { name: string; color: [string, string] };
-  const DEFAULT_LOOK: Look = { name: 'Claude', color: ['#7c5cff', '#d97757'] };
+  type Look = { name: string; color: [string, string]; style: ActivityStyle; marks: boolean };
+  const DEFAULT_LOOK: Look = { name: 'Claude', color: ['#7c5cff', '#d97757'], style: 'highlight', marks: true };
   const KEY = 'docxkeun-ai-look';
   const dialog = $('lookDialog') as HTMLDialogElement;
   const name = $('lookName') as HTMLInputElement;
   const from = $('lookColor1') as HTMLInputElement;
   const to = $('lookColor2') as HTMLInputElement;
+  const style = $('lookStyle') as HTMLSelectElement;
+  const marks = $('lookMarks') as HTMLInputElement;
   const sample = dialog.querySelector('.look-sample') as HTMLElement;
+  for (const s of ACTIVITY_STYLES) style.add(new Option(s.label, s.style));
   const isHex = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
+  const isStyle = (v: unknown): v is ActivityStyle => ACTIVITY_STYLES.some((s) => s.style === v);
   const saved = (): Look | undefined => {
     try {
       const s: unknown = JSON.parse(localStorage.getItem(KEY) ?? 'null');
       if (s && typeof s === 'object' && 'name' in s && 'color' in s) {
-        const { name: n, color: c } = s as { name: unknown; color: unknown };
-        if (typeof n === 'string' && Array.isArray(c) && c.length === 2 && isHex(c[0]) && isHex(c[1])) return { name: n.slice(0, 40), color: [c[0], c[1]] };
+        const { name: n, color: c, style: st, marks: m } = s as { name: unknown; color: unknown; style?: unknown; marks?: unknown };
+        if (typeof n === 'string' && Array.isArray(c) && c.length === 2 && isHex(c[0]) && isHex(c[1])) {
+          // Saved before effects could be chosen: the defaults for those.
+          return { name: n.slice(0, 40), color: [c[0], c[1]], style: isStyle(st) ? st : DEFAULT_LOOK.style, marks: typeof m === 'boolean' ? m : DEFAULT_LOOK.marks };
+        }
       }
     } catch {
       // Storage blocked or unreadable: the defaults.
@@ -122,21 +129,36 @@ const toolbox = createToolbox(() => current);
   const apply = () => {
     viewer.activity.name = look.name.trim() || DEFAULT_LOOK.name;
     viewer.activity.color = look.color;
-    // The dialog's sample uses the same colours, and the label text colour the viewer picked.
+    viewer.activity.style = look.style;
+    viewer.activity.marksShown = look.marks;
+    // The dialog's sample uses the same colours and effect, and the label text colour the viewer picked.
     sample.style.setProperty('--look-1', look.color[0]);
     sample.style.setProperty('--look-2', look.color[1]);
     sample.style.setProperty('--look-text', viewer.root.style.getPropertyValue('--docxkeun-ai-text') || '#fff');
+    sample.dataset.style = look.style;
     $('lookLabel').textContent = `${viewer.activity.name} is editing…`;
+    $('lookStyleNote').textContent = ACTIVITY_STYLES.find((s) => s.style === look.style)?.description ?? '';
+    $('lookMarksNote').textContent = look.marks ? markNote(look.style) : 'Nothing stays on the page once a change has landed.';
   };
+  const markNote = (s: ActivityStyle) =>
+    s === 'highlight'
+      ? 'The changed paragraph keeps a soft tint until the next change.'
+      : s === 'words'
+        ? 'The changed words keep a glow until the next change.'
+        : s === 'underline'
+          ? 'The changed words stay underlined until the next change.'
+          : 'A ✦ bar in the margin marks each changed paragraph until the next change (hover it for the text before).';
   const fill = () => {
     name.value = look.name;
     from.value = look.color[0];
     to.value = look.color[1];
+    style.value = look.style;
+    marks.checked = look.marks;
   };
   apply();
-  for (const input of [name, from, to]) {
-    input.addEventListener('input', () => {
-      look = { name: name.value, color: [from.value, to.value] };
+  for (const input of [name, from, to, style, marks]) {
+    input.addEventListener(input === style || input === marks ? 'change' : 'input', () => {
+      look = { name: name.value, color: [from.value, to.value], style: isStyle(style.value) ? style.value : DEFAULT_LOOK.style, marks: marks.checked };
       apply();
       try {
         localStorage.setItem(KEY, JSON.stringify(look));
@@ -418,6 +440,8 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     }
   }
   await fontsReady;
+  // Marks belong to the document Claude changed.
+  viewer.activity.clearMarks();
   await viewer.load(doc);
   current = { doc, name };
   conversation = [];
@@ -638,6 +662,8 @@ async function send(text: string): Promise<void> {
     undo.addEventListener('click', async () => {
       if (!current) return;
       const restored = await DocxDocument.open(before);
+      // The changes are gone, and so are their marks.
+      viewer.activity.clearMarks();
       await viewer.load(restored);
       current = { doc: restored, name: current.name };
       notes.push('The user undid all changes from your previous reply; the document is back to how it was before that reply. Read it again before relying on paragraph numbers.');
