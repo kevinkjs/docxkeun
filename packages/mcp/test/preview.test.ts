@@ -297,6 +297,15 @@ describe('live preview server', () => {
       expect(seen.filter((e) => e.type === 'activity').map((e) => e.paragraphs)).toEqual([[2], [3]]);
     });
 
+    it("gives the page read_document's number for each paragraph it counts, for its selection chip", async () => {
+      await writeFile(join(dir, 'letter.docx'), await buildDocx({ body: WITH_BOX }));
+      const pv = await start({ port: 0, watch: false });
+      // The page's paragraphs One, the one holding the box and Three are read_document's 1, 2 and 4.
+      expect(await (await fetch(`${pv.url}/api/numbering?path=letter.docx`)).json()).toEqual([1, 2, 4]);
+      expect((await fetch(`${pv.url}/api/numbering?path=missing.docx`)).status).toBe(404);
+      expect(PREVIEW_SCRIPT).toContain('./api/numbering');
+    });
+
     it("tells the AI read_document's paragraph numbers for a selection after a text box", async () => {
       await writeFile(join(dir, 'letter.docx'), await buildDocx({ body: WITH_BOX }));
       const pv = await start({ port: 0, watch: false });

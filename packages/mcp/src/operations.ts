@@ -234,7 +234,8 @@ const readDocument = define({
     for (const e of ctx.entries.slice(from - 1, from - 1 + limit)) {
       const objects = e.para.inlines.flatMap((i) => {
         const o = i.kind === 'image' ? numbered.get(i) : undefined;
-        return o ? [objectLabel(ctx, o)] : i.kind === 'math' ? [`equation: ${i.text}`] : [];
+        // An image the numbering could not pair is still shown, without a number.
+        return o ? [objectLabel(ctx, o)] : i.kind === 'image' ? [describeObject(ctx, i)] : i.kind === 'math' ? [`equation: ${i.text}`] : [];
       });
       const line = describeParagraph(ctx.doc, e, { locks: locks.get(e.n) ?? [], comments: comments.get(e.n) ?? [], list: lists.get(e.para.el), objects, revisions: revisions.get(e.n) ?? 0 });
       if (size + line.length > 60_000 && lines.length > 0) break;
@@ -501,7 +502,7 @@ const insertParagraphs = define({
   name: 'insert_paragraphs',
   title: 'Insert paragraphs',
   description:
-    'Insert new paragraphs before or after a paragraph (default: at the end of the document). Inserting next to a paragraph in a table cell adds to that cell. ' +
+    'Insert new paragraphs before or after a paragraph (default: at the end of the document). Inserting next to a paragraph in a table cell or a text box adds to that cell or box. ' +
     'Paragraph numbers after the insertion point shift.',
   role: 'editor',
   kind: 'add',
@@ -537,7 +538,7 @@ const insertParagraphs = define({
 const deleteParagraphs = define({
   name: 'delete_paragraphs',
   title: 'Delete paragraphs',
-  description: 'Delete a paragraph or a run of paragraphs. The last paragraph of a table cell is emptied instead of removed. Paragraph numbers after them shift.',
+  description: 'Delete a paragraph or a run of paragraphs. The last paragraph of a table cell or a text box is emptied instead of removed. Paragraph numbers after them shift.',
   role: 'editor',
   kind: 'change',
   schema: z.object({
@@ -551,7 +552,7 @@ const deleteParagraphs = define({
     for (let n = args.from; n <= to; n++) doomed.push(entry(ctx, n));
     const inBody = (e: ParagraphEntry) => !e.cell && !e.box;
     if (doomed.filter(inBody).length >= ctx.entries.filter(inBody).length) {
-      throw new Error('A document needs at least one paragraph outside tables; clear the last one with edit_paragraph instead.');
+      throw new Error('A document needs at least one paragraph outside tables and text boxes; clear the last one with edit_paragraph instead.');
     }
     for (const e of doomed.reverse()) ctx.editor.deleteParagraph(e.para.el);
     return `Deleted ${to === args.from ? `paragraph ${args.from}` : `paragraphs ${args.from}–${to}`}.`;
@@ -615,7 +616,7 @@ const copyParagraphs = define({
   title: 'Copy paragraphs',
   description:
     'Copy paragraphs, with their formatting, lists, tables and pictures, to another place (default: the end of the document). ' +
-    'A table the range starts or ends in is copied whole. Use it to duplicate content, for example to translate a document on a new page: ' +
+    'A table the range starts or ends in is copied whole. It refuses paragraphs in a text box (to change a text box, use insert_paragraphs or edit_paragraph). Use it to duplicate content, for example to translate a document on a new page: ' +
     'copy everything with pageBreak, then change the copies’ text with edit_paragraph or replace_text (table cells are paragraphs too). ' +
     'Lists in the copy number from 1 again unless restartLists is false. Comments, bookmarks and footnote references are not copied. Paragraph numbers after the copy shift.',
   role: 'editor',
@@ -1311,7 +1312,7 @@ const listObjects = define({
   title: 'List pictures, charts, shapes and equations',
   description:
     'List the pictures, charts (with their data), SmartArt, shapes, text boxes and equations in a document. Each line starts with the number of the paragraph holding it; ' +
-    'pictures, charts and shapes have an object number ("object 2") and say whether they sit in the text (inline) or float.',
+    'pictures, charts, shapes and text boxes have an object number ("object 2") and say whether they sit in the text (inline) or float; edit_object and delete_object use those numbers.',
   role: 'viewer',
   kind: 'read',
   schema: z.object({}),
@@ -1322,6 +1323,7 @@ const listObjects = define({
       for (const i of e.para.inlines) {
         const o = i.kind === 'image' ? numbered.get(i) : undefined;
         if (o) out.push(`[${e.n}] ${objectLabel(ctx, o)}`);
+        else if (i.kind === 'image') out.push(`[${e.n}] ${describeObject(ctx, i)}`);
         else if (i.kind === 'math') out.push(`[${e.n}] ${i.display ? 'display ' : ''}equation: ${i.text}`);
       }
     }
@@ -1371,6 +1373,7 @@ const addFootnoteOp = define({
     text: z.string().min(1).describe('The footnote text'),
   }),
   async run(ctx, args) {
+    if (entry(ctx, args.paragraph).box) throw new Error(`Footnotes can't go in a text box (paragraph ${args.paragraph} is in one); pass a paragraph outside it.`);
     const id = await ctx.editor.addFootnote(insertionPoint(ctx, args.paragraph, args.after), args.text);
     return `Added footnote ${id} in paragraph ${args.paragraph}.`;
   },
@@ -1390,14 +1393,23 @@ const OBJECT_NAMES: Record<DocObject['kind'], string> = {
   group: 'a group of shapes',
 };
 
-/** The chart called "object n", with the paragraph holding it. */
-function chartObject(ctx: DocContext, n: number): NumberedObject {
+/** The object called "object n", with the paragraph holding it. */
+function objectNumbered(ctx: DocContext, n: number): NumberedObject {
   const all = numberedObjects(ctx.editor, ctx.entries);
   const o = all.find((x) => x.n === n);
   if (!o) throw new Error(`There is no object ${n}; the document has ${plural(all.length, 'object')}.`);
+  return o;
+}
+
+function isTextBox(o: NumberedObject): boolean {
   const c = o.image.content;
-  const hasText = c?.type === 'shape' && !!c.shape.text;
-  if (o.object.kind !== 'chart') throw new Error(`Object ${n} is ${hasText ? 'a text box' : OBJECT_NAMES[o.object.kind]}, not a chart.`);
+  return c?.type === 'shape' && !!c.shape.text;
+}
+
+/** The chart called "object n", with the paragraph holding it. */
+function chartObject(ctx: DocContext, n: number): NumberedObject {
+  const o = objectNumbered(ctx, n);
+  if (o.object.kind !== 'chart') throw new Error(`Object ${n} is ${isTextBox(o) ? 'a text box' : OBJECT_NAMES[o.object.kind]}, not a chart.`);
   return o;
 }
 
@@ -1510,6 +1522,211 @@ const updateChartOp = define({
   },
 });
 
+const SHAPES = {
+  'text box': 'textBox',
+  rectangle: 'rect',
+  'rounded rectangle': 'roundRect',
+  oval: 'ellipse',
+  triangle: 'triangle',
+  diamond: 'diamond',
+  'right arrow': 'rightArrow',
+  'left arrow': 'leftArrow',
+  'up arrow': 'upArrow',
+  'down arrow': 'downArrow',
+  chevron: 'chevron',
+  pentagon: 'pentagon',
+  star: 'star5',
+  callout: 'wedgeRectCallout',
+  'rounded callout': 'wedgeRoundRectCallout',
+  'cloud callout': 'cloudCallout',
+  line: 'line',
+} as const;
+const WRAPS = { square: 'square', 'top and bottom': 'topAndBottom', 'in front of text': 'inFront', 'behind text': 'behind' } as const;
+const shapeNames = Object.keys(SHAPES) as [keyof typeof SHAPES, ...Array<keyof typeof SHAPES>];
+const wrapNames = Object.keys(WRAPS) as [keyof typeof WRAPS, ...Array<keyof typeof WRAPS>];
+
+const placementFields = {
+  placement: z.enum(['floating', 'inline']).describe('floating (in front of, behind or beside the text) or inline (sits in the line of text, like a character)'),
+  x: z.number().min(-2000).max(2000).describe('Floating: points to the right of the `from` reference (72 = 1 inch)'),
+  y: z.number().min(-2000).max(2000).describe('Floating: points down from the `from` reference'),
+  from: z.enum(['margin', 'page', 'paragraph']).describe('Floating: what x and y count from (default: the paragraph)'),
+  wrap: z.enum(wrapNames).describe('Floating: how text flows around it (default: square)'),
+};
+const objectSize = {
+  width: z.number().min(1).max(2000).describe('Width in points (72 = 1 inch)'),
+  height: z.number().min(1).max(2000).describe('Height in points'),
+};
+
+/** Split tagged text at its line breaks, so each line can be tagged on its own paragraph. */
+function splitLines(segments: Segment[]): Segment[][] {
+  const lines: Segment[][] = [[]];
+  for (const seg of segments) {
+    seg.text.split(/\r?\n/).forEach((part, i) => {
+      if (i > 0) lines.push([]);
+      if (part) lines[lines.length - 1]!.push({ text: part, tags: seg.tags });
+    });
+  }
+  return lines;
+}
+
+const FLOATING_ONLY = 'x, y, from and wrap only apply to floating shapes; leave them out for an inline one.';
+const NEEDS_XY = 'A floating object needs x and y (points from the margin, page or paragraph).';
+
+const insertShapeOp = define({
+  name: 'insert_shape',
+  title: 'Insert a shape or text box',
+  description:
+    'Insert a text box or a shape (rectangle, oval, arrow, star, callout, line…) into a paragraph, at its end or after some text. It floats by default, at the top left of the paragraph with text flowing around it; ' +
+    'give x and y to put it elsewhere, or placement "inline" to put it in the line of text. `text` goes inside (each line becomes a paragraph, <b> and the other tags format it); ' +
+    'a text box’s paragraphs are numbered right after the paragraph holding it, so every text tool works on them. Colours are hex RGB or "none". It cannot go inside another text box.',
+  role: 'editor',
+  kind: 'add',
+  schema: z.object({
+    paragraph: paragraphNumber.describe('Paragraph to put it in'),
+    after: z.string().min(1).optional().describe('Put it right after this text in the paragraph (default: at the end)'),
+    shape: z.enum(shapeNames).describe('What to insert'),
+    text: z.string().optional().describe('Text inside it; "\\n" starts a new paragraph. <b>, <i>, <u>, <s>, <sup> and <sub> tags format parts of it'),
+    width: objectSize.width.optional(),
+    height: objectSize.height.optional(),
+    fill: z.union([z.string().regex(/^#?[0-9a-fA-F]{6}$/), z.literal('none')]).optional().describe('Fill colour as hex RGB, e.g. "FFF2CC", or "none"'),
+    outline: z.union([z.string().regex(/^#?[0-9a-fA-F]{6}$/), z.literal('none')]).optional().describe('Outline colour as hex RGB, or "none"'),
+    placement: placementFields.placement.optional(),
+    x: placementFields.x.optional(),
+    y: placementFields.y.optional(),
+    from: placementFields.from.optional(),
+    wrap: placementFields.wrap.optional(),
+    alt: z.string().optional().describe('Alternative text describing it, for accessibility'),
+  }),
+  async run(ctx, args) {
+    const inline = args.placement === 'inline';
+    if (inline && (args.x !== undefined || args.y !== undefined || args.from || args.wrap)) throw new Error(FLOATING_ONLY);
+    const at = insertionPoint(ctx, args.paragraph, args.after);
+    const segments = args.text ? parseMarkup(args.text) : [];
+    const x = args.x ?? 0;
+    const y = args.y ?? 0;
+    const from = args.from ?? 'paragraph';
+    const colour = (c: string | undefined) => (c === undefined ? undefined : c.replace(/^#/, ''));
+    const drawing = await ctx.editor.insertShape(at, {
+      shape: SHAPES[args.shape],
+      ...(segments.length ? { text: segments.map((s) => s.text).join('') } : {}),
+      ...(args.width ? { width: args.width } : {}),
+      ...(args.height ? { height: args.height } : {}),
+      ...(args.fill ? { fill: colour(args.fill)! } : {}),
+      ...(args.outline ? { outline: colour(args.outline)! } : {}),
+      place: inline ? { inline: true } : { x, y, from, ...(args.wrap ? { wrap: WRAPS[args.wrap] } : {}) },
+      ...(args.alt ? { alt: args.alt } : {}),
+    });
+    const made = ctx.editor.objects().find((o) => o.drawing === drawing);
+    const lines = drawing ? findAll(drawing, 'w:p') : [];
+    if (segments.some((s) => s.tags.size)) {
+      const per = splitLines(segments);
+      lines.forEach((el, i) => tagParagraph(ctx.editor, el, per[i] ?? []));
+    }
+    const noun = /^[aeiou]/.test(args.shape) ? `an ${args.shape}` : `a ${args.shape}`;
+    const where = inline ? 'inline' : `floating ${x} pt right and ${y} pt down from the ${from}${args.wrap ? ` (${args.wrap})` : ''}`;
+    const inside = segments.length ? `, with ${plural(lines.length, 'paragraph')} (${newNumbers(ctx, lines)})` : '';
+    return `Added ${noun} (object ${made?.n ?? '?'}) in paragraph ${args.paragraph}, ${where}${inside}.`;
+  },
+});
+
+/** What an object is called in a message: "shape", "text box", "clustered column chart". */
+function objectName(ctx: DocContext, o: NumberedObject): string {
+  if (isTextBox(o)) return 'text box';
+  if (o.object.kind === 'chart') {
+    try {
+      return `${ctx.editor.chartInfo(o.object).kind} chart`;
+    } catch {
+      return 'chart';
+    }
+  }
+  return OBJECT_NAMES[o.object.kind].replace(/^an? /, '');
+}
+
+const editObjectOp = define({
+  name: 'edit_object',
+  title: 'Resize, move or describe an object',
+  description:
+    'Change a picture, chart, shape or text box (object numbers from read_document or list_objects): its size (width and/or height in points; one alone keeps the proportions), ' +
+    'its place (`paragraph` moves it to another paragraph, after some text if you give `after`; `placement` makes it floating or inline; x, y, from and wrap position a floating one) and its alt text. ' +
+    'Word does not track size, floating position, wrap or alt text, so with Track Changes on those apply directly (and are refused where only tracked changes are allowed); moving and switching inline/floating are tracked.',
+  role: 'editor',
+  kind: 'change',
+  schema: z.object({
+    object: z.number().int().min(1).describe('Object number'),
+    width: objectSize.width.optional(),
+    height: objectSize.height.optional(),
+    paragraph: paragraphNumber.optional().describe('Move it to this paragraph'),
+    after: z.string().min(1).optional().describe('With `paragraph`: put it right after this text (default: at the end)'),
+    placement: placementFields.placement.optional(),
+    x: placementFields.x.optional(),
+    y: placementFields.y.optional(),
+    from: placementFields.from.optional(),
+    wrap: placementFields.wrap.optional(),
+    alt: z.string().optional().describe('Alternative text for accessibility (empty removes it)'),
+  }),
+  async run(ctx, args) {
+    const o = objectNumbered(ctx, args.object);
+    const resize = args.width !== undefined || args.height !== undefined;
+    const geometry = args.x !== undefined || args.y !== undefined || args.from !== undefined || args.wrap !== undefined;
+    const place = args.placement !== undefined || geometry;
+    const move = args.paragraph !== undefined;
+    if (!resize && !place && !move && args.alt === undefined) throw new Error('Say what to change: size, place or alt text.');
+    if (args.after !== undefined && !move) throw new Error('`after` goes with `paragraph`: say which paragraph to move the object to.');
+    if (args.placement === 'inline' && geometry) throw new Error(FLOATING_ONLY);
+    const floating = args.placement !== 'inline' && place;
+    if (floating && (args.x === undefined || args.y === undefined)) throw new Error(NEEDS_XY);
+    if (ctx.editor.trackChanges && move && place) throw new Error('With Track Changes on, move the object and change how it sits in separate calls.');
+    const name = objectName(ctx, o);
+    const changed: string[] = [];
+    const untracked: string[] = [];
+    if (resize) {
+      ctx.editor.resizeObject(o.object, { ...(args.width !== undefined ? { width: args.width } : {}), ...(args.height !== undefined ? { height: args.height } : {}) });
+      const now = ctx.editor.objects().find((x) => x.drawing === o.object.drawing) ?? o.object;
+      changed.push(`size ${Math.round(now.width)} × ${Math.round(now.height)} pt`);
+      untracked.push('size');
+    }
+    if (args.alt !== undefined) {
+      ctx.editor.setObjectAlt(o.object, args.alt);
+      changed.push(args.alt ? 'alt text' : 'alt text removed');
+      untracked.push('alt text');
+    }
+    if (place) {
+      await ctx.editor.placeObject(
+        o.object,
+        args.placement === 'inline'
+          ? { inline: true }
+          : { x: args.x!, y: args.y!, ...(args.from ? { from: args.from } : {}), ...(args.wrap ? { wrap: WRAPS[args.wrap] } : {}) },
+      );
+      changed.push(args.placement === 'inline' ? 'now inline' : 'position');
+      if (floating && o.object.floating) untracked.push('position');
+    }
+    let to = o.paragraph;
+    if (move) {
+      await ctx.editor.moveObject(o.object, insertionPoint(ctx, args.paragraph!, args.after));
+      to = args.paragraph!;
+      changed.push(`moved to paragraph ${to}${args.after ? ` after ${quote(args.after)}` : ''}`);
+    }
+    const notes = [`Changed the ${name} (object ${o.n}, paragraph ${o.paragraph}): ${changed.join(', ')}.`];
+    if (ctx.editor.trackChanges && untracked.length) notes.push(`Track Changes can't record ${untracked.join(', ').replace(/, ([^,]*)$/, ' or $1')}, so ${untracked.length > 1 ? 'those changes are' : 'that change is'} not tracked.`);
+    return notes.join(' ');
+  },
+});
+
+const deleteObjectOp = define({
+  name: 'delete_object',
+  title: 'Delete an object',
+  description: 'Delete a picture, chart, shape or text box (object number from read_document or list_objects). With Track Changes on the deletion is tracked.',
+  role: 'editor',
+  kind: 'change',
+  schema: z.object({ object: z.number().int().min(1).describe('Object number') }),
+  run(ctx, args) {
+    const o = objectNumbered(ctx, args.object);
+    const name = objectName(ctx, o);
+    ctx.editor.deleteObject(o.object);
+    return `Deleted the ${name} (object ${o.n}) from paragraph ${o.paragraph}${ctx.editor.trackChanges ? ' (tracked)' : ''}.`;
+  },
+});
+
 // ---- where an operation works (for live views) ------------------------------------------------------
 
 /**
@@ -1540,7 +1757,7 @@ export function targetParagraphs(
   if (before !== undefined) out.add(before);
   const needle = [args.text, args.find, args.query].find((v): v is string => typeof v === 'string' && v.length > 1);
   // For these, `text` is what they write, not where.
-  if (p !== undefined && (!needle || name === 'edit_paragraph' || name === 'insert_image' || name === 'add_footnote')) out.add(p);
+  if (p !== undefined && (!needle || name === 'edit_paragraph' || name === 'insert_image' || name === 'add_footnote' || name === 'insert_shape')) out.add(p);
   else if (needle) {
     let re: RegExp | undefined;
     if (args.regex === true) {
@@ -1608,6 +1825,9 @@ export const OPERATIONS: readonly Operation[] = [
   insertImageOp,
   insertChartOp,
   updateChartOp,
+  insertShapeOp,
+  editObjectOp,
+  deleteObjectOp,
   addFootnoteOp,
   setTrackChanges,
   acceptRevisionsOp,

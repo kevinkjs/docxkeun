@@ -9,8 +9,10 @@ import { readFile, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
+import { DocxDocument } from 'docxkeun';
 import { isEncryptedPackage } from 'docxkeun/security';
 import { fontUrls } from 'docxkeun-fonts';
+import { listParagraphs } from './outline.js';
 import { PREVIEW_HTML, PREVIEW_SCRIPT } from './preview-page.js';
 import { DOCUMENT_EXTENSIONS, Workspace } from './workspace.js';
 
@@ -192,6 +194,25 @@ export async function startPreview(folders: string[], options: PreviewOptions = 
       }
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'content-length': bytes.length });
       res.end(bytes);
+      return;
+    }
+    if (path === '/api/numbering') {
+      // For each paragraph the page counts (body and table cells), read_document's number: the page's selection chip says what the AI sees.
+      let real: string;
+      try {
+        real = await ws.resolve(url.searchParams.get('path') ?? '', 'document', true);
+      } catch (e) {
+        json(res, 404, { error: (e as Error).message });
+        return;
+      }
+      const bytes = await ws.read(real);
+      if (isEncryptedPackage(bytes)) {
+        json(res, 200, []);
+        return;
+      }
+      const byView: number[] = [];
+      for (const e of listParagraphs(await DocxDocument.open(bytes))) if (!e.box) byView[e.view - 1] = e.n;
+      json(res, 200, byView);
       return;
     }
     if (path === '/api/events') {

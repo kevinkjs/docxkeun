@@ -15,7 +15,7 @@ import { buildDocx, p } from '../../../test/helpers/docx.js';
 import { EMU, inline, textBoxRun, textBoxRunHolding, textBoxShape, vmlTextBoxRun } from '../../../test/helpers/drawings.js';
 import { serializeXml } from '../../../src/xml/index.js';
 import { createServer } from '../src/index.js';
-import { numberedObjects, targetParagraphs } from '../src/operations.js';
+import { contextFor, numberedObjects, OPERATIONS, targetParagraphs } from '../src/operations.js';
 import { listParagraphs, viewerParagraphs } from '../src/outline.js';
 
 let dir: string;
@@ -365,5 +365,168 @@ describe('chart tools', () => {
     const text = await ok(client, 'update_chart', { path: 'charts.docx', object: 1, title: 'Sales' });
     expect(text).toContain("Track Changes can't record chart data changes, so this change is not tracked.");
     expect((await chartInfo(file)).title).toBe('Sales');
+  });
+});
+
+describe('shape and object tools', () => {
+  const NAME = 'shapes.docx';
+  const open = async () => new DocxEditor(await reopen(join(dir, NAME)));
+
+  it('inserts a floating text box with tagged text as paragraphs, and says where they are', async () => {
+    await write(p('Intro') + p('Here'), NAME);
+    const client = await connect();
+    const text = await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'text box', text: '<b>Hello</b> there\nSecond line' });
+    expect(text).toBe(
+      `Added a text box (object 1) in paragraph 2, floating 0 pt right and 0 pt down from the paragraph, with 2 paragraphs (paragraphs 3\u20134).\nSaved ${NAME}.`,
+    );
+    const read = paragraphLines(await ok(client, 'read_document', { path: NAME }));
+    expect(read[2]).toBe('[3] (text box 1) <b>Hello</b> there');
+    expect(read[3]).toBe('[4] (text box 1) Second line');
+    const editor = await open();
+    expect(editor.objects()[0]).toMatchObject({ floating: true });
+    expect(editor.find('Hello')).toHaveLength(1);
+  });
+
+  it('inserts an inline shape, or a floating one at a position with a wrap style and alt text', async () => {
+    await write(p('Intro') + p('Here'), NAME);
+    const client = await connect();
+    expect(await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'oval', placement: 'inline', width: 50, height: 40, fill: '00AA00', alt: 'A dot' })).toContain(
+      'Added an oval (object 1) in paragraph 2, inline.',
+    );
+    const floating = await ok(client, 'insert_shape', { path: NAME, paragraph: 1, shape: 'rounded callout', text: 'Look', x: 36, y: -10, from: 'page', wrap: 'in front of text' });
+    expect(floating).toContain('Added a rounded callout (object 1) in paragraph 1, floating 36 pt right and -10 pt down from the page');
+    expect(floating).toContain('in front of text');
+    const objects = (await open()).objects();
+    expect(objects.map((o) => [o.floating, o.alt])).toEqual([
+      [true, undefined],
+      [false, 'A dot'],
+    ]);
+    expect(await ok(client, 'list_objects', { path: NAME })).toContain('inline');
+  });
+
+  it('refuses a position for an inline shape, and a shape inside a text box, with plain messages', async () => {
+    await write(BOX, NAME);
+    const client = await connect();
+    expect((await call(client, 'insert_shape', { path: NAME, paragraph: 1, shape: 'rectangle', placement: 'inline', x: 5, y: 5 })).text).toContain('x, y, from and wrap only apply to floating shapes');
+    expect((await call(client, 'insert_shape', { path: NAME, paragraph: 3, shape: 'rectangle' })).text).toContain("Shapes and text boxes can't go inside a text box");
+  });
+
+  it('rejects wrong types and sizes from JSON callers', async () => {
+    await write(p('Intro') + p('Here'), NAME);
+    const client = await connect();
+    const base = { path: NAME, paragraph: 2, shape: 'rectangle' };
+    for (const bad of [{ width: '300' }, { width: 0 }, { height: 2001 }, { x: 2001 }, { y: -2001 }, { x: '5' }, { shape: 'hexagon' }, { wrap: 'around' }, { from: 'cell' }, { fill: 5 }, { text: 5 }]) {
+      expect((await call(client, 'insert_shape', { ...base, ...bad })).isError, JSON.stringify(bad)).toBe(true);
+    }
+  });
+
+  it('highlights the target paragraph, not a search for the shape text', () => {
+    const entries = [
+      { n: 1, text: 'Hello world' },
+      { n: 2, text: 'Another line' },
+    ];
+    expect(targetParagraphs(entries, 'insert_shape', { paragraph: 2, text: 'Hello world' })).toEqual([2]);
+  });
+
+  it('resizes an object, sets its alt text and places it, saying what changed', async () => {
+    await write(p('Intro') + p('Here'), NAME);
+    const client = await connect();
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'rectangle', width: 100, height: 50 });
+    expect(await call(client, 'edit_object', { path: NAME, object: 1 })).toMatchObject({ isError: true, text: expect.stringContaining('Say what to change: size, place or alt text.') });
+    const text = await ok(client, 'edit_object', { path: NAME, object: 1, width: 200, height: 80, alt: 'A box', placement: 'floating', x: 10, y: 20, from: 'margin', wrap: 'behind text' });
+    expect(text).toContain('Changed the shape (object 1, paragraph 2): size 200 × 80 pt, alt text, position.');
+    const o = (await open()).objects()[0]!;
+    expect([o.width, o.height, o.alt]).toEqual([200, 80, 'A box']);
+    expect(await ok(client, 'edit_object', { path: NAME, object: 1, placement: 'inline' })).toContain('now inline');
+    expect((await open()).objects()[0]!.floating).toBe(false);
+    expect((await call(client, 'edit_object', { path: NAME, object: 1, placement: 'floating' })).text).toContain('needs x and y');
+    expect((await call(client, 'edit_object', { path: NAME, object: 9, width: 5 })).text).toContain('There is no object 9');
+    expect((await call(client, 'edit_object', { path: NAME, object: 1, width: 5000 })).isError).toBe(true);
+  });
+
+  it('moves an object to another paragraph, after some text', async () => {
+    await write(p('Intro') + p('Here, now') + p('There'), NAME);
+    const client = await connect();
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 1, shape: 'diamond' });
+    const text = await ok(client, 'edit_object', { path: NAME, object: 1, paragraph: 3 });
+    expect(text).toContain('moved to paragraph 3');
+    const after = await open();
+    expect(after.paragraphs().indexOf(after.objects()[0]!.paragraph)).toBe(2);
+    expect(await ok(client, 'edit_object', { path: NAME, object: 1, paragraph: 2, after: 'Here' })).toContain('moved to paragraph 2');
+  });
+
+  it('deletes an object, and says when that is tracked', async () => {
+    await write(p('Intro') + p('Here'), NAME);
+    const client = await connect();
+    await ok(client, 'insert_chart', { path: NAME, paragraph: 1, type: 'column', categories: ['A'], series: [{ name: 'S', values: [1] }] });
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'star' });
+    expect(await ok(client, 'delete_object', { path: NAME, object: 2 })).toContain('Deleted the shape (object 2) from paragraph 2.');
+    expect((await open()).objects()).toHaveLength(1);
+    await ok(client, 'set_track_changes', { path: NAME, on: true });
+    const tracked = await ok(client, 'delete_object', { path: NAME, object: 1 });
+    expect(tracked).toContain('Deleted the clustered column chart (object 1) from paragraph 1 (tracked).');
+    expect(await ok(client, 'list_revisions', { path: NAME })).toMatch(/delet/i);
+    expect((await call(client, 'delete_object', { path: NAME, object: 7 })).text).toContain('There is no object 7');
+  });
+
+  it('says which parts of an edit are not tracked when Track Changes is on', async () => {
+    await write(p('Intro') + p('Here'), NAME);
+    const client = await connect();
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 1, shape: 'rectangle' });
+    await ok(client, 'set_track_changes', { path: NAME, on: true });
+    const text = await ok(client, 'edit_object', { path: NAME, object: 1, width: 90, alt: 'Box', x: 5, y: 5 });
+    expect(text).toContain("Track Changes can't record size, alt text or position, so those changes are not tracked.");
+    const moved = await ok(client, 'edit_object', { path: NAME, object: 1, paragraph: 2 });
+    expect(moved).toContain('moved to paragraph 2');
+    expect(moved).not.toContain("can't record");
+    expect((await call(client, 'edit_object', { path: NAME, object: 1, paragraph: 1, x: 1, y: 1 })).text).toContain('separate calls');
+  });
+
+  it('refuses an untracked change under tracked-changes-only protection, but deletes', async () => {
+    const file = join(dir, NAME);
+    const setup = await DocxDocument.open(await buildDocx({ body: p('Intro') + p('Here'), settings: '<w:documentProtection w:edit="trackedChanges" w:enforcement="1"/>' }));
+    const editor = new DocxEditor(setup, undefined, { trackChanges: false });
+    await editor.insertShape(editor.paragraphRange(editor.paragraphs()[1]!)!.end, { shape: 'rect' });
+    await writeFile(file, await setup.save());
+    const client = await connect();
+    const refused = await call(client, 'edit_object', { path: NAME, object: 1, width: 50 });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('only allows changes that are tracked');
+    expect(await ok(client, 'delete_object', { path: NAME, object: 1 })).toContain('(tracked)');
+  });
+
+  it('shows an image the object numbering could not pair, without a number', async () => {
+    await write(p('Intro') + p('Here'), NAME);
+    const client = await connect();
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'rectangle' });
+    const doc = await reopen(join(dir, NAME));
+    const editor = new DocxEditor(doc);
+    const blind = new Proxy(editor, { get: (t, k) => (k === 'objects' ? () => [] : Reflect.get(t, k, t)) });
+    for (const name of ['list_objects', 'read_document']) {
+      const out = await OPERATIONS.find((op) => op.name === name)!.run(contextFor(doc, blind as DocxEditor, NAME, 'AI'), {});
+      expect(out, name).toContain('shape (rect)');
+      expect(out, name).not.toContain('object 1');
+    }
+  });
+
+  it('describes text boxes where it describes table cells', async () => {
+    const client = await connect();
+    expect(client.getInstructions()).toContain('text box');
+    const tools = (await client.listTools()).tools;
+    const desc = (n: string) => tools.find((t) => t.name === n)!.description!;
+    expect(desc('insert_paragraphs')).toContain('text box');
+    expect(desc('delete_paragraphs')).toContain('text box');
+    expect(desc('copy_paragraphs')).toContain('text box');
+  });
+
+  it('refuses a footnote in a text box', async () => {
+    await write(BOX, NAME);
+    const client = await connect();
+    expect((await call(client, 'add_footnote', { path: NAME, paragraph: 3, text: 'Note' })).text).toContain("Footnotes can't go in a text box");
+  });
+
+  it('tells the AI about charts, shapes and objects in its instructions', async () => {
+    const instructions = (await connect()).getInstructions()!;
+    for (const word of ['insert_chart', 'read_chart', 'update_chart', 'insert_shape', 'edit_object', 'delete_object', 'list_objects']) expect(instructions).toContain(word);
   });
 });

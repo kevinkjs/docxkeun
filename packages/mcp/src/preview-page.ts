@@ -73,6 +73,8 @@ const follow = $('follow');
 let current = new URLSearchParams(location.search).get('doc');
 const token = document.querySelector('meta[name="docxkeun-token"]').content;
 let loaded;
+// read_document's number for each paragraph the viewer counts (text boxes are numbered there, not here).
+let numbering = [];
 let workingSince = 0;
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
@@ -232,6 +234,7 @@ async function load(path, focus) {
     return;
   }
   message.hidden = true;
+  numbering = await fetch('./api/numbering?path=' + encodeURIComponent(path)).then((r) => (r.ok ? r.json() : [])).catch(() => []);
   const bytes = new Uint8Array(await res.arrayBuffer());
   // Let the "working" shimmer show for a moment before the result appears.
   if (before) await sleep(Math.max(0, workingSince + 700 - Date.now()));
@@ -315,12 +318,15 @@ viewer.on('selectioninfo', ({ selection }) => {
   clearTimeout(selTimer);
   selTimer = setTimeout(() => shareSelection(selection), 200);
 });
+const readNumber = (n) => numbering[n - 1] ?? n;
 function shareSelection(sel) {
   if (!current) return;
   const chip = $('sel');
   chip.hidden = !sel;
   if (sel) {
-    const where = sel.start.paragraph === sel.end.paragraph ? '¶' + sel.start.paragraph : '¶' + sel.start.paragraph + '–' + sel.end.paragraph;
+    const first = sel.story === 'body' ? readNumber(sel.start.paragraph) : sel.start.paragraph;
+    const last = sel.story === 'body' ? readNumber(sel.end.paragraph) : sel.end.paragraph;
+    const where = first === last ? '¶' + first : '¶' + first + '–' + last;
     const text = sel.text.replace(/\\s+/g, ' ').trim();
     chip.firstElementChild.textContent = sel.collapsed || !text ? 'Cursor at ' + where : where + ': “' + (text.length > 48 ? text.slice(0, 47) + '…' : text) + '”';
   }
