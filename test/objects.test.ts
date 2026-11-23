@@ -1,6 +1,6 @@
 /** Objects in the editor: listing them; inserting, reading, updating and copying charts; inserting shapes and text boxes. */
 import { describe, expect, it } from 'vitest';
-import { DocxEditor, EditError, LockedRegionError, paragraphText, type DocObject, type DocPosition, type ShapeKind } from '../src/api/index.js';
+import { DocxEditor, EditError, LockedRegionError, OBJECT_CHAR, paragraphText, type DocObject, type DocPosition, type ShapeKind } from '../src/api/index.js';
 import { ChartDataError, type NewChart } from '../src/charts/index.js';
 import { workbookFor } from '../src/charts/workbook.js';
 import { createDocx } from '../src/index.js';
@@ -967,5 +967,73 @@ describe('changing objects', () => {
     expect(texts(editor)).toEqual(['Before', '']);
     // A stale object is refused rather than changed.
     expect(() => editor.deleteObject(old!)).toThrow(EditError);
+  });
+});
+
+describe('rewriting text around objects', () => {
+  const PICTURE = 'http://schemas.openxmlformats.org/drawingml/2006/picture';
+  const pictureRun = `<w:r>${inline('<pic:pic><pic:blipFill><a:blip r:embed="rIdNone"/></pic:blipFill></pic:pic>', 20, 20, PICTURE)}</w:r>`;
+  const t = (s: string) => `<w:r><w:t xml:space="preserve">${s}</w:t></w:r>`;
+  /** "Head ‹picture›office ‹text box›here": a picture and a text box (holding "Inside") in the middle of the text. */
+  const BODY = `<w:p>${t('Head ')}${pictureRun}${t('office ')}${textBoxRun('Inside')}${t('here')}</w:p>` + p('After');
+  const O = OBJECT_CHAR;
+  const texts = (editor: DocxEditor) => editor.paragraphs().map((para) => paragraphText(para).text);
+  const withObjects = (editor: DocxEditor) => paragraphText(editor.paragraphs()[0]!, { objects: true }).text;
+  const wholeFirst = (editor: DocxEditor) => editor.paragraphRange(editor.paragraphs()[0]!)!;
+
+  it('keeps the objects of a rewritten range after the new text, in order', async () => {
+    const { doc, editor } = await open(BODY);
+    expect(withObjects(editor)).toBe(`Head ${O}office ${O}here`);
+    expect(editor.replaceRange(wholeFirst(editor), 'New words', undefined, { keepObjects: true })).toBe(2);
+    expect(withObjects(editor)).toBe(`New words${O}${O}`);
+    expect(editor.objects().map((o) => o.kind)).toEqual(['picture', 'shape']);
+    // The text box keeps its paragraph (and, unchanged, Word's old copy of it).
+    expect(texts(editor)).toEqual(['New words', 'Inside', 'After']);
+    expect(findAll(doc.documentXml.root, 'mc:Fallback')).toHaveLength(1);
+    const again = new DocxEditor(await reopen(doc));
+    expect(texts(again)).toEqual(['New words', 'Inside', 'After']);
+    expect(again.objects().map((o) => o.kind)).toEqual(['picture', 'shape']);
+
+    // Without the option the objects go with the text, as when a user selects and types over them.
+    const plain = await open(BODY);
+    expect(plain.editor.replaceRange(wholeFirst(plain.editor), 'New words')).toBe(0);
+    expect(plain.editor.objects()).toEqual([]);
+    expect(texts(plain.editor)).toEqual(['New words', 'After']);
+
+    // An object someone inserted with Track Changes on stays their insertion.
+    const theirs = await open(`<w:p>${t('Head ')}<w:ins w:id="7" w:author="Budi" w:date="2026-01-01T00:00:00Z">${pictureRun}</w:ins>${t('here')}</w:p>`);
+    theirs.editor.replaceRange(wholeFirst(theirs.editor), 'New', undefined, { keepObjects: true });
+    expect(withObjects(theirs.editor)).toBe(`New${O}`);
+    const [ins] = findAll(theirs.doc.documentXml.root, 'w:ins');
+    expect([attr(ins, 'w:author'), findAll(ins!, 'w:drawing').length]).toEqual(['Budi', 1]);
+    expect(theirs.editor.revisions().map((r) => [r.kind, r.author])).toEqual([['insert', 'Budi']]);
+  });
+
+  it('keeps the objects unmarked with Track Changes on', async () => {
+    const { doc, editor } = await open(BODY);
+    editor.trackChanges = true;
+    expect(editor.replaceRange(wholeFirst(editor), 'New words', undefined, { keepObjects: true })).toBe(2);
+    const root = doc.documentXml.root;
+    // The old text is marked deleted and the new text inserted; the objects are neither, nor is the box's text.
+    expect(findAll(root, 'w:del').flatMap((d) => [...findAll(d, 'w:drawing'), ...findAll(d, 'mc:AlternateContent')])).toEqual([]);
+    expect(findAll(root, 'w:ins').flatMap((d) => [...findAll(d, 'w:drawing'), ...findAll(d, 'mc:AlternateContent')])).toEqual([]);
+    expect(editor.revisions().map((r) => [r.kind, r.text])).toEqual([
+      ['delete', 'Head '],
+      ['delete', 'office '],
+      ['delete', 'here'],
+      ['insert', 'New words'],
+    ]);
+    // (The text as read leaves out what is marked deleted.)
+    expect(withObjects(editor)).toBe(`New words${O}${O}`);
+    expect(editor.objects().map((o) => o.kind)).toEqual(['picture', 'shape']);
+
+    const accepted = new DocxEditor(await reopen(doc));
+    accepted.acceptRevisions();
+    expect(withObjects(accepted)).toBe(`New words${O}${O}`);
+    expect(texts(accepted)).toEqual(['New words', 'Inside', 'After']);
+    const rejected = new DocxEditor(await reopen(doc));
+    rejected.rejectRevisions();
+    expect(withObjects(rejected)).toBe(`Head office here${O}${O}`);
+    expect(texts(rejected)).toEqual(['Head office here', 'Inside', 'After']);
   });
 });

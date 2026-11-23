@@ -13,6 +13,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 - **Shapes and text boxes:** `insertShape()` adds a text box or a shape (rectangle, rounded rectangle, oval, triangle, diamond, arrows, chevron, pentagon, star, callouts, line), inline or floating (square wrap, above and below, in front of or behind the text), with text, fill and outline colours.
 - **Breaking:** `paragraphs()` now also lists the paragraphs inside text boxes, right after the paragraph that holds the box. `find()`, `replaceAll()` and `fillTemplate()` reach text in boxes too. Code that indexes `paragraphs()` by position will see its numbers shift in documents with text boxes. Before, text in boxes could only be changed through `storyParts()`.
 - Copied content (`copyBlocks()`) now gives a copied chart its own chart part and workbook, so changing one copy no longer changes the other.
+- `replaceRange()` takes `{ keepObjects: true }`: pictures, charts, shapes and text boxes inside the replaced range then stay, right after the new text in their original order, and are not marked deleted with Track Changes on. It returns how many objects it kept. Without the option, objects in the range go with the old text, as when someone selects and types over them.
 - The AI's marks (`aiActivity`) also notice changed charts and objects, not only text.
 
 ### docxkeun chat
@@ -23,6 +24,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 
 - New tools: `insert_chart`, `read_chart`, `update_chart`, `insert_shape`, `edit_object` and `delete_object`. `read_document` and `list_objects` give every picture, chart, shape and text box an object number that these tools use.
 - Text box paragraphs are now numbered in line, right after the paragraph holding the box, so `edit_paragraph`, `replace_text`, `format_text` and the other paragraph tools work on them. Paragraph numbers after a text box shift when a box with text is added, moved or deleted; read the document again after those tools. `replace_story_text` still works.
+- `edit_paragraph` and `replace_text` keep the pictures, charts and text boxes that sat in the middle of the text they rewrite, right after the new text, and say how many they kept. Before, rewriting such a paragraph deleted them, text box and all.
 
 ## 0.3.0 (2026-11-23)
 

@@ -385,6 +385,16 @@ function newRun(text: string, template?: XmlElement, format?: TextFormat): XmlEl
 
 const BOOKMARK_NAME = /^[\p{L}_][\p{L}\p{N}_]{0,39}$/u;
 
+/** Run children that are objects: pictures, charts, shapes and text boxes (DrawingML, VML or with Word's old copy), and embedded OLE objects. */
+const OBJECT_NODES = new Set(['w:drawing', 'w:pict', 'w:object', 'mc:AlternateContent']);
+
+/** Objects `replaceRange` keeps: the runs holding them (see `takeObjects`) and how many there are. */
+interface KeptObjects {
+  runs: XmlNode[];
+  count: number;
+  nextId: () => string;
+}
+
 const OLD_VML = 'This is an old-style (VML) object: it can only be deleted';
 // Word doesn't put shapes or text boxes in a text box, nor floating objects.
 const SHAPE_IN_BOX = "Shapes and text boxes can't go inside a text box";
@@ -496,7 +506,11 @@ export class DocxEditor {
   }
 
   /** Mark the runs of a range as deleted (and the paragraph marks inside it), keeping the text. */
-  private trackedCut(range: DocRange, track: NonNullable<ReturnType<DocxEditor['tracking']>>): { startMark: XmlElement; endMark: XmlElement; idx: TreeIndex } {
+  private trackedCut(
+    range: DocRange,
+    track: NonNullable<ReturnType<DocxEditor['tracking']>>,
+    keep?: KeptObjects,
+  ): { startMark: XmlElement; endMark: XmlElement; idx: TreeIndex } {
     const index = this.index();
     const { startMark, endMark } = isolate(index, range);
     let idx = this.index();
@@ -506,6 +520,10 @@ export class DocxEditor {
       replaceMark(idx, startMark, []);
       replaceMark(idx, endMark, []);
       throw new EditError('The range crosses table cells');
+    }
+    if (keep) {
+      this.takeObjects(idx, startMark, endMark, keep);
+      idx = this.index();
     }
     const startPara = idx.ancestor(startMark, 'w:p')!;
     const endPara = idx.ancestor(endMark, 'w:p')!;
@@ -1485,9 +1503,12 @@ export class DocxEditor {
   /**
    * Replace a range with text formatted like the range's first run, or with pieces of text that are
    * each formatted like their own `like` run (for example to rewrite a sentence and keep which words
-   * were bold). `format` is applied on top.
+   * were bold). `format` is applied on top. Objects in the range (pictures, charts, shapes, text
+   * boxes) go with the old text, as when a user selects and types over them; with `keepObjects` they
+   * stay, right after the new text in their original order (not marked deleted when tracking).
+   * Returns how many objects were kept.
    */
-  replaceRange(range: DocRange, text: string | TextPiece[], format?: TextFormat): void {
+  replaceRange(range: DocRange, text: string | TextPiece[], format?: TextFormat, options: { keepObjects?: boolean } = {}): number {
     this.check('edit', range);
     const index = this.index();
     const template = index.parentOf(range.start.node);
@@ -1499,19 +1520,45 @@ export class DocxEditor {
           : []
         : text.filter((p) => p.text).map((p) => newRun(p.text, p.like ?? template, format || p.format ? { ...format, ...p.format } : undefined));
     const track = this.tracking();
+    const keep: KeptObjects | undefined = options.keepObjects ? { runs: [], count: 0, nextId: track?.nextId ?? nextRevisionId(this.root) } : undefined;
     if (track) {
       // The old text stays as a deletion; the new text follows it as an insertion.
-      const { startMark, endMark } = this.trackedCut(range, track);
+      const { startMark, endMark } = this.trackedCut(range, track, keep);
       replaceMark(this.index(), startMark, []);
       this.liftOutOfInsertion(endMark, this.index());
-      replaceMark(this.index(), endMark, runs.length ? [insertedRuns(runs, track.nextId(), track.who)] : []);
+      replaceMark(this.index(), endMark, [...(runs.length ? [insertedRuns(runs, track.nextId(), track.who)] : []), ...(keep?.runs ?? [])]);
       this.changed();
-      return;
+      return keep?.count ?? 0;
     }
-    const { startMark, endMark, idx } = this.cut(range);
-    replaceMark(idx, startMark, runs);
+    const { startMark, endMark, idx } = this.cut(range, keep);
+    replaceMark(idx, startMark, [...runs, ...(keep?.runs ?? [])]);
     replaceMark(idx, endMark, []);
     this.changed();
+    return keep?.count ?? 0;
+  }
+
+  /**
+   * Take the objects (see OBJECT_NODES) between two marks out of their runs, for `replaceRange`
+   * with keepObjects: they come back in `keep.runs`, in a run like the one they were in, and still in
+   * a tracked insertion when they were in one. Objects already marked deleted, and anything inside an
+   * object (a text box's own runs), are left alone.
+   */
+  private takeObjects(idx: TreeIndex, startMark: XmlElement, endMark: XmlElement, keep: KeptObjects): void {
+    for (const run of between(idx, startMark, endMark, 'w:r')) {
+      if (idx.ancestor(run, 'w:r') || idx.ancestor(run, 'w:del') || idx.ancestor(run, 'w:moveFrom')) continue;
+      const objects = elements(run).filter((c) => OBJECT_NODES.has(c.name));
+      if (!objects.length) continue;
+      const rPr = firstChild(run, 'w:rPr');
+      const copy = el('w:r', {}, [...(rPr ? [cloneElement(rPr)] : []), ...objects]);
+      const revision = runRevision(run, (n) => idx.parent.get(n));
+      for (const node of objects) takeOut(idx, node);
+      keep.count += objects.length;
+      keep.runs.push(
+        revision && (revision.name === 'w:ins' || revision.name === 'w:moveTo')
+          ? el('w:ins', { 'w:id': keep.nextId(), 'w:author': attr(revision, 'w:author') ?? '', ...(attr(revision, 'w:date') ? { 'w:date': attr(revision, 'w:date')! } : {}) }, [copy])
+          : copy,
+      );
+    }
   }
 
   /** Replace every match; returns how many were replaced. */
@@ -1627,7 +1674,7 @@ export class DocxEditor {
   }
 
   /** Remove the content of a range, returning the sentinels at its (now adjacent) ends. */
-  private cut(range: DocRange): { startMark: XmlElement; endMark: XmlElement; idx: TreeIndex } {
+  private cut(range: DocRange, keep?: KeptObjects): { startMark: XmlElement; endMark: XmlElement; idx: TreeIndex } {
     const index = this.index();
     const { startMark, endMark } = isolate(index, range);
     let idx = this.index();
@@ -1637,6 +1684,10 @@ export class DocxEditor {
       replaceMark(idx, startMark, []);
       replaceMark(idx, endMark, []);
       throw new EditError('The range crosses table cells');
+    }
+    if (keep) {
+      this.takeObjects(idx, startMark, endMark, keep);
+      idx = this.index();
     }
     const startPara = idx.ancestor(startMark, 'w:p')!;
     const endPara = idx.ancestor(endMark, 'w:p')!;

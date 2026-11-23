@@ -395,12 +395,17 @@ const deleteComment = define({
 
 // ---- editing ----------------------------------------------------------------------------------------
 
+/** What replace_text and edit_paragraph say when a rewrite kept objects that sat inside the old text. */
+function keptNote(n: number): string {
+  return `kept ${plural(n, 'object')} after the new text`;
+}
+
 const replaceText = define({
   name: 'replace_text',
   title: 'Replace text',
   description:
     'Replace text everywhere in a document (or one occurrence), keeping the formatting of the replaced text. ' +
-    'Matches inside locked regions are skipped. With regex, the replacement may use $1…$9 and $&.',
+    'Matches inside locked regions are skipped. With regex, the replacement may use $1…$9 and $&. Pictures, charts and text boxes a match runs across stay, right after the new text.',
   role: 'editor',
   kind: 'change',
   schema: z.object({
@@ -421,18 +426,20 @@ const replaceText = define({
       chosen = [m];
     }
     let skipped = 0;
+    let kept = 0;
     for (const m of [...chosen].reverse()) {
       if (ctx.editor.isLocked(m)) {
         skipped++;
         continue;
       }
       const replacement = args.regex ? expandReplacement(args.replace, m) : args.replace;
-      // Untagged text keeps the formatting of what it replaces; tags add to it.
-      ctx.editor.replaceRange(m, hasMarkup(replacement) ? parseMarkup(replacement).map((x) => ({ text: x.text, ...(x.tags.size ? { format: formatFor(x.tags, new Set())! } : {}) })) : replacement);
+      // Untagged text keeps the formatting of what it replaces; tags add to it. Objects a match runs across stay.
+      const text = hasMarkup(replacement) ? parseMarkup(replacement).map((x) => ({ text: x.text, ...(x.tags.size ? { format: formatFor(x.tags, new Set())! } : {}) })) : replacement;
+      kept += ctx.editor.replaceRange(m, text, undefined, { keepObjects: true });
     }
     const done = chosen.length - skipped;
     if (done === 0) throw new Error(`${plural(skipped, 'match is', 'matches are')} inside locked regions; nothing changed.`);
-    return `Replaced ${done} of ${plural(all.length, 'match', 'matches')}${skipped ? `; ${skipped} skipped (locked)` : ''}.`;
+    return `Replaced ${done} of ${plural(all.length, 'match', 'matches')}${skipped ? `; ${skipped} skipped (locked)` : ''}${kept ? `; ${keptNote(kept)}` : ''}.`;
   },
 });
 
@@ -470,7 +477,8 @@ const editParagraph = define({
   description:
     "Replace a paragraph's text and/or change its style. The paragraph keeps its own formatting (alignment, indents, list, whole-paragraph bold and so on). " +
     'Use the tags read_document shows (<b>, <i>, <u>, <s>, <sup>, <sub>) for text formatted differently from the rest: each tagged part takes the formatting ' +
-    '(font, size and colour too) of the text that had the same tags. Keep the tags when rewriting or translating, or that formatting is lost.',
+    '(font, size and colour too) of the text that had the same tags. Keep the tags when rewriting or translating, or that formatting is lost. ' +
+    'Pictures, charts and text boxes in the middle of the old text stay, right after the new text.',
   role: 'editor',
   kind: 'change',
   schema: z.object({
@@ -490,9 +498,11 @@ const editParagraph = define({
     if (args.text !== undefined) {
       const segments = parseMarkup(args.text);
       const range = ctx.editor.paragraphRange(e.para);
-      if (range) ctx.editor.replaceRange(range, piecesFor(e.para, segments));
-      else if (args.text) writeTagged(ctx.editor, e.para.el, segments);
+      // Pictures, charts and text boxes in the middle of the text stay, after the new text.
+      const kept = range ? ctx.editor.replaceRange(range, piecesFor(e.para, segments), undefined, { keepObjects: true }) : 0;
+      if (!range && args.text) writeTagged(ctx.editor, e.para.el, segments);
       done.push('text replaced');
+      if (kept) done.push(keptNote(kept));
     }
     return `Paragraph ${args.paragraph}: ${done.join(', ')}.`;
   },

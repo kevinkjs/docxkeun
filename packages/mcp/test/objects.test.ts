@@ -180,6 +180,38 @@ describe('text box paragraphs', () => {
     expect(texts(await reopen(file))).toEqual(['Before', '', 'Inside the box', 'After']);
   });
 
+  it('keeps a text box (and its paragraphs) in the middle of a paragraph it rewrites', async () => {
+    const t = (s: string) => `<w:r><w:t xml:space="preserve">${s}</w:t></w:r>`;
+    const body = `<w:p>${t('Head ')}${textBoxRun('Inside the box')}${t(' office here')}</w:p>` + p('After');
+    const file = await write(body);
+    const client = await connect();
+    expect(await ok(client, 'edit_paragraph', { path: 'boxes.docx', paragraph: 1, text: 'Our head office is here' })).toBe(
+      'Paragraph 1: text replaced, kept 1 object after the new text.\nSaved boxes.docx.',
+    );
+    let doc = await reopen(file);
+    expect(texts(doc)).toEqual(['Our head office is here', 'Inside the box', 'After']);
+    expect(new DocxEditor(doc).objects().map((o) => o.kind)).toEqual(['shape']);
+    // No object, no note.
+    expect(await ok(client, 'edit_paragraph', { path: 'boxes.docx', paragraph: 3, text: 'Later' })).toBe('Paragraph 3: text replaced.\nSaved boxes.docx.');
+
+    // A replacement whose match runs across the box keeps it too.
+    await write(body);
+    expect(await ok(client, 'replace_text', { path: 'boxes.docx', find: 'Head  office', replace: 'Main office' })).toBe(
+      'Replaced 1 of 1 match; kept 1 object after the new text.\nSaved boxes.docx.',
+    );
+    doc = await reopen(file);
+    expect(texts(doc)).toEqual(['Main office here', 'Inside the box', 'After']);
+    expect(new DocxEditor(doc).objects()).toHaveLength(1);
+
+    // With Track Changes on, the box is not marked deleted.
+    await write(body);
+    await ok(client, 'set_track_changes', { path: 'boxes.docx', on: true });
+    expect(await ok(client, 'edit_paragraph', { path: 'boxes.docx', paragraph: 1, text: 'Head office' })).toContain('kept 1 object after the new text');
+    const editor = new DocxEditor(await reopen(file));
+    editor.acceptRevisions();
+    expect(editor.paragraphs().map((x) => paragraphText(x).text)).toEqual(['Head office', 'Inside the box', 'After']);
+  });
+
   it('refuses to copy paragraphs from or into a text box', async () => {
     await write(BOX);
     const client = await connect();
