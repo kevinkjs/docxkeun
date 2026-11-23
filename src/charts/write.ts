@@ -32,20 +32,31 @@ export interface NewChart {
   /** Column, bar and area charts only. */
   stacked?: 'stacked' | 'percent';
   title?: string;
-  /** Category labels; for scatter charts the x values (numbers). */
-  categories: Array<string | number>;
+  /**
+   * Category labels; for scatter charts the x values (numbers). Numbers (dates are Excel serial
+   * numbers) stay numbers in the chart and its workbook, with null for a missing one.
+   */
+  categories: Array<string | number | null>;
+  /** Number format of numeric categories, as Excel writes it (e.g. "mmm-yy" for dates); General when left out. */
+  categoryFormat?: string;
   series: ChartSeriesData[];
   /** Default bottom. */
   legend?: LegendPosition;
   axisTitles?: { category?: string; value?: string };
 }
 
-/** What to change in an existing chart; an empty string removes a title. */
+/**
+ * What to change in an existing chart; an empty string removes a title. Series keep their number
+ * format by position unless they give one; numeric categories keep theirs unless `categoryFormat`
+ * is given.
+ */
 export interface ChartChanges {
   title?: string;
   axisTitles?: { category?: string; value?: string };
   legend?: LegendPosition;
-  categories?: Array<string | number>;
+  /** Where the chart's categories are numbers or dates, null or '' leaves a gap and keeps them numbers. */
+  categories?: Array<string | number | null>;
+  categoryFormat?: string;
   series?: ChartSeriesData[];
 }
 
@@ -56,7 +67,11 @@ export interface ChartTable {
   title?: string;
   axisTitles: { category?: string; value?: string };
   legend: LegendPosition;
-  categories: Array<string | number>;
+  /** Text labels, or numbers (dates are Excel serial numbers) with null for a missing one. */
+  categories: Array<string | number | null>;
+  /** Number format of numeric categories, when it is not General. */
+  categoryFormat?: string;
+  /** Each series' values, with their number format (`formatCode`) when it is not General. */
   series: ChartSeriesData[];
   /** Number format of the first series' values. */
   formatCode: string;
@@ -72,11 +87,11 @@ const STACKABLE = new Set<NewChartType>(['column', 'bar', 'area']);
  * Check a table before it is written into a chart: every series has one value per category, all
  * numbers are finite, and the shape suits the chart type (when one is given).
  */
-export function validateChartData(type: NewChartType | undefined, stacked: NewChart['stacked'], categories: Array<string | number>, series: ChartSeriesData[]): void {
+export function validateChartData(type: NewChartType | undefined, stacked: NewChart['stacked'], categories: Array<string | number | null>, series: ChartSeriesData[]): void {
   if (series.length === 0) throw new ChartDataError('a chart needs at least one series');
   if (categories.length === 0) throw new ChartDataError('a chart needs at least one category');
   categories.forEach((c, i) => {
-    if (typeof c === 'number' ? !Number.isFinite(c) : typeof c !== 'string') throw new ChartDataError(`category ${i + 1} is not text or a finite number`);
+    if (typeof c === 'number' ? !Number.isFinite(c) : c !== null && typeof c !== 'string') throw new ChartDataError(`category ${i + 1} is not text or a finite number`);
   });
   for (const s of series) {
     if (s.values.length !== categories.length) throw new ChartDataError(`series "${s.name}" has ${s.values.length} values for ${categories.length} categories`);
@@ -87,7 +102,7 @@ export function validateChartData(type: NewChartType | undefined, stacked: NewCh
   if (type === undefined) return;
   if (stacked && !STACKABLE.has(type)) throw new ChartDataError(`a ${type} chart cannot be stacked; only column, bar and area charts can`);
   if (type === 'pie' && series.length > 1) throw new ChartDataError(`a pie chart has one series, not ${series.length}`);
-  if (type === 'scatter' && categories.some((c) => typeof c !== 'number')) throw new ChartDataError('a scatter chart needs numbers as its categories (the x values)');
+  if (type === 'scatter' && categories.some((c) => typeof c !== 'number' && c !== null)) throw new ChartDataError('a scatter chart needs numbers as its categories (the x values)');
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -162,15 +177,27 @@ function seriesName(formula: string | undefined, name: string): XmlElement {
   return el('c:tx', {}, [formula === undefined ? el('c:v', {}, [text(name)]) : strData(formula, [name])]);
 }
 
-/** c:cat or c:xVal: numbers when every category is a number, text otherwise. */
-function categoryData(name: string, formula: string | undefined, categories: Array<string | number>, formatCode = 'General'): XmlElement {
-  const numeric = categories.every((c): c is number => typeof c === 'number');
-  return el(name, {}, [numeric ? numData(formula, categories as number[], formatCode) : strData(formula, categories.map(String))]);
+/**
+ * c:cat or c:xVal: numbers when every category is a number (or null, a gap), text otherwise. Where
+ * the categories were numbers already (`wasNumeric`), an empty string is a gap too, so numbers and
+ * dates don't turn into text.
+ */
+function categoryData(name: string, formula: string | undefined, categories: Array<string | number | null>, formatCode = 'General', wasNumeric = false): XmlElement {
+  const gap = (c: string | number | null) => c === null || (wasNumeric && c === '');
+  const numeric = categories.some((c) => typeof c === 'number') && categories.every((c) => typeof c === 'number' || gap(c));
+  return el(name, {}, [
+    numeric ? numData(formula, categories.map((c) => (typeof c === 'number' ? c : null)), formatCode) : strData(formula, categories.map((c) => (c === null ? '' : String(c)))),
+  ]);
 }
 
 function formatCodeOf(data: XmlElement | undefined): string | undefined {
   const fc = firstChild(childPath(data, 'c:numRef', 'c:numCache') ?? firstChild(data, 'c:numLit'), 'c:formatCode');
   return fc ? textContent(fc) : undefined;
+}
+
+/** Whether data (c:cat, c:xVal) holds numbers: a c:numRef or c:numLit. */
+function isNumeric(data: XmlElement | undefined): boolean {
+  return firstChild(data, 'c:numRef') !== undefined || firstChild(data, 'c:numLit') !== undefined;
 }
 
 /** The cell reference of a series name, categories or values; undefined for literal data. */
@@ -233,7 +260,7 @@ type Ranges = ReturnType<typeof chartRanges>;
 const CAT_AX = '100000001';
 const VAL_AX = '100000002';
 
-function newSeries(style: SeriesStyle, i: number, data: ChartSeriesData, categories: Array<string | number>, ranges: Ranges): XmlElement {
+function newSeries(style: SeriesStyle, i: number, data: ChartSeriesData, chart: NewChart, ranges: Ranges): XmlElement {
   const color = accentColor(i);
   const children: XmlElement[] = [v('c:idx', i), v('c:order', i), seriesName(ranges.name(i), data.name)];
   switch (style) {
@@ -264,8 +291,8 @@ function newSeries(style: SeriesStyle, i: number, data: ChartSeriesData, categor
       break;
   }
   const xy = style === 'scatter';
-  children.push(categoryData(xy ? 'c:xVal' : 'c:cat', ranges.categories, categories));
-  children.push(el(xy ? 'c:yVal' : 'c:val', {}, [numData(ranges.values(i), data.values, 'General')]));
+  children.push(categoryData(xy ? 'c:xVal' : 'c:cat', ranges.categories, chart.categories, chart.categoryFormat));
+  children.push(el(xy ? 'c:yVal' : 'c:val', {}, [numData(ranges.values(i), data.values, data.formatCode || 'General')]));
   if (style === 'line' || style === 'scatter') children.push(v('c:smooth', 0));
   return el('c:ser', {}, children);
 }
@@ -296,7 +323,7 @@ function newAxis(
 
 function newPlotArea(chart: NewChart): XmlElement {
   const ranges = chartRanges(chart.series.length, chart.categories.length);
-  const series = (style: SeriesStyle): XmlElement[] => chart.series.map((s, i) => newSeries(style, i, s, chart.categories, ranges));
+  const series = (style: SeriesStyle): XmlElement[] => chart.series.map((s, i) => newSeries(style, i, s, chart, ranges));
   const axIds = [v('c:axId', CAT_AX), v('c:axId', VAL_AX)];
   const titles = chart.axisTitles ?? {};
   const grouping = chart.stacked === 'stacked' ? 'stacked' : chart.stacked === 'percent' ? 'percentStacked' : undefined;
@@ -389,17 +416,25 @@ export function readChartTable(chartSpace: XmlElement): ChartTable {
   const model = readChart(chartSpace);
   const all = model.plots.flatMap((p) => p.series);
   const first = all[0];
-  const categories: Array<string | number> = first ? (first.categoryNumbers ? first.categoryNumbers.map((n) => n ?? '') : first.categories.slice()) : [];
+  // Numbers and dates stay numbers, a missing one null (not text).
+  const numeric = first?.categoryNumbers !== undefined;
+  const categories: Array<string | number | null> = first ? (first.categoryNumbers ? first.categoryNumbers.slice() : first.categories.slice()) : [];
   const count = Math.max(categories.length, ...all.map((s) => s.values.length));
-  while (categories.length < count) categories.push('');
+  while (categories.length < count) categories.push(numeric ? null : '');
+  const general = (code: string | undefined) => code === undefined || code === '' || code === 'General';
   const table: ChartTable = {
     kind: model.plots.map(plotName).join(' + ') || 'chart',
     axisTitles: {},
     legend: model.legend ? (LEGEND_NAMES[model.legend.position] ?? 'right') : 'none',
     categories,
-    series: all.map((s) => ({ name: s.name, values: Array.from({ length: count }, (_, i) => s.values[i] ?? null) })),
+    series: all.map((s) => ({
+      name: s.name,
+      values: Array.from({ length: count }, (_, i) => s.values[i] ?? null),
+      ...(general(s.formatCode) ? {} : { formatCode: s.formatCode }),
+    })),
     formatCode: first?.formatCode ?? 'General',
   };
+  if (numeric && !general(first.categoryFormat)) table.categoryFormat = first.categoryFormat!;
   if (model.title && !model.title.auto) table.title = model.title.text;
   const axes = chartAxes(chartSpace);
   for (const key of ['category', 'value'] as const) {
@@ -478,7 +513,7 @@ function addSeries(plotArea: XmlElement | undefined, slots: SeriesSlot[]): Serie
   return slot;
 }
 
-function fillSeries(slot: SeriesSlot, i: number, data: ChartSeriesData, categories: Array<string | number>, ranges: Ranges, keepFormulas: boolean): void {
+function fillSeries(slot: SeriesSlot, i: number, data: ChartSeriesData, categories: Array<string | number | null>, categoryFormat: string | undefined, ranges: Ranges, keepFormulas: boolean): void {
   const { plot, ser } = slot;
   const xy = plot.name === 'c:scatterChart' || plot.name === 'c:bubbleChart';
   const tx = firstChild(ser, 'c:tx');
@@ -487,8 +522,9 @@ function fillSeries(slot: SeriesSlot, i: number, data: ChartSeriesData, categori
   // With keepFormulas, existing references stay; added series have no cells, so they hold literals.
   const formula = (old: XmlElement | undefined, fresh: string): string | undefined => (!keepFormulas ? fresh : slot.added ? undefined : formulaOf(old));
   replaceChild(ser, seriesName(formula(tx, ranges.name(i)), data.name), SER_ORDER);
-  replaceChild(ser, categoryData(xy ? 'c:xVal' : 'c:cat', formula(cat, ranges.categories), categories, formatCodeOf(cat)), SER_ORDER);
-  replaceChild(ser, el(xy ? 'c:yVal' : 'c:val', {}, [numData(formula(val, ranges.values(i)), data.values, formatCodeOf(val) ?? 'General')]), SER_ORDER);
+  // Number formats stay by position (an added series has its model's), unless new ones are given.
+  replaceChild(ser, categoryData(xy ? 'c:xVal' : 'c:cat', formula(cat, ranges.categories), categories, categoryFormat || formatCodeOf(cat), isNumeric(cat)), SER_ORDER);
+  replaceChild(ser, el(xy ? 'c:yVal' : 'c:val', {}, [numData(formula(val, ranges.values(i)), data.values, data.formatCode || formatCodeOf(val) || 'General')]), SER_ORDER);
   // Formatting of points past the new last one goes.
   const n = categories.length;
   const pastEnd = (c: XmlNode, name: string): boolean => c.type === 'element' && c.name === name && (numOf(c, 'c:idx') ?? -1) >= n;
@@ -497,7 +533,7 @@ function fillSeries(slot: SeriesSlot, i: number, data: ChartSeriesData, categori
   if (labels) labels.children = labels.children.filter((c) => !pastEnd(c, 'c:dLbl'));
 }
 
-function patchData(chart: XmlElement, categories: Array<string | number>, series: ChartSeriesData[], keepFormulas: boolean): void {
+function patchData(chart: XmlElement, categories: Array<string | number | null>, categoryFormat: string | undefined, series: ChartSeriesData[], keepFormulas: boolean): void {
   const plotArea = firstChild(chart, 'c:plotArea');
   const slots = orderedSeries(plotArea);
   const removed = slots.splice(series.length);
@@ -511,7 +547,7 @@ function patchData(chart: XmlElement, categories: Array<string | number>, series
   }
   while (slots.length < series.length) slots.push(addSeries(plotArea, slots));
   const ranges = chartRanges(series.length, categories.length);
-  slots.forEach((slot, i) => fillSeries(slot, i, series[i]!, categories, ranges, keepFormulas));
+  slots.forEach((slot, i) => fillSeries(slot, i, series[i]!, categories, categoryFormat, ranges, keepFormulas));
 }
 
 /** Set, replace or (with '') remove the c:title of a chart or axis, keeping the formatting it had. */
@@ -572,7 +608,7 @@ export function patchChartSpace(chartSpace: XmlElement, changes: ChartChanges, o
     const categories = changes.categories ?? current!.categories;
     const series = changes.series ?? current!.series;
     validateChartData(undefined, undefined, categories, series);
-    patchData(chart, categories, series, options.keepFormulas === true);
+    patchData(chart, categories, changes.categoryFormat, series, options.keepFormulas === true);
   }
   if (changes.title !== undefined) {
     setTitle(chart, CHART_ORDER, changes.title, 1400, false);

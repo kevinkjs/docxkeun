@@ -339,6 +339,43 @@ describe('chart tools', () => {
     expect((await ok(client, 'read_chart', { path: 'charts.docx', object: 1 })).split('\n').at(-1)).toBe('Costs | 1 |  | 3 | 4');
   });
 
+  it('shows number formats and keeps them, and date categories as numbers, through an update', async () => {
+    const JAN = 45292;
+    const doc = await DocxDocument.open(await buildDocx({ body: p('Intro') + p('Shares') }));
+    const editor = new DocxEditor(doc);
+    await editor.insertChart(editor.paragraphRange(editor.paragraphs()[1]!)!.end, {
+      type: 'line',
+      categories: [JAN, null, JAN + 60],
+      categoryFormat: 'mmm-yy',
+      series: [
+        { name: 'Share', values: [0.1, 0.25, 0.3], formatCode: '0%' },
+        { name: 'Count', values: [3, 4, 5] },
+      ],
+    });
+    const file = join(dir, 'charts.docx');
+    await writeFile(file, await doc.save());
+    const client = await connect();
+    expect(await ok(client, 'read_chart', { path: 'charts.docx', object: 1 })).toBe(
+      [
+        'Chart (object 1, paragraph 2): line, legend bottom. Data in the embedded workbook. Number formats: categories "mmm-yy" (dates, as Excel serial numbers), Share "0%".',
+        `| ${JAN} |  | ${JAN + 60} |`,
+        'Share | 0.1 | 0.25 | 0.3',
+        'Count | 3 | 4 | 5',
+      ].join('\n'),
+    );
+    // The table as read_chart shows it goes back in: the gap stays a gap, the dates stay dates.
+    await ok(client, 'update_chart', { path: 'charts.docx', object: 1, categories: [JAN, '', JAN + 60], series: [{ name: 'Share', values: [0.2, 0.3, 0.4] }, { name: 'Count', values: [6, 7, 8] }] });
+    expect(await chartInfo(file)).toMatchObject({
+      categories: [JAN, null, JAN + 60],
+      categoryFormat: 'mmm-yy',
+      series: [
+        { name: 'Share', values: [0.2, 0.3, 0.4], formatCode: '0%' },
+        { name: 'Count', values: [6, 7, 8] },
+      ],
+    });
+    expect((await ok(client, 'read_chart', { path: 'charts.docx', object: 1 })).split('\n')[0]).toContain('Number formats: categories "mmm-yy" (dates, as Excel serial numbers), Share "0%".');
+  });
+
   it('updates the data and titles, keeping the chart', async () => {
     const file = await write(p('Intro') + p('Chart goes here'), 'charts.docx');
     const client = await connect();

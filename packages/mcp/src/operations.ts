@@ -1410,7 +1410,7 @@ const addFootnoteOp = define({
 
 const chartType = z.enum(['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter']);
 const legendPosition = z.enum(['bottom', 'top', 'left', 'right', 'none']);
-const chartCategories = z.array(z.union([z.string(), z.number()])).min(1);
+const chartCategories = z.array(z.union([z.string(), z.number(), z.null()])).min(1);
 const chartSeries = z.array(z.object({ name: z.string(), values: z.array(z.number().nullable()) })).min(1);
 
 const OBJECT_NAMES: Record<DocObject['kind'], string> = {
@@ -1488,10 +1488,25 @@ const insertChartOp = define({
   },
 });
 
+/** Whether an Excel number format shows a date or time (y, m, d, h or s outside quoted text and [..] sections). */
+function isDateFormat(code: string): boolean {
+  return /[ymdhs]/i.test(code.replace(/"[^"]*"|\[[^\]]*\]|\\./g, ''));
+}
+
+/** read_chart's note on number formats other than General: 'categories "mmm-yy" (dates, …), Share "0%"'. */
+function chartFormats(info: { categoryFormat?: string; series: Array<{ name: string; formatCode?: string }> }): string {
+  const parts: string[] = [];
+  if (info.categoryFormat) parts.push(`categories ${quote(info.categoryFormat)}${isDateFormat(info.categoryFormat) ? ' (dates, as Excel serial numbers)' : ''}`);
+  for (const s of info.series) if (s.formatCode) parts.push(`${s.name} ${quote(s.formatCode)}`);
+  return parts.length ? ` Number formats: ${parts.join(', ')}.` : '';
+}
+
 const readChartOp = define({
   name: 'read_chart',
   title: 'Read a chart',
-  description: 'Show a chart\'s type, titles, legend and data as a table (one line per series). Use the object number from read_document or list_objects.',
+  description:
+    'Show a chart\'s type, titles, legend and data as a table (one line per series), and its number formats other than General. Use the object number from read_document or list_objects. ' +
+    'Dates are Excel serial numbers (days since 1900): give them back as numbers when updating, and an empty category back as empty.',
   role: 'viewer',
   kind: 'read',
   schema: z.object({ object: z.number().int().min(1).describe('Object number of the chart') }),
@@ -1504,8 +1519,8 @@ const readChartOp = define({
     if (info.axisTitles.value) parts.push(`value axis ${quote(info.axisTitles.value)}`);
     parts.push(info.legend === 'none' ? 'no legend' : `legend ${info.legend}`);
     const source = info.source === 'embedded' ? 'Data in the embedded workbook.' : info.source === 'linked' ? 'Data linked to an outside file.' : 'No workbook behind the data.';
-    const table = [`| ${info.categories.join(' | ')} |`, ...info.series.map((s) => [s.name, ...s.values.map((v) => v ?? '')].join(' | '))];
-    return [`Chart (object ${o.n}, paragraph ${o.paragraph}): ${parts.join(', ')}. ${source}`, ...table].join('\n');
+    const table = [`| ${info.categories.map((c) => c ?? '').join(' | ')} |`, ...info.series.map((s) => [s.name, ...s.values.map((v) => v ?? '')].join(' | '))];
+    return [`Chart (object ${o.n}, paragraph ${o.paragraph}): ${parts.join(', ')}. ${source}${chartFormats(info)}`, ...table].join('\n');
   },
 });
 
@@ -1513,7 +1528,7 @@ const updateChartOp = define({
   name: 'update_chart',
   title: 'Change a chart',
   description:
-    'Change a chart\'s title, axis titles, legend or data, keeping its look. Giving categories or series replaces them all, so give the whole table (read_chart shows the current one). An empty title removes it. ' +
+    'Change a chart\'s title, axis titles, legend or data, keeping its look and number formats (series keep theirs by position). Giving categories or series replaces them all, so give the whole table (read_chart shows the current one). An empty title removes it. ' +
     'Word does not track chart changes, so with Track Changes on this change is not tracked.',
   role: 'editor',
   kind: 'change',

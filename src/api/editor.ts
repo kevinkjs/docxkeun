@@ -956,7 +956,7 @@ export class DocxEditor {
     const { pkg } = this.doc;
     const data = chartData(this.doc, part, chartSpace);
     const result: ChartUpdate = { source: data.source, workbookRewritten: false, workbookHadMore: false };
-    let workbook: Uint8Array | undefined;
+    let rewrite = false;
     if (changes.categories !== undefined || changes.series !== undefined) {
       const current = readChartTable(chartSpace);
       const categories = changes.categories ?? current.categories;
@@ -969,10 +969,12 @@ export class DocxEditor {
           const old = await pkg.getBytes(data.workbook);
           result.workbookHadMore = !isWorkbook(old) || (await workbookHasMore(old, current.categories.length, current.series.length));
         } else if (data.source === 'embedded') result.workbookHadMore = true;
-        workbook = await workbookFor({ categories, series });
+        rewrite = true;
       }
     }
     patchChartSpace(chartSpace, changes, { keepFormulas: data.source === 'linked' });
+    // The workbook holds the chart's data as the chart now caches it, number formats included.
+    const workbook = rewrite ? await workbookFor(readChartTable(chartSpace)) : undefined;
     if (workbook) {
       if (data.workbook) pkg.setBytes(data.workbook, workbook);
       else await replaceWorkbook(this.doc, part, chartSpace, data.relId, workbook);

@@ -46,6 +46,26 @@ async function sheetCells(doc: DocxDocument, part: string): Promise<Record<strin
   return Object.fromEntries(findAll(root, 'c').map((c) => [attr(c, 'r')!, textContent(c)]));
 }
 
+/**
+ * The number format of each styled cell of a workbook part's first sheet: a built-in format's id
+ * ("#17") or a custom format's code.
+ */
+async function cellFormats(doc: DocxDocument, part: string): Promise<Record<string, string>> {
+  const entries = readZip(await doc.pkg.getBytes(part));
+  const xml = async (name: string) => parseXml(new TextDecoder().decode(await entries.find((e) => e.name === name)!.read())).root;
+  const styles = await xml('xl/styles.xml');
+  const custom = new Map(findAll(styles, 'numFmt').map((f) => [attr(f, 'numFmtId')!, attr(f, 'formatCode')!]));
+  const xfs = elements(findAll(styles, 'cellXfs')[0]!, 'xf');
+  expect(attr(findAll(styles, 'cellXfs')[0], 'count')).toBe(String(xfs.length));
+  const out: Record<string, string> = {};
+  for (const c of findAll(await xml('xl/worksheets/sheet1.xml'), 'c')) {
+    const xf = xfs[Number(attr(c, 's') ?? 0)]!;
+    const id = attr(xf, 'numFmtId')!;
+    if (id !== '0') out[attr(c, 'r')!] = custom.get(id) ?? `#${id}`;
+  }
+  return out;
+}
+
 /** The part a chart's c:externalData points at, and that relationship. */
 async function workbookOf(doc: DocxDocument, chartPart: string) {
   const cs = doc.xmlSync(chartPart)!.root;
@@ -187,6 +207,68 @@ describe('charts in the editor', () => {
     expect(ed.chartInfo(ed.objects()[0]!).series).toEqual(three);
     expect((await workbookOf(again, CHART1)).part).toBe(WORKBOOK1);
     expect(await sheetCells(again, WORKBOOK1)).toMatchObject({ D1: 'Profit', D2: '40', D5: '70' });
+  });
+
+  it('keeps number formats through a read, an update and the workbook', async () => {
+    // A chart as Word saves one of monthly shares: dates (Excel serial numbers shown "mmm-yy") and percentages.
+    const JAN = 45292;
+    const months = [JAN, JAN + 31, JAN + 60];
+    const { doc, editor } = await open();
+    await editor.insertChart(endOf(editor), {
+      type: 'line',
+      categories: months,
+      series: [
+        { name: 'Share', values: [0.1, 0.25, 0.3] },
+        { name: 'Growth', values: [0.012, 0.034, 0.051] },
+      ],
+    });
+    const cs = doc.xmlSync(CHART1)!.root;
+    const formatCodes = (path: string) => findAll(cs, 'c:ser').map((ser) => firstChild(childPath(ser, path, 'c:numRef', 'c:numCache'), 'c:formatCode')!);
+    for (const fc of formatCodes('c:cat')) fc.children = [{ type: 'text', value: 'mmm-yy' }];
+    const [share, growth] = formatCodes('c:val');
+    share!.children = [{ type: 'text', value: '0%' }];
+    growth!.children = [{ type: 'text', value: '0.0%' }];
+    doc.touch(CHART1);
+    const obj = editor.objects()[0]!;
+
+    const info = editor.chartInfo(obj);
+    expect(info).toMatchObject({ categories: months, categoryFormat: 'mmm-yy', formatCode: '0%' });
+    expect(info.series).toEqual([
+      { name: 'Share', values: [0.1, 0.25, 0.3], formatCode: '0%' },
+      { name: 'Growth', values: [0.012, 0.034, 0.051], formatCode: '0.0%' },
+    ]);
+
+    // An update by position keeps each series' format and the categories' (still numbers, not text).
+    await editor.updateChart(obj, { series: [{ name: 'Share', values: [0.2, 0.3, 0.4] }, { name: 'Growth', values: [0.02, 0.03, 0.04] }, { name: 'Added', values: [0.5, 0.6, 0.7] }] });
+    const after = editor.chartInfo(obj);
+    expect(after).toMatchObject({ categories: months, categoryFormat: 'mmm-yy' });
+    expect(after.series.map((x) => x.formatCode)).toEqual(['0%', '0.0%', '0.0%']);
+    for (const ser of findAll(cs, 'c:ser')) expect(childPath(ser, 'c:cat', 'c:numRef', 'c:numCache')).toBeDefined();
+    expect(await sheetCells(doc, WORKBOOK1)).toMatchObject({ A2: String(JAN), B2: '0.2', C2: '0.02', D1: 'Added' });
+    // In the workbook: "mmm-yy" and "0%" are Excel's built-in formats 17 and 9; "0.0%" is a custom one.
+    expect(await cellFormats(doc, WORKBOOK1)).toEqual({
+      A2: '#17', A3: '#17', A4: '#17',
+      B2: '#9', B3: '#9', B4: '#9',
+      C2: '0.0%', C3: '0.0%', C4: '0.0%',
+      D2: '0.0%', D3: '0.0%', D4: '0.0%',
+    });
+
+    // A missing date stays a gap in numeric categories, also when given back as an empty string.
+    const catCaches = findAll(cs, 'c:ser').map((ser) => childPath(ser, 'c:cat', 'c:numRef', 'c:numCache')!);
+    for (const cache of catCaches) cache.children = cache.children.filter((c) => !(c.type === 'element' && c.name === 'c:pt' && attr(c, 'idx') === '1'));
+    doc.touch(CHART1);
+    expect(editor.chartInfo(obj).categories).toEqual([JAN, null, JAN + 60]);
+    await editor.updateChart(obj, { categories: [JAN, '', JAN + 60] });
+    expect(editor.chartInfo(obj)).toMatchObject({ categories: [JAN, null, JAN + 60], categoryFormat: 'mmm-yy' });
+    for (const ser of findAll(cs, 'c:ser')) expect(childPath(ser, 'c:cat', 'c:strRef')).toBeUndefined();
+    const cells = await sheetCells(doc, WORKBOOK1);
+    expect([cells.A2, cells.A3, cells.A4]).toEqual([String(JAN), undefined, String(JAN + 60)]);
+
+    // New charts take formats too.
+    await editor.insertChart(endOf(editor), { type: 'column', categories: months, categoryFormat: 'mmm-yy', series: [{ name: 'Share', values: [0.1, 0.2, 0.3], formatCode: '0%' }] });
+    const made = editor.objects()[1]!;
+    expect(editor.chartInfo(made)).toMatchObject({ categoryFormat: 'mmm-yy', formatCode: '0%' });
+    expect(await cellFormats(doc, 'word/embeddings/Microsoft_Excel_Worksheet2.xlsx')).toEqual({ A2: '#17', A3: '#17', A4: '#17', B2: '#9', B3: '#9', B4: '#9' });
   });
 
   it('says when the old workbook held more than the chart', async () => {
