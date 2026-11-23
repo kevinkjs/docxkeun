@@ -21,6 +21,8 @@ export const REL = {
   hyperlink: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink',
   image: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
   font: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/font',
+  chart: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart',
+  package: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/package',
 } as const;
 
 export type RelKind = keyof typeof REL;
@@ -51,6 +53,8 @@ export const CONTENT_TYPE = {
   coreProperties: 'application/vnd.openxmlformats-package.core-properties+xml',
   extendedProperties: 'application/vnd.openxmlformats-officedocument.extended-properties+xml',
   obfuscatedFont: 'application/vnd.openxmlformats-officedocument.obfuscatedFont',
+  chart: 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 } as const;
 
 export const IMAGE_CONTENT_TYPES: Record<string, string> = {
