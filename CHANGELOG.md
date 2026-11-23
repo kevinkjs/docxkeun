@@ -14,7 +14,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 - **Breaking:** `paragraphs()` now also lists the paragraphs inside text boxes, right after the paragraph that holds the box. `find()`, `replaceAll()` and `fillTemplate()` reach text in boxes too. Code that indexes `paragraphs()` by position will see its numbers shift in documents with text boxes. Before, text in boxes could only be changed through `storyParts()`.
 - Copied content (`copyBlocks()`) now gives a copied chart its own chart part and workbook, so changing one copy no longer changes the other.
 - `replaceRange()` takes `{ keepObjects: true }`: pictures, charts, shapes and text boxes inside the replaced range then stay, right after the new text in their original order, and are not marked deleted with Track Changes on. It returns how many objects it kept. Without the option, objects in the range go with the old text, as when someone selects and types over them.
-- The AI's marks (`aiActivity`) also notice changed charts and objects, not only text.
+- The AI's marks (`aiActivity`) also notice changed charts and objects, not only text, and text changed inside a text box or shape (marked on the paragraph holding it).
 
 ### docxkeun chat
 

@@ -7,7 +7,7 @@ import { findAll, textContent } from '../src/xml/index.js';
 import { ACTIVITY_STYLES, AiActivity, type ActivityStyle } from '../src/render/activity.js';
 import type { DocxViewer } from '../src/render/viewer.js';
 import { buildDocx, p } from './helpers/docx.js';
-import { inline } from './helpers/drawings.js';
+import { EMU, inline, textBoxRun, textBoxShape } from './helpers/drawings.js';
 
 /** Just what AiActivity touches when no document is loaded. */
 function host(): { viewer: DocxViewer; root: HTMLDivElement } {
@@ -406,5 +406,24 @@ describe('AI activity: changed objects', () => {
     editor.setObjectAlt(editor.objects()[0]!, 'A logo');
     t.relayout();
     expect((await activity.reveal(before, { scroll: false })).changes).toMatchObject([{ para: 0, formatting: true }]);
+  });
+
+  it("marks the paragraph holding a text box whose text changed, a group's boxes too", async () => {
+    const group =
+      `<wpg:wgp><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${400 * EMU}" cy="${80 * EMU}"/><a:chOff x="0" y="0"/><a:chExt cx="${400 * EMU}" cy="${80 * EMU}"/></a:xfrm></wpg:grpSpPr>` +
+      `<wpg:grpSp><wpg:grpSpPr/>${textBoxShape('Grouped')}</wpg:grpSp></wpg:wgp>`;
+    const body = `<w:p>${textBoxRun('Inside the box')}</w:p><w:p><w:r>${inline(group, 400, 80, 'http://schemas.microsoft.com/office/word/2010/wordprocessingGroup')}</w:r></w:p>${p('Unchanged.')}`;
+    const t = await laidOut(['', '', 'Unchanged.'], undefined, body);
+    const activity = new AiActivity(t.viewer, { style: 'highlight', animate: false });
+    const editor = new DocxEditor(t.doc);
+    for (const [word, para] of [
+      ['Inside', 0],
+      ['Grouped', 1],
+    ] as const) {
+      const before = activity.snapshot();
+      editor.replaceRange(editor.find(word)[0]!, 'Changed');
+      t.relayout();
+      expect((await activity.reveal(before, { scroll: false })).changes).toMatchObject([{ para, kind: 'changed', formatting: true }]);
+    }
   });
 });

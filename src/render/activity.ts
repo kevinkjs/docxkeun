@@ -10,7 +10,7 @@
  */
 import { paragraphsOf, paragraphText } from '../api/editor.js';
 import type { Page, Rect, TextItem } from '../layout/types.js';
-import type { DocParagraph, ImageInline } from '../model/content.js';
+import type { DocParagraph, DrawingContent, ImageInline } from '../model/content.js';
 import type { DocxDocument } from '../model/index.js';
 import { serializeXml, type XmlElement } from '../xml/index.js';
 import type { DocxViewer } from './viewer.js';
@@ -180,12 +180,24 @@ function checksum(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-/** An object's size, place, wrap and alt text, and a checksum of a chart's XML. */
+/** An object's size, place, wrap and alt text, a checksum of a chart's XML, and one of the text in a text box or shape. */
 function imageSignature(i: ImageInline, doc: DocxDocument | undefined): string {
   const chartPart = i.content?.type === 'chart' ? i.content.part : undefined;
   const xml = chartPart && doc ? doc.xmlSync(chartPart) : undefined;
   const chart = xml ? checksum(serializeXml(xml)) : '';
-  return `image:${i.width},${i.height},${i.float ? JSON.stringify(i.float) : ''},${i.alt ?? ''},${chart}`;
+  const text = i.content ? boxText(i.content, doc) : '';
+  return `image:${i.width},${i.height},${i.float ? JSON.stringify(i.float) : ''},${i.alt ?? ''},${chart},${text ? checksum(text) : ''}`;
+}
+
+/**
+ * The text and formatting of the paragraphs in a text box or shape (a group's, child by child),
+ * so a change inside a box marks the paragraph holding it.
+ */
+function boxText(content: DrawingContent, doc: DocxDocument | undefined): string {
+  if (content.type === 'shape') {
+    return content.shape.text ? paragraphsOf(content.shape.text.blocks).map((p) => `${paragraphText(p, { objects: true }).text}|${formatSignature(p, doc)}`).join('\n') : '';
+  }
+  return content.type === 'group' ? content.children.map((c) => boxText(c.content, doc)).join('\u0001') : '';
 }
 
 /** A paragraph's formatting as a string: style, alignment, list, each run's properties, and its objects. */
