@@ -82,6 +82,9 @@ const SEQUENCES: Record<string, string[]> = {
   'c:spPr': ['a:xfrm', 'a:custGeom', 'a:prstGeom', 'a:noFill', 'a:solidFill', 'a:gradFill', 'a:blipFill', 'a:pattFill', 'a:grpFill', 'a:ln', 'a:effectLst', 'a:effectDag', 'a:scene3d', 'a:sp3d', 'a:extLst'],
   'a:ln': ['a:noFill', 'a:solidFill', 'a:gradFill', 'a:pattFill', 'a:prstDash', 'a:custDash', 'a:round', 'a:bevel', 'a:miter', 'a:headEnd', 'a:tailEnd', 'a:extLst'],
   'c:rich': ['a:bodyPr', 'a:lstStyle', 'a:p'],
+  'c:txPr': ['a:bodyPr', 'a:lstStyle', 'a:p'],
+  'a:p': ['a:pPr', 'a:r', 'a:br', 'a:fld', 'a:endParaRPr'],
+  'a:defRPr': ['a:ln', 'a:noFill', 'a:solidFill', 'a:gradFill', 'a:blipFill', 'a:pattFill', 'a:grpFill', 'a:effectLst', 'a:effectDag', 'a:highlight', 'a:uLnTx', 'a:uLn', 'a:uFillTx', 'a:uFill', 'a:latin', 'a:ea', 'a:cs', 'a:sym', 'a:hlinkClick', 'a:hlinkMouseOver', 'a:rtl', 'a:extLst'],
   'c:strCache': ['c:ptCount', 'c:pt', 'c:extLst'],
   'c:numCache': ['c:formatCode', 'c:ptCount', 'c:pt', 'c:extLst'],
   'c:strLit': ['c:ptCount', 'c:pt', 'c:extLst'],
@@ -193,7 +196,20 @@ describe('chart writer', () => {
   it('orders the elements as the schema requires', () => {
     const cs = newChartSpace({ type: 'column', categories: QUARTERS, series: TWO, axisTitles: { category: 'Quarter', value: 'USD' } }, 'rId1');
     expect(orderProblems(cs)).toEqual([]);
-    expect(names(cs)).toEqual(['c:date1904', 'c:lang', 'c:roundedCorners', 'c:chart', 'c:externalData']);
+    expect(names(cs)).toEqual(['c:date1904', 'c:lang', 'c:roundedCorners', 'c:chart', 'c:spPr', 'c:txPr', 'c:externalData']);
+    // As Word inserts a chart: a white chart area without a border, and 9 pt text in the text colour at 65%.
+    const area = firstChild(cs, 'c:spPr')!;
+    expect(names(area)).toEqual(['a:solidFill', 'a:ln', 'a:effectLst']);
+    expect(val(firstChild(area, 'a:solidFill'), 'a:schemeClr')).toBe('bg1');
+    expect(names(firstChild(area, 'a:ln'))[0]).toBe('a:noFill');
+    expect(names(firstChild(cs, 'c:txPr'))).toEqual(['a:bodyPr', 'a:lstStyle', 'a:p']);
+    const defRPr = childPath(cs, 'c:txPr', 'a:p', 'a:pPr', 'a:defRPr')!;
+    expect(attr(defRPr, 'sz')).toBe('900');
+    const textColour = childPath(defRPr, 'a:solidFill', 'a:schemeClr')!;
+    expect([attr(textColour, 'val'), val(textColour, 'a:lumMod'), val(textColour, 'a:lumOff')]).toEqual(['tx1', '65000', '35000']);
+    const model = readChart(cs);
+    expect(model.chartArea).toMatchObject({ fill: { color: 'FFFFFF' }, line: { paint: null } });
+    expect(model.textStyle).toMatchObject({ size: 9, color: '595959' });
     const ext = firstChild(cs, 'c:externalData');
     expect(attr(ext, 'r:id')).toBe('rId1');
     expect(val(ext, 'c:autoUpdate')).toBe('0');
@@ -383,6 +399,44 @@ describe('chart writer', () => {
     patchChartSpace(cs, { axisTitles: { value: '', category: 'When' } });
     expect(readChartTable(cs).axisTitles).toEqual({ category: 'When' });
     expect(orderProblems(reparse(cs))).toEqual([]);
+  });
+
+  it('styles an added series like the last one, without its per-point formatting, in the next colour', () => {
+    const cs = newChartSpace({ type: 'column', categories: QUARTERS, series: TWO }, 'rId1');
+    const last = findAll(cs, 'c:ser')[1]!;
+    // A half-transparent fill with a matching outline, a highlighted point, a labelled point, a trendline and error bars.
+    firstChild(last, 'c:spPr')!.children = parseXml(
+      '<c:spPr xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+        '<a:solidFill><a:schemeClr val="accent2"><a:alpha val="50000"/></a:schemeClr></a:solidFill><a:ln w="12700"><a:solidFill><a:schemeClr val="accent2"><a:shade val="50000"/></a:schemeClr></a:solidFill></a:ln></c:spPr>',
+    ).root.children;
+    const extras = parseXml(
+      '<x xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:dPt><c:idx val="1"/><c:invertIfNegative val="0"/><c:bubble3D val="0"/></c:dPt>' +
+        '<c:dLbls><c:dLbl><c:idx val="2"/><c:showVal val="1"/></c:dLbl><c:showVal val="1"/></c:dLbls><c:trendline><c:trendlineType val="linear"/></c:trendline>' +
+        '<c:errBars><c:errDir val="y"/><c:errBarType val="both"/><c:errValType val="stdErr"/></c:errBars></x>',
+    ).root.children;
+    last.children.splice(last.children.indexOf(firstChild(last, 'c:cat')!), 0, ...extras);
+
+    patchChartSpace(cs, { series: [...TWO, { name: 'Added', values: [1, 1, 1, 1] }] });
+    expect(orderProblems(cs)).toEqual([]);
+    const added = findAll(cs, 'c:ser')[2]!;
+    expect(names(added).filter((n) => ['c:dPt', 'c:dLbls', 'c:trendline', 'c:errBars'].includes(n))).toEqual(['c:dLbls']);
+    // The series' own labels stay; the labels of single points go.
+    expect(names(firstChild(added, 'c:dLbls'))).toEqual(['c:showVal']);
+    // The next accent, still half transparent; the outline, a darker shade of the fill's colour, follows with its shade.
+    const fill = childPath(added, 'c:spPr', 'a:solidFill', 'a:schemeClr')!;
+    expect([attr(fill, 'val'), names(fill), val(fill, 'a:alpha')]).toEqual(['accent3', ['a:alpha'], '50000']);
+    const outline = childPath(added, 'c:spPr', 'a:ln', 'a:solidFill', 'a:schemeClr')!;
+    expect([attr(outline, 'val'), val(outline, 'a:shade')]).toEqual(['accent3', '50000']);
+    // The original keeps everything.
+    expect(names(last).filter((n) => ['c:dPt', 'c:dLbls', 'c:trendline', 'c:errBars'].includes(n))).toEqual(['c:dPt', 'c:dLbls', 'c:trendline', 'c:errBars']);
+
+    // A filled series whose outline has a colour of its own keeps that outline.
+    const own = newChartSpace({ type: 'column', categories: QUARTERS, series: [TWO[0]!] }, 'rId1');
+    childPath(findAll(own, 'c:ser')[0], 'c:spPr', 'a:ln')!.children = [el('a:solidFill', {}, [el('a:srgbClr', { val: '000000' })])];
+    patchChartSpace(own, { series: [TWO[0]!, TWO[1]!] });
+    const second = findAll(own, 'c:ser')[1]!;
+    expect(val(childPath(second, 'c:spPr', 'a:solidFill'), 'a:schemeClr')).toBe('accent2');
+    expect(val(childPath(second, 'c:spPr', 'a:ln', 'a:solidFill'), 'a:srgbClr')).toBe('000000');
   });
 
   it('patches multi-level categories, scatter values and line colours', () => {

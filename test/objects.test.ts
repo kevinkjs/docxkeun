@@ -364,7 +364,7 @@ describe('charts in the editor', () => {
       expect(await sheetCells(again, workbook!)).toMatchObject({ B1: 'Revenue', B2: '5' });
       // The externalData element sits where the schema wants it.
       const names = (again.xmlSync(part)!.root.children.filter((c) => c.type === 'element') as XmlElement[]).map((c) => c.name);
-      expect(names.slice(-2)).toEqual(['c:chart', 'c:externalData']);
+      expect(names.slice(-4)).toEqual(['c:chart', 'c:spPr', 'c:txPr', 'c:externalData']);
     }
     // The old object and its relationship are gone.
     expect(again.pkg.has(OLD)).toBe(false);

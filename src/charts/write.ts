@@ -382,11 +382,26 @@ export function newChartSpace(chart: NewChart, workbookRelId: string): XmlElemen
   const legend = chart.legend ?? 'bottom';
   if (legend !== 'none') children.push(newLegend(legend));
   children.push(v('c:plotVisOnly', 1), v('c:dispBlanksAs', 'gap'));
+  // Word's chart area: white with no border, and text 9 pt in the text colour at 65% (without them the
+  // default chart style draws a dark border and black 10 pt text).
+  const area = el('c:spPr', {}, [
+    el('a:solidFill', {}, [el('a:schemeClr', { val: 'bg1' })]),
+    el('a:ln', { w: 9525, cap: 'flat', cmpd: 'sng', algn: 'ctr' }, [el('a:noFill'), el('a:round')]),
+    el('a:effectLst'),
+  ]);
+  const textColour = el('a:schemeClr', { val: 'tx1' }, [v('a:lumMod', 65000), v('a:lumOff', 35000)]);
+  const text = el('c:txPr', {}, [
+    el('a:bodyPr'),
+    el('a:lstStyle'),
+    el('a:p', {}, [el('a:pPr', {}, [el('a:defRPr', { sz: 900 }, [el('a:solidFill', {}, [textColour])])]), el('a:endParaRPr', { lang: 'en-US' })]),
+  ]);
   return el('c:chartSpace', { 'xmlns:c': NS.c, 'xmlns:a': NS.a, 'xmlns:r': NS.r }, [
     v('c:date1904', 0),
     v('c:lang', 'en-US'),
     v('c:roundedCorners', 0),
     el('c:chart', {}, children),
+    area,
+    text,
     el('c:externalData', { 'r:id': workbookRelId }, [v('c:autoUpdate', 0)]),
   ]);
 }
@@ -474,10 +489,32 @@ function replaceChild(parent: XmlElement, node: XmlElement, order: readonly stri
   else insertOrdered(parent, node, order);
 }
 
+/** Fills other than none (a:noFill). */
+const FILLS = ['a:solidFill', 'a:gradFill', 'a:pattFill', 'a:blipFill', 'a:grpFill'];
+
+/** The colour element of an a:solidFill (a:schemeClr, a:srgbClr, …). */
+const colourOf = (solidFill: XmlElement | undefined): XmlElement | undefined => (solidFill ? elements(solidFill)[0] : undefined);
+
+/** Put `color` in an a:solidFill, keeping the old colour's transforms (transparency, shade…) except the accent variation's lumMod/lumOff. */
+function setColour(solidFill: XmlElement, color: XmlElement): void {
+  const kept = elements(colourOf(solidFill) ?? el('x')).filter((t) => t.name !== 'a:lumMod' && t.name !== 'a:lumOff');
+  const next = cloneElement(color);
+  next.children.push(...kept.map(cloneElement));
+  solidFill.children = [next];
+}
+
+/**
+ * Give a series' shape properties a new colour: its solid fill, and its outline when the series has
+ * no fill (a line) or the outline had the fill's colour (by name, so a darker shade of it follows).
+ */
 function recolor(spPr: XmlElement | undefined, color: XmlElement): void {
-  for (const fill of [firstChild(spPr, 'a:solidFill'), childPath(spPr, 'a:ln', 'a:solidFill')]) {
-    if (fill) fill.children = [cloneElement(color)];
-  }
+  const fill = firstChild(spPr, 'a:solidFill');
+  const line = childPath(spPr, 'a:ln', 'a:solidFill');
+  const filled = spPr !== undefined && elements(spPr).some((c) => FILLS.includes(c.name));
+  const same = (a: XmlElement | undefined, b: XmlElement | undefined) => a !== undefined && b !== undefined && a.name === b.name && attr(a, 'val') === attr(b, 'val');
+  const lineFollows = line !== undefined && (!filled || same(colourOf(fill), colourOf(line)));
+  if (fill) setColour(fill, color);
+  if (line && lineFollows) setColour(line, color);
 }
 
 /** A new series after the last one, styled like it in the next accent colour. */
@@ -489,8 +526,11 @@ function addSeries(plotArea: XmlElement | undefined, slots: SeriesSlot[]): Serie
   let slot: SeriesSlot;
   if (last) {
     const ser = cloneElement(last.ser);
-    // Extensions hold the original's unique id and cell-linked extras.
-    removeChildren(ser, 'c:extLst');
+    // Extensions hold the original's unique id and cell-linked extras; formatting of single points,
+    // trendlines and error bars belong to the original's data. The series' own label settings stay.
+    for (const name of ['c:extLst', 'c:dPt', 'c:trendline', 'c:errBars']) removeChildren(ser, name);
+    const labels = firstChild(ser, 'c:dLbls');
+    if (labels) removeChildren(labels, 'c:dLbl');
     const color = accentColor(idx);
     recolor(firstChild(ser, 'c:spPr'), color);
     recolor(childPath(ser, 'c:marker', 'c:spPr'), color);
