@@ -144,7 +144,7 @@ const toolbox = createToolbox(() => current);
     s === 'highlight'
       ? 'The changed paragraph keeps a soft tint until the next change.'
       : s === 'words'
-        ? 'The changed words keep a glow until the next change.'
+        ? 'The changed words keep these colours until the next change.'
         : s === 'underline'
           ? 'The changed words stay underlined until the next change.'
           : 'A ✦ bar in the margin marks each changed paragraph until the next change (hover it for the text before).';

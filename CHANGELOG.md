@@ -2,6 +2,12 @@
 
 All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic versioning](https://semver.org); while the version is 0.x, minor versions may contain breaking changes.
 
+## Unreleased
+
+### docxkeun
+
+- The `words` effect style now colours only the letters. Its shimmer and the marks it leaves are drawn on the text itself, so shaded table cells, highlighted text and pictures in the paragraph keep their own colours, and the changed words no longer sit in a tinted glow. Before, the shimmer was a coloured band blended over the line, which tinted anything that was not white, and the marks added a blurred box behind the words. With `marks: false`, the changed letters now light up for a moment instead of a tinted band passing over them.
+
 ## 0.3.0 (2026-11-23)
 
 ### docxkeun

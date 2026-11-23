@@ -130,7 +130,7 @@ Effect styles: `aiActivity: { style: 'words' }` (or `viewer.activity.style = 'wo
 | Style | While the AI works | After the change |
 |---|---|---|
 | `highlight` (default) | a tinted band sweeps over the lines | the paragraph keeps a soft tint |
-| `words` | the letters themselves shimmer | the changed words glow |
+| `words` | the letters themselves shimmer; nothing behind them changes | the changed words' letters keep the colours |
 | `underline` | a streak runs under each line | the changed words stay underlined |
 | `edge` | a soft glow breathes around the paragraph | the ✦ bar in the margin |
 | `spotlight` | the rest of the page dims | the ✦ bar in the margin |

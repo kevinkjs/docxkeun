@@ -192,7 +192,7 @@ function still(prefix: string): string {
     `${prefix}.docxkeun-ai-ghost,${prefix}.docxkeun-ai-cut{animation:docxkeun-ai-fade 2.4s both}`,
     `${prefix}.docxkeun-ai-bar,${prefix}.docxkeun-ai-spark{animation:none}`,
     // The other working styles, held still.
-    `${prefix}.docxkeun-ai-words{animation:none;background-image:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2))}`,
+    `${prefix}.docxkeun-ai-in,${prefix}.docxkeun-ai-flash{animation:none}`,
     `${prefix}.docxkeun-ai-underline{animation:none;background-image:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2));background-size:100% 100%}`,
     `${prefix}.docxkeun-ai-edge{animation:none;box-shadow:0 0 0 1.5px color-mix(in srgb,var(--dk-ai-1) 70%,transparent),0 0 10px color-mix(in srgb,var(--dk-ai-1) 30%,transparent)}`,
     `${prefix}.docxkeun-ai-spot,${prefix}.docxkeun-ai-pulse,${prefix}.docxkeun-ai-intro{animation:none}`,
@@ -203,7 +203,11 @@ const CSS = `
 .docxkeun-viewer{--dk-ai-1:var(--docxkeun-ai-color-1,#7c5cff);--dk-ai-2:var(--docxkeun-ai-color-2,var(--docxkeun-ai-color-1,#d97757));--dk-ai-text:var(--docxkeun-ai-text,#fff);--docxkeun-ai-page:#fff}
 .docxkeun-ai-layer{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none}
 .docxkeun-ai-layer>*{position:absolute;pointer-events:none}
-.docxkeun-ai-words{border-radius:2px;background-image:linear-gradient(100deg,#000 30%,var(--dk-ai-1) 44%,var(--dk-ai-2) 56%,#000 70%);background-size:300% 100%;mix-blend-mode:lighten;animation:docxkeun-ai-shimmer 1.8s linear infinite}
+.docxkeun-ai-paint{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;pointer-events:none}
+.docxkeun-ai-in{animation:docxkeun-ai-stop-in .9s ease-out var(--t,0ms) both}
+@keyframes docxkeun-ai-stop-in{from{stop-color:var(--from)}}
+.docxkeun-ai-flash{animation:docxkeun-ai-stop-flash 3.2s ease-in-out var(--t,0ms) both}
+@keyframes docxkeun-ai-stop-flash{from,to{stop-color:var(--from)}20%,65%{stop-color:var(--to)}}
 .docxkeun-ai-underline{border-radius:1px;background-color:color-mix(in srgb,var(--dk-ai-1) 18%,transparent);background-image:linear-gradient(90deg,transparent,var(--dk-ai-1),var(--dk-ai-2),transparent);background-size:35% 100%;background-repeat:no-repeat;animation:docxkeun-ai-wave 1.4s ease-in-out infinite}
 @keyframes docxkeun-ai-wave{from{background-position:-40% 0}to{background-position:140% 0}}
 .docxkeun-ai-edge{border-radius:6px;animation:docxkeun-ai-aura 2.2s ease-in-out infinite}
@@ -214,8 +218,6 @@ const CSS = `
 .docxkeun-ai-sparkle{width:12px;height:12px;margin:-6px 0 0 -6px;font:11px/12px system-ui,sans-serif;text-align:center;animation:docxkeun-ai-float 2.4s ease-in-out var(--t) infinite both}
 @keyframes docxkeun-ai-float{0%{opacity:0;transform:translateY(4px) scale(.4) rotate(-40deg)}30%{opacity:1;transform:translateY(-2px) scale(1)}to{opacity:0;transform:translateY(-14px) scale(.6) rotate(40deg)}}
 .docxkeun-ai-mark-tint{border-radius:3px;background:linear-gradient(90deg,color-mix(in srgb,var(--dk-ai-1) 14%,transparent),color-mix(in srgb,var(--dk-ai-2) 14%,transparent));mix-blend-mode:multiply}
-.docxkeun-ai-mark-halo{border-radius:6px;background:linear-gradient(90deg,color-mix(in srgb,var(--dk-ai-1) 24%,transparent),color-mix(in srgb,var(--dk-ai-2) 24%,transparent));filter:blur(4px);mix-blend-mode:multiply}
-.docxkeun-ai-mark-words{border-radius:2px;background:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2));mix-blend-mode:lighten}
 .docxkeun-ai-mark-underline{border-radius:1px;background:linear-gradient(90deg,var(--dk-ai-1),var(--dk-ai-2))}
 .docxkeun-ai-intro{animation:docxkeun-ai-in .9s ease-out var(--t,0ms) both}
 .docxkeun-ai-mark-underline.docxkeun-ai-intro{transform-origin:left;animation-name:docxkeun-ai-draw}
@@ -327,13 +329,145 @@ function spread(i: number, axis: number): number {
 const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 const nextFrame = () => new Promise<void>((ok) => requestAnimationFrame(() => requestAnimationFrame(() => ok())));
 
+// ---- painting the letters ------------------------------------------------------------------------
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+let paintScopes = 0;
+let paintLayers = 0;
+
+/** A text item's colour as the page draws it (see svg.ts). */
+const inkOf = (t: TextItem): string => (/^[0-9a-f]{6}$/i.test(t.color) ? `#${t.color}` : '#000');
+const offset = (v: number): string => String(Math.round(Math.min(1, Math.max(0, v)) * 10000) / 10000);
+
+/** A gradient stop; `var(...)` colours go in a style so the custom property resolves. */
+function stop(at: number, color: string, extra: { cls?: string; vars?: Record<string, string> } = {}): string {
+  const style = [...(color.startsWith('var(') ? [`stop-color:${color}`] : []), ...Object.entries(extra.vars ?? {}).map(([k, v]) => `${k}:${v}`)].join(';');
+  return `<stop offset="${offset(at)}"${color.startsWith('var(') ? '' : ` stop-color="${color}"`}${extra.cls ? ` class="${extra.cls}"` : ''}${style ? ` style="${style}"` : ''}/>`;
+}
+
+/** The text items of a paragraph on a page: the SVG <text> elements to paint (by `data-i`). */
+interface Glyphs {
+  page: Page;
+  index: number;
+  item: TextItem;
+  /** Spans [from, to) of character indexes to colour (all of the item when painting whole items). */
+  spans: Array<[number, number]>;
+}
+
+/** One gradient and the glyphs it paints. */
+interface PaintGroup {
+  gradient: (id: string) => string;
+  glyphs: Glyphs[];
+}
+
+/**
+ * Colours chosen letters on the pages with SVG gradients: a style sheet points their <text>
+ * elements at gradients defined beside it. Only the glyphs change, never the paper, shading,
+ * highlights or pictures behind them, and pages drawn later (scrolling) pick the rules up too.
+ */
+class GlyphPaint {
+  private readonly sheet: HTMLStyleElement;
+  private readonly defs: SVGSVGElement;
+  private readonly scope: string;
+  private readonly id: string;
+
+  constructor(root: HTMLElement, name: string) {
+    this.scope = root.getAttribute('data-docxkeun-ai') ?? String(++paintScopes);
+    root.setAttribute('data-docxkeun-ai', this.scope);
+    this.id = `docxkeun-ai-${this.scope}-${name}-${++paintLayers}`;
+    this.sheet = document.createElement('style');
+    this.sheet.setAttribute('data-docxkeun-ai-paint', name);
+    this.defs = document.createElementNS(SVG_NS, 'svg') as SVGSVGElement;
+    this.defs.setAttribute('class', 'docxkeun-ai-paint');
+    this.defs.setAttribute('aria-hidden', 'true');
+    this.defs.setAttribute('data-paint', name);
+    root.append(this.sheet, this.defs);
+  }
+
+  paint(groups: PaintGroup[]): void {
+    const rules: string[] = [];
+    const defs: string[] = [];
+    groups.forEach((g, k) => {
+      if (!g.glyphs.length) return;
+      const id = `${this.id}-${k}`;
+      defs.push(g.gradient(id));
+      const sel = (x: Glyphs) => `[data-docxkeun-ai="${this.scope}"] .docxkeun-page[data-page="${x.page.index}"] svg>text[data-i="${x.index}"]`;
+      rules.push(`${g.glyphs.map(sel).join(',')}{fill:url(#${id})}`);
+      // Synthetic bold strokes the outline in the text colour: it takes the gradient too.
+      const stroked = g.glyphs.filter((x) => x.item.font.syntheticBold);
+      if (stroked.length) rules.push(`${stroked.map(sel).join(',')}{stroke:url(#${id})}`);
+    });
+    this.defs.innerHTML = defs.join('');
+    this.sheet.textContent = rules.join('\n');
+  }
+
+  clear(): void {
+    if (this.sheet.textContent) this.sheet.textContent = '';
+    if (this.defs.firstChild) this.defs.replaceChildren();
+  }
+
+  remove(): void {
+    this.sheet.remove();
+    this.defs.remove();
+  }
+}
+
+/**
+ * The working shimmer: the letters keep their own colour (`ink`) and a band of the AI's colours
+ * sweeps across the page, slightly slanted so lower lines follow on. `width`: the widest page.
+ */
+function sweepGradient(id: string, ink: string, width: number): string {
+  return (
+    `<linearGradient id="${id}" class="docxkeun-ai-words" gradientUnits="userSpaceOnUse" x1="-400" y1="-60" x2="400" y2="60">` +
+    stop(0, ink) +
+    stop(0.3, ink) +
+    stop(0.44, 'var(--dk-ai-1)') +
+    stop(0.56, 'var(--dk-ai-2)') +
+    stop(0.7, ink) +
+    stop(1, ink) +
+    `<animateTransform attributeName="gradientTransform" type="translate" values="-220 0;${Math.round(width + 220)} 0" dur="2s" repeatCount="indefinite"/>` +
+    `</linearGradient>`
+  );
+}
+
+/** The shimmer held still (no motion): the letters take the AI's colours across the page. */
+function stillGradient(id: string, width: number): string {
+  return `<linearGradient id="${id}" class="docxkeun-ai-words" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${Math.round(width)}" y2="0">${stop(0, 'var(--dk-ai-1)')}${stop(1, 'var(--dk-ai-2)')}</linearGradient>`;
+}
+
+/**
+ * Changed words in the AI's colours and the rest of the item in its own: hard stops at the
+ * edges of each span. `cls` animates the coloured stops from the ink (`docxkeun-ai-in` fades
+ * them in, `docxkeun-ai-flash` in and out again), starting after `delay`.
+ */
+function spanGradient(id: string, kind: string, g: Glyphs, cls?: string, delay = '0ms'): string {
+  const t = g.item;
+  const ink = inkOf(t);
+  const lefts = t.xs;
+  const rights = t.xs.map((x, i) => x + (t.widths[i] ?? 0));
+  const left = Math.min(...lefts);
+  const right = Math.max(...rights, left + 0.01);
+  const at = (x: number) => (x - left) / (right - left);
+  const colour = (c: string) => (cls ? { cls, vars: { '--from': ink, '--to': c, '--t': delay } } : {});
+  const stops: string[] = [];
+  for (const [from, to] of g.spans) {
+    const a = at(lefts[from]!);
+    const b = at(rights[to - 1]!);
+    // A span at the item's edge runs on past it (pad), so overhanging glyph ink is coloured too.
+    if (from > 0) stops.push(stop(a, ink));
+    stops.push(stop(a, 'var(--dk-ai-1)', colour('var(--dk-ai-1)')), stop(b, 'var(--dk-ai-2)', colour('var(--dk-ai-2)')));
+    if (to < t.chars.length) stops.push(stop(b, ink));
+  }
+  return `<linearGradient id="${id}" class="${kind}" gradientUnits="userSpaceOnUse" x1="${left}" y1="0" x2="${right}" y2="0">${stops.join('')}</linearGradient>`;
+}
+
 /** How the AI's work shows on the paragraphs it is changing (see `ACTIVITY_STYLES`). */
 export type ActivityStyle = 'highlight' | 'words' | 'underline' | 'edge' | 'spotlight' | 'quiet' | 'sparkles';
 
 /** The styles, with a label and a line to show in a picker, in the order to show them. */
 export const ACTIVITY_STYLES: ReadonlyArray<{ style: ActivityStyle; label: string; description: string }> = [
   { style: 'highlight', label: 'Highlight band', description: 'A tinted band sweeps over the lines; the changed paragraph keeps a soft tint.' },
-  { style: 'words', label: 'Word shimmer', description: 'The letters themselves shimmer; the changed words keep a glow.' },
+  { style: 'words', label: 'Word shimmer', description: 'The letters themselves shimmer; the changed words stay coloured.' },
   { style: 'underline', label: 'Underline wave', description: 'A streak runs under each line; the changed words stay underlined.' },
   { style: 'edge', label: 'Edge glow', description: 'A soft glow breathes around the paragraph.' },
   { style: 'spotlight', label: 'Spotlight', description: 'The rest of the page dims while the paragraph is changed.' },
@@ -349,7 +483,7 @@ export interface ActivityOptions {
   name?: string;
   /**
    * How the AI's work shows (default `'highlight'`), and so which mark stays after a change:
-   * highlight → a still tint on the changed paragraph, words → the changed words glow,
+   * highlight → a still tint on the changed paragraph, words → the changed words' letters stay in the AI's colours,
    * underline → the changed words stay underlined, the others → the ✦ margin bar.
    */
   style?: ActivityStyle;
@@ -389,6 +523,11 @@ export class AiActivity {
   private shimmers: HTMLElement[] = [];
   private marks: Mark[] = [];
   private markEls: HTMLElement[] = [];
+  /** Letters coloured by the marks, the passing flash of a change, and the working shimmer (later wins). */
+  private readonly markPaint: GlyphPaint;
+  private readonly flashPaint: GlyphPaint;
+  private readonly workPaint: GlyphPaint;
+  private flashTimer: ReturnType<typeof setTimeout> | undefined;
   private hideTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly cleanup: Array<() => void> = [];
   private on: boolean;
@@ -416,6 +555,9 @@ export class AiActivity {
     this.label = document.createElement('span');
     this.caret.appendChild(this.label);
     this.layer.appendChild(this.caret);
+    this.markPaint = new GlyphPaint(root, 'marks');
+    this.flashPaint = new GlyphPaint(root, 'flash');
+    this.workPaint = new GlyphPaint(root, 'work');
     if (options.color !== undefined) this.color = options.color;
     if (options.style !== undefined) this.style = options.style;
     // Positions depend on the layout and zoom: redraw what lasts.
@@ -496,6 +638,7 @@ export class AiActivity {
     this.shimmers = [];
     this.markEls = [];
     this.marks = [];
+    for (const paint of [this.workPaint, this.markPaint, this.flashPaint]) paint.clear();
     this.caret.style.opacity = '0';
     this.drawMap();
   }
@@ -508,6 +651,8 @@ export class AiActivity {
   set animate(on: boolean) {
     this.motion = on;
     this.viewer.root.classList.toggle('docxkeun-ai-still', !on);
+    // The word shimmer's sweep is an SVG animation, which the still style sheet cannot stop.
+    if (this.working && this.aiStyle === 'words') this.drawWorking(false);
   }
 
   /** Change bars and the change map after a change. */
@@ -590,6 +735,60 @@ export class AiActivity {
     return merged;
   }
 
+  /**
+   * A paragraph's text items, with the characters in `ranges` (all of them, list labels too, when
+   * `ranges` is omitted). Items of other paragraphs on the same lines (table cells) are left out.
+   */
+  private glyphs(para: DocParagraph, ranges?: Array<[number, number]>): Glyphs[] {
+    const starts = new Map<XmlElement, number>();
+    for (const seg of paragraphText(para, { objects: true }).segments) starts.set(seg.node, seg.start);
+    const out: Glyphs[] = [];
+    for (const page of this.viewer.layout?.pages ?? []) {
+      const lines = page.lines.filter((l) => l.paragraph === para.el);
+      if (!lines.length) continue;
+      page.items.forEach((item, index) => {
+        if (item.type !== 'text' || !item.chars.length) return;
+        const t = item as TextItem;
+        if (!t.source) {
+          // A list label or a field result: no source, so take it when it sits on one of the lines.
+          if (!ranges && lines.some((l) => t.y >= l.y && t.y <= l.y + l.h && t.x >= l.x - 72 && t.x < l.x + l.w)) out.push({ page, index, item: t, spans: [[0, t.chars.length]] });
+          return;
+        }
+        const start = starts.get(t.source.inline.node);
+        if (start === undefined) return;
+        if (!ranges) {
+          out.push({ page, index, item: t, spans: [[0, t.chars.length]] });
+          return;
+        }
+        const isText = t.source.inline.node.name === 'w:t';
+        const spans: Array<[number, number]> = [];
+        for (let i = 0; i < t.chars.length; i++) {
+          const off = start + (isText ? t.source.offsets[i]! : 0);
+          if (!ranges.some(([from, to]) => off >= from && off < to)) continue;
+          const last = spans[spans.length - 1];
+          if (last && last[1] === i) last[1] = i + 1;
+          else spans.push([i, i + 1]);
+        }
+        if (spans.length) out.push({ page, index, item: t, spans });
+      });
+    }
+    return out;
+  }
+
+  /** The working shimmer on the paragraphs' letters: one gradient per text colour. */
+  private shimmerPaint(paras: DocParagraph[]): PaintGroup[] {
+    const still = !this.motion || reducedMotion();
+    const width = Math.max(612, ...(this.viewer.layout?.pages ?? []).map((p) => p.width));
+    const byInk = new Map<string, Glyphs[]>();
+    for (const para of paras) {
+      for (const g of this.glyphs(para)) {
+        const key = still ? '' : inkOf(g.item);
+        byInk.set(key, [...(byInk.get(key) ?? []), g]);
+      }
+    }
+    return [...byInk].map(([ink, glyphs]) => ({ glyphs, gradient: (id: string) => (still ? stillGradient(id, width) : sweepGradient(id, ink, width)) }));
+  }
+
   private place(el: HTMLElement, r: { page: Page } & Rect, pad = 0): boolean {
     const p = this.at(r.page.index, r.x - pad, r.y - pad);
     if (!p) return false;
@@ -635,24 +834,29 @@ export class AiActivity {
   idle(): void {
     if (!this.on) return;
     this.working = undefined;
-    for (const el of this.shimmers) el.remove();
-    this.shimmers = [];
+    this.clearWorking();
     this.caret.classList.remove('working');
     this.label.textContent = this.name;
     clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => (this.caret.style.opacity = '0'), 2500);
   }
 
-  private drawWorking(scroll: boolean): void {
+  private clearWorking(): void {
     for (const el of this.shimmers) el.remove();
     this.shimmers = [];
+    this.workPaint.clear();
+  }
+
+  private drawWorking(scroll: boolean): void {
+    this.clearWorking();
     const w = this.working;
     if (!w) return;
     const all = this.paragraphs();
+    const paras = w.paras.map((n) => all[n - 1]).filter((p): p is DocParagraph => !!p);
     // The lines of each paragraph being worked on.
-    const groups = w.paras.map((n) => all[n - 1]).filter((p): p is DocParagraph => !!p).map((p) => this.lineRects(p.el));
+    const groups = paras.map((p) => this.lineRects(p.el));
     const first = groups.flat()[0];
-    this.drawStyle(groups, first);
+    this.drawStyle(groups, first, paras);
     this.label.textContent = this.workingText(w);
     if (first) {
       this.moveCaret(first.page, first.x, first.y, first.h, true);
@@ -661,7 +865,7 @@ export class AiActivity {
   }
 
   /** The working effect of the current style over each paragraph's lines. */
-  private drawStyle(groups: Array<Array<{ page: Page } & Rect>>, first: ({ page: Page } & Rect) | undefined): void {
+  private drawStyle(groups: Array<Array<{ page: Page } & Rect>>, first: ({ page: Page } & Rect) | undefined, paras: DocParagraph[]): void {
     const keep = (el: HTMLElement | undefined): HTMLElement | undefined => {
       if (el) this.shimmers.push(el);
       return el;
@@ -677,8 +881,8 @@ export class AiActivity {
         for (const r of lines) ripple(keep(this.add('docxkeun-ai-shimmer', r, 1.5)));
         break;
       case 'words':
-        // A band blended with "lighten": white stays white, only the letters take its colours.
-        for (const r of lines) ripple(keep(this.add('docxkeun-ai-words', r, 0.5)));
+        // The letters themselves take the colours; the paper, shading and pictures stay as they are.
+        this.workPaint.paint(this.shimmerPaint(paras));
         break;
       case 'underline':
         for (const r of lines) ripple(keep(this.add('docxkeun-ai-underline', { ...r, y: r.y + r.h - 0.4, h: 1.6 })));
@@ -792,13 +996,14 @@ export class AiActivity {
     }
     if (!this.on) return diff;
     this.working = undefined;
-    for (const el of this.shimmers) el.remove();
-    this.shimmers = [];
+    this.clearWorking();
     // The marks of earlier changes stay (following their paragraphs); this change's join them.
     this.marks = this.mergeMarks(diff, after);
     this.drawMarks(new Set(diff.changes.map((c) => c.para)));
-    // A style with its own mark lets the mark fade in; the others get the passing glow.
-    const glow = !(OWN_MARK.has(this.aiStyle) && this.keepMarks);
+    // A style with its own mark lets the mark fade in; the others get the passing glow. The word
+    // shimmer never tints the paper: without marks, the changed letters light up for a moment.
+    const glow = !(OWN_MARK.has(this.aiStyle) && this.keepMarks) && this.aiStyle !== 'words';
+    if (this.aiStyle === 'words' && !this.keepMarks) this.flash(diff, paras);
 
     // Ink in the new text, line after line, as if written (about 2.5 s at most).
     const pieces: Array<{ r: { page: Page } & Rect; para: number }> = [];
@@ -912,6 +1117,7 @@ export class AiActivity {
     for (const el of this.markEls) el.remove();
     this.markEls = [];
     const paras = this.paragraphs();
+    const painted: PaintGroup[] = [];
     let n = 0;
     let animate = false;
     // Marks of the style's own kind fade (or draw) in one after another.
@@ -934,19 +1140,24 @@ export class AiActivity {
         for (const r of lines) intro(this.add('docxkeun-ai-mark-tint', r, 1.5));
         continue;
       }
-      if (style === 'words' || style === 'underline') {
+      if (style === 'words') {
+        // The changed words' letters keep the colours (the whole paragraph when only its formatting changed).
+        const glyphs = m.ranges.length ? this.glyphs(para, m.ranges) : m.formatting ? this.glyphs(para) : [];
+        // Decide now: the gradients are written after the loop, when `animate` holds the last mark's value.
+        const cls = animate ? 'docxkeun-ai-in' : undefined;
+        for (const g of glyphs) {
+          const delay = `${Math.min(n++ * 90, 1500)}ms`;
+          painted.push({ glyphs: [g], gradient: (id) => spanGradient(id, 'docxkeun-ai-mark-words', g, cls, delay) });
+        }
+        if (glyphs.length) continue;
+        // Only deletions in this paragraph: nothing to colour, so the margin bar marks it.
+      }
+      if (style === 'underline') {
         // The changed words; the whole paragraph when only its formatting changed.
         const rects = m.ranges.length ? m.ranges.flatMap(([from, to]) => this.charRects(para, from, to)) : m.formatting ? lines : [];
-        if (rects.length) {
-          for (const r of rects) {
-            if (style === 'words') {
-              intro(this.add('docxkeun-ai-mark-halo', r, 2));
-              intro(this.add('docxkeun-ai-mark-words', r, 0.5));
-            } else intro(this.add('docxkeun-ai-mark-underline', { ...r, y: r.y + r.h - 0.2, h: 1.4 }));
-          }
-          continue;
-        }
-        // Only deletions in this paragraph: nothing to colour, so the margin bar marks it.
+        for (const r of rects) intro(this.add('docxkeun-ai-mark-underline', { ...r, y: r.y + r.h - 0.2, h: 1.4 }));
+        if (rects.length) continue;
+        // Only deletions in this paragraph: nothing to underline, so the margin bar marks it.
       }
       // One bar per page the paragraph is on, in the left margin.
       const byPage = new Map<Page, Array<{ page: Page } & Rect>>();
@@ -972,7 +1183,26 @@ export class AiActivity {
         firstBar = false;
       }
     }
+    this.markPaint.paint(painted);
     this.drawMap();
+  }
+
+  /** The changed letters light up in the AI's colours for a moment (the word shimmer without marks). */
+  private flash(diff: ParagraphDiff, paras: DocParagraph[]): void {
+    const groups: PaintGroup[] = [];
+    let n = 0;
+    for (const c of diff.changes) {
+      const para = paras[c.para];
+      if (!para) continue;
+      const glyphs = c.ranges.length ? this.glyphs(para, c.ranges) : c.cuts.length ? [] : this.glyphs(para);
+      for (const g of glyphs) {
+        const delay = `${Math.min(n++ * 90, 1500)}ms`;
+        groups.push({ glyphs: [g], gradient: (id) => spanGradient(id, 'docxkeun-ai-flash-words', g, 'docxkeun-ai-flash', delay) });
+      }
+    }
+    clearTimeout(this.flashTimer);
+    this.flashPaint.paint(groups);
+    this.flashTimer = setTimeout(() => this.flashPaint.clear(), 3200 + Math.min(n * 90, 1500) + 100);
   }
 
   /** Ticks on the right edge for every change, scaled to the scroll height; click to jump. */
@@ -1010,6 +1240,7 @@ export class AiActivity {
     for (const el of [...this.layer.children]) {
       if (el !== this.caret && !this.markEls.includes(el as HTMLElement) && !this.shimmers.includes(el as HTMLElement)) el.remove();
     }
+    this.flashPaint.clear();
     this.drawMarks();
     if (this.working) this.drawWorking(false);
   }
@@ -1017,6 +1248,8 @@ export class AiActivity {
   destroy(): void {
     for (const fn of this.cleanup) fn();
     clearTimeout(this.hideTimer);
+    clearTimeout(this.flashTimer);
+    for (const paint of [this.workPaint, this.markPaint, this.flashPaint]) paint.remove();
     this.layer.remove();
     this.map.remove();
   }

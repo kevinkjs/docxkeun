@@ -152,6 +152,20 @@ const CLASSES: Record<ActivityStyle, string> = {
 };
 const count = (root: HTMLElement, cls: string) => root.querySelectorAll(`.${cls}`).length;
 
+/** The text items (by index on the page) a paint layer colours. */
+function painted(root: HTMLElement, layer: 'work' | 'marks' | 'flash'): number[] {
+  const css = root.querySelector(`style[data-docxkeun-ai-paint="${layer}"]`)!.textContent ?? '';
+  return [...css.matchAll(/data-i="(\d+)"/g)].map((m) => Number(m[1]));
+}
+
+/** Where a gradient's stops in the AI's colours start and end, in page points. */
+function colouredSpan(gradient: Element): [number, number] {
+  const x1 = Number(gradient.getAttribute('x1'));
+  const x2 = Number(gradient.getAttribute('x2'));
+  const at = [...gradient.querySelectorAll('stop')].filter((s) => s.getAttribute('style')?.includes('--dk-ai')).map((s) => x1 + Number(s.getAttribute('offset')) * (x2 - x1));
+  return [Math.min(...at), Math.max(...at)];
+}
+
 describe('AI activity: effect styles', () => {
   it('lists every style once, highlight first, each with a label and a line', () => {
     expect(ACTIVITY_STYLES.map((s) => s.style)).toEqual(['highlight', 'words', 'underline', 'edge', 'spotlight', 'quiet', 'sparkles']);
@@ -175,6 +189,23 @@ describe('AI activity: effect styles', () => {
     for (const cls of Object.values(CLASSES)) expect(count(root, cls)).toBe(0);
   });
 
+  it('shimmers the letters of the word style and lays nothing over the page', async () => {
+    const { viewer, root } = await laidOut(['First paragraph.', 'Second paragraph being changed.', 'Third.']);
+    const activity = new AiActivity(viewer, { style: 'words' });
+    activity.work([2], { scroll: false });
+    // Only the second paragraph's text (item 1) takes the gradient; no box covers the paper or shading.
+    expect(painted(root, 'work')).toEqual([1]);
+    expect([...root.querySelector('.docxkeun-ai-layer')!.children].every((el) => el.classList.contains('docxkeun-ai-caret'))).toBe(true);
+    const defs = () => root.querySelector('svg[data-paint="work"]')!.innerHTML;
+    expect(defs()).toMatch(/animateTransform/i);
+    // Held still: the letters keep the colours without the sweep.
+    activity.animate = false;
+    expect(painted(root, 'work')).toEqual([1]);
+    expect(defs()).not.toMatch(/animateTransform/i);
+    activity.idle();
+    expect(painted(root, 'work')).toEqual([]);
+  });
+
   it('takes the style as an option and refuses unknown ones', async () => {
     const { viewer } = await laidOut(['Only paragraph.']);
     const activity = new AiActivity(viewer, { style: 'words' });
@@ -184,7 +215,7 @@ describe('AI activity: effect styles', () => {
     expect(() => new AiActivity(viewer, { style: 'nope' as ActivityStyle })).toThrow(TypeError);
   });
 
-  it('leaves the mark of the style after a change: tint, glowing words, underline, or the margin bar', async () => {
+  it('leaves the mark of the style after a change: tint, coloured letters, underline, or the margin bar', async () => {
     const { viewer, root, doc, relayout } = await laidOut(['Payment is due within thirty days.', 'Unchanged.']);
     const activity = new AiActivity(viewer, { style: 'highlight', animate: false });
     const before = ['Payment is due within twenty days.', 'Unchanged.'];
@@ -196,27 +227,43 @@ describe('AI activity: effect styles', () => {
     const marks = () => ({
       tint: count(root, 'docxkeun-ai-mark-tint'),
       words: count(root, 'docxkeun-ai-mark-words'),
-      halo: count(root, 'docxkeun-ai-mark-halo'),
       underline: count(root, 'docxkeun-ai-mark-underline'),
       bar: count(root, 'docxkeun-ai-bar'),
     });
-    expect(marks()).toEqual({ tint: 1, words: 0, halo: 0, underline: 0, bar: 0 });
+    expect(marks()).toEqual({ tint: 1, words: 0, underline: 0, bar: 0 });
     activity.style = 'words';
-    expect(marks()).toEqual({ tint: 0, words: 1, halo: 1, underline: 0, bar: 0 });
-    // The glowing word sits over "thirty" (characters 22-28, 6 points each from x = 72).
-    const word = root.querySelector<HTMLElement>('.docxkeun-ai-mark-words')!;
-    expect(parseFloat(word.style.left)).toBeCloseTo(72 + 22 * 6 - 0.5, 0);
+    expect(marks()).toEqual({ tint: 0, words: 1, underline: 0, bar: 0 });
+    // Only the letters of "thirty" (characters 22-28, 6 points each from x = 72) take the colours.
+    expect(painted(root, 'marks')).toEqual([0]);
+    const [from, to] = colouredSpan(root.querySelector('.docxkeun-ai-mark-words')!);
+    expect(from).toBeCloseTo(72 + 22 * 6, 1);
+    expect(to).toBeCloseTo(72 + 28 * 6, 1);
     activity.style = 'underline';
-    expect(marks()).toEqual({ tint: 0, words: 0, halo: 0, underline: 1, bar: 0 });
+    expect(marks()).toEqual({ tint: 0, words: 0, underline: 1, bar: 0 });
+    expect(painted(root, 'marks')).toEqual([]);
     for (const style of ['edge', 'spotlight', 'quiet', 'sparkles'] as const) {
       activity.style = style;
-      expect(marks(), style).toEqual({ tint: 0, words: 0, halo: 0, underline: 0, bar: 1 });
+      expect(marks(), style).toEqual({ tint: 0, words: 0, underline: 0, bar: 1 });
     }
     // The change map's tick says what was there before, whatever the style.
     expect(root.querySelector<HTMLElement>('.docxkeun-ai-map i')!.title).toBe('Changed by Claude. Before: Payment is due within twenty days.');
     activity.marksShown = false;
-    expect(marks()).toEqual({ tint: 0, words: 0, halo: 0, underline: 0, bar: 0 });
+    expect(marks()).toEqual({ tint: 0, words: 0, underline: 0, bar: 0 });
     expect(root.querySelectorAll('.docxkeun-ai-map i')).toHaveLength(0);
+  });
+
+  it('lights up the changed letters for a moment when the word style keeps no marks', async () => {
+    const t = await laidOut(['Payment is due within thirty days.']);
+    const activity = new AiActivity(t.viewer, { style: 'words', marks: false });
+    const before = activity.snapshot();
+    new DocxEditor(t.doc).replaceAll('thirty', 'forty');
+    t.relayout();
+    await activity.reveal(before, { scroll: false });
+    // No tinted glow over the page, no mark that stays: the letters of "forty" flash instead.
+    expect(count(t.root, 'docxkeun-ai-glow')).toBe(0);
+    expect(count(t.root, 'docxkeun-ai-mark-words')).toBe(0);
+    expect(count(t.root, 'docxkeun-ai-flash-words')).toBeGreaterThan(0);
+    expect(t.root.querySelector('.docxkeun-ai-flash')!.getAttribute('style')).toContain('--from:#000');
   });
 
   it('marks a paragraph with only deletions with the margin bar, even in a word style', async () => {
@@ -253,6 +300,8 @@ describe('AI activity: marks over a run of changes', () => {
   }
   // Lines are 20 points apart from y = 72; marks sit up to 2 points above their line (padding).
   const lineOf = (el: HTMLElement) => Math.round((parseFloat(el.style.top) - 70) / 20);
+  /** The lines whose letters the marks colour (text baselines are 11 points below the line's top). */
+  const markedLines = (t: Awaited<ReturnType<typeof laidOut>>) => painted(t.root, 'marks').map((i) => Math.round(((t.viewer.layout!.pages[0]!.items[i] as { y: number }).y - 83) / 20));
 
   it('keeps the marks of every change, not only the last one', async () => {
     const t = await laidOut(['First paragraph.', 'Second paragraph.', 'Third paragraph.']);
@@ -266,16 +315,25 @@ describe('AI activity: marks over a run of changes', () => {
     expect(t.root.querySelectorAll('.docxkeun-ai-map i')).toHaveLength(2);
   });
 
+  it('fades in only the latest change\'s coloured letters', async () => {
+    const t = await laidOut(['First paragraph.', 'Second paragraph.', 'Third paragraph.']);
+    const activity = new AiActivity(t.viewer, { style: 'words' });
+    await change(t, activity, (e) => e.replaceAll('First', 'Opening'));
+    await change(t, activity, (e) => e.replaceAll('Third', 'Closing'));
+    const marks = [...t.root.querySelectorAll('.docxkeun-ai-mark-words')];
+    expect(markedLines(t)).toEqual([0, 2]);
+    expect(marks.map((g) => g.querySelectorAll('stop.docxkeun-ai-in').length > 0)).toEqual([false, true]);
+  });
+
   it('moves earlier marks with their paragraphs when paragraphs are added or removed', async () => {
     const t = await laidOut(['Alpha.', 'Payment is due within thirty days.', 'Omega.']);
     const activity = new AiActivity(t.viewer, { style: 'words', animate: false });
     await change(t, activity, (e) => e.replaceAll('thirty', 'forty'));
     await change(t, activity, (e) => void e.insertParagraph('start', 'A new opening paragraph.'));
-    const words = [...t.root.querySelectorAll<HTMLElement>('.docxkeun-ai-mark-words')];
     // The new paragraph (line 0) and "forty", now on line 2.
-    expect(words.map(lineOf).sort()).toEqual([0, 2]);
+    expect(markedLines(t).sort()).toEqual([0, 2]);
     await change(t, activity, (e) => e.deleteParagraph(paragraphsOf(t.doc.body().blocks)[0]!.el));
-    expect([...t.root.querySelectorAll<HTMLElement>('.docxkeun-ai-mark-words')].map(lineOf)).toEqual([1]);
+    expect(markedLines(t)).toEqual([1]);
   });
 
   it('marks a paragraph changed twice against its text before the first change', async () => {
