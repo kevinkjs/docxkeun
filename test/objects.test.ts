@@ -10,6 +10,7 @@ import { CONTENT_TYPE, REL } from '../src/opc/index.js';
 import { attr, childPath, elements, findAll, firstChild, NS, parseXml, textContent, type XmlElement } from '../src/xml/index.js';
 import { readZip } from '../src/zip/zip.js';
 import { buildDocx, p } from './helpers/docx.js';
+import { textBoxRun } from './helpers/drawings.js';
 import { testRegistry } from './helpers/fonts.js';
 
 const QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
@@ -533,5 +534,20 @@ describe('shapes and text boxes', () => {
     editor.lockRange(editor.find('3.75 percent')[0]!, { title: 'Agreed rate' });
     await expect(editor.insertShape(editor.find('.75')[0]!.start, { shape: 'textBox', text: 'No' })).rejects.toThrow(LockedRegionError);
     expect(editor.objects()).toEqual([]);
+  });
+
+  it('refuses a shape or text box inside a text box, but takes a chart there', async () => {
+    const { doc, editor } = await open(`<w:p>${textBoxRun('Inside the box')}</w:p>`);
+    const inBox = () => editor.find('Inside the box')[0]!.end;
+    for (const shape of ['textBox', 'rect'] as const) {
+      await expect(editor.insertShape(inBox(), { shape, place: { inline: true } })).rejects.toThrow(new EditError("Shapes and text boxes can't go inside a text box"));
+    }
+    // (The fixture's box is a shape holding text: its cNvSpPr has no txBox flag.)
+    expect(editor.objects().map((o) => o.kind)).toEqual(['shape']);
+    // Nothing changed, so the box keeps its old copy.
+    expect(findAll(doc.documentXml.root, 'mc:Fallback')).toHaveLength(1);
+
+    await editor.insertChart(inBox(), COLUMNS);
+    expect(editor.objects().map((o) => o.kind)).toEqual(['shape', 'chart']);
   });
 });

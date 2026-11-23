@@ -46,6 +46,7 @@ import {
   copyPart,
   freePartName,
   inlineFrame,
+  inTextBox,
   listObjects,
   nextRelativeHeight,
   replaceWorkbook,
@@ -833,10 +834,11 @@ export class DocxEditor {
   /**
    * Insert a text box or a preset shape at a position, with optional text (each line a paragraph,
    * listed by `paragraphs()` right after the paragraph holding it). By default it floats at the top
-   * left of the paragraph with square wrap; see `NewShape` for sizes and colours. Returns the
-   * w:drawing.
+   * left of the paragraph with square wrap; see `NewShape` for sizes and colours. Not inside a
+   * text box (Word doesn't nest them). Returns the w:drawing.
    */
   async insertShape(at: DocPosition, shape: NewShape): Promise<XmlElement> {
+    if (inTextBox(this.index(), at.node)) throw new EditError("Shapes and text boxes can't go inside a text box");
     this.check('edit', { start: at, end: at });
     const { width, height, place } = checkShape(shape);
     const graphic = shapeGraphic(shape, width, height, (text, format) => newRun(text, undefined, format));

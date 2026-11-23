@@ -248,6 +248,11 @@ export const SHAPE_NAMES: Record<ShapeKind, string> = {
   line: 'Straight Connector',
 };
 
+/** Whether a node sits inside a text box (DrawingML or VML: both keep their text in w:txbxContent). */
+export function inTextBox(idx: TreeIndex, node: XmlElement): boolean {
+  return idx.ancestor(node, 'w:txbxContent') !== undefined;
+}
+
 /** A colour option: RRGGBB (a leading # is fine) or 'none'. */
 function checkColour(value: string | undefined, what: string): void {
   if (value !== undefined && value !== 'none' && !/^#?[0-9A-Fa-f]{6}$/.test(value)) throw new EditError(`A ${what} colour is RRGGBB (like 4472C4) or "none", not "${value}"`);
