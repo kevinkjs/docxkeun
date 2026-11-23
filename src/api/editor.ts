@@ -1575,11 +1575,13 @@ export class DocxEditor {
    * Take the objects (see OBJECT_NODES) between two marks out of their runs, for `replaceRange`
    * with keepObjects: they come back in `keep.runs`, in a run like the one they were in, and still in
    * a tracked insertion when they were in one. Objects already marked deleted, and anything inside an
-   * object (a text box's own runs), are left alone.
+   * object in the range (a text box's own runs), are left alone. A range inside a text box keeps the
+   * objects of its own runs: those share the range's holding run.
    */
   private takeObjects(idx: TreeIndex, startMark: XmlElement, endMark: XmlElement, keep: KeptObjects): void {
+    const holder = idx.ancestor(startMark, 'w:r');
     for (const run of between(idx, startMark, endMark, 'w:r')) {
-      if (idx.ancestor(run, 'w:r') || idx.ancestor(run, 'w:del') || idx.ancestor(run, 'w:moveFrom')) continue;
+      if (idx.ancestor(run, 'w:r') !== holder || idx.ancestor(run, 'w:del') || idx.ancestor(run, 'w:moveFrom')) continue;
       const objects = elements(run).filter((c) => OBJECT_NODES.has(c.name));
       if (!objects.length) continue;
       const rPr = firstChild(run, 'w:rPr');

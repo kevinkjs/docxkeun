@@ -978,6 +978,29 @@ describe('changing objects', () => {
     expect(attr(firstChild(frame, 'wp:positionH'), 'relativeFrom')).toBe('margin');
     expect(position(frame, 'V')).toEqual(['margin', String(6 * EMU)]);
     expect(firstChild(frame, 'wp:wrapTopAndBottom')).toBeDefined();
+
+    // One side moved while Word placed the other by percentage (in an mc:AlternateContent): the new
+    // position goes where the old one was, keeping positionH before positionV.
+    const wp14 = 'xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"';
+    const percent = (axis: 'H' | 'V', from: string) =>
+      `<mc:AlternateContent><mc:Choice Requires="wp14"><wp:position${axis} relativeFrom="${from}"><wp14:pctPos${axis}Offset>10000</wp14:pctPos${axis}Offset></wp:position${axis}></mc:Choice>` +
+      `<mc:Fallback><wp:position${axis} relativeFrom="${from}"><wp:posOffset>777240</wp:posOffset></wp:position${axis}></mc:Fallback></mc:AlternateContent>`;
+    const offset = (axis: 'H' | 'V', from: string) => `<wp:position${axis} relativeFrom="${from}"><wp:posOffset>${6 * EMU}</wp:posOffset></wp:position${axis}>`;
+    const wordAnchored = (positions: string) =>
+      `<w:p><w:r><w:drawing><wp:anchor ${wp14} distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251660000" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">` +
+      `<wp:simplePos x="0" y="0"/>${positions}<wp:extent cx="${200 * EMU}" cy="${80 * EMU}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="9" name="Text Box 9"/><wp:cNvGraphicFramePr/>` +
+      `<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">${textBoxShape('Word box')}</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>`;
+    const order = ['wp:simplePos', 'wp:positionH', 'mc:AlternateContent', 'wp:extent', 'wp:effectExtent', 'wp:wrapNone', 'wp:docPr', 'wp:cNvGraphicFramePr', 'a:graphic'];
+    const xOnly = await open(wordAnchored(offset('H', 'page') + percent('V', 'page')));
+    const [byX] = xOnly.editor.objects();
+    await xOnly.editor.placeObject(byX!, { x: 48 });
+    expect(elements(frameOf(byX!)).map((e) => e.name)).toEqual(order);
+    expect(position(frameOf(byX!), 'H')).toEqual(['page', String(48 * EMU)]);
+    const yOnly = await open(wordAnchored(percent('H', 'page') + offset('V', 'paragraph')));
+    const [byY] = yOnly.editor.objects();
+    await yOnly.editor.placeObject(byY!, { y: 48 });
+    expect(elements(frameOf(byY!)).map((e) => e.name)).toEqual(['wp:simplePos', 'mc:AlternateContent', 'wp:positionV', ...order.slice(3)]);
+    expect(position(frameOf(byY!), 'V')).toEqual(['paragraph', String(48 * EMU)]);
   });
 
   it('switches between inline and floating', async () => {
@@ -1258,6 +1281,33 @@ describe('rewriting text around objects', () => {
     const [ins] = findAll(theirs.doc.documentXml.root, 'w:ins');
     expect([attr(ins, 'w:author'), findAll(ins!, 'w:drawing').length]).toEqual(['Budi', 1]);
     expect(theirs.editor.revisions().map((r) => [r.kind, r.author])).toEqual([['insert', 'Budi']]);
+  });
+
+  it('keeps a picture in a rewritten text box paragraph, and leaves a box alone when its holder is rewritten', async () => {
+    const IN_BOX = `<w:p>${t('Before ')}${textBoxRunHolding(`<w:p>${t('Box ')}${pictureRun}${t('text')}</w:p>`)}${t('after')}</w:p>` + p('After');
+    const boxParagraph = (editor: DocxEditor) => editor.paragraphRange(editor.paragraphs()[1]!)!;
+    const boxText = (editor: DocxEditor) => paragraphText(editor.paragraphs()[1]!, { objects: true }).text;
+    for (const tracked of [false, true]) {
+      const { doc, editor } = await open(IN_BOX);
+      editor.trackChanges = tracked;
+      expect(boxText(editor)).toBe(`Box ${O}text`);
+      expect(editor.replaceRange(boxParagraph(editor), 'Kotak', undefined, { keepObjects: true })).toBe(1);
+      expect(boxText(editor)).toBe(`Kotak${O}`);
+      expect(editor.objects().map((o) => o.kind)).toEqual(['shape', 'picture']);
+      // The picture stays in the box, unmarked.
+      const box = findAll(doc.documentXml.root, 'w:txbxContent')[0]!;
+      expect(findAll(box, 'w:drawing')).toHaveLength(1);
+      expect(findAll(box, 'w:del').flatMap((d) => findAll(d, 'w:drawing'))).toEqual([]);
+      const again = new DocxEditor(await reopen(doc));
+      expect(again.objects().map((o) => o.kind)).toEqual(['shape', 'picture']);
+    }
+
+    // Rewriting the paragraph that holds the box keeps the box whole: its picture isn't taken out of it.
+    const { doc, editor } = await open(IN_BOX);
+    expect(editor.replaceRange(wholeFirst(editor), 'Sebelum', undefined, { keepObjects: true })).toBe(1);
+    expect(withObjects(editor)).toBe(`Sebelum${O}`);
+    expect(boxText(editor)).toBe(`Box ${O}text`);
+    expect(findAll(findAll(doc.documentXml.root, 'w:txbxContent')[0]!, 'w:drawing')).toHaveLength(1);
   });
 
   it('keeps the objects unmarked with Track Changes on', async () => {

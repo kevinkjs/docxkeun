@@ -347,8 +347,13 @@ function moveAnchor(anchor: XmlElement, place: FloatingPlacement): void {
       continue;
     }
     const relativeFrom = from ?? attr(positions(name)[0], 'relativeFrom') ?? fallback;
+    // The new position goes where the old one was: the other side may be in an mc:AlternateContent,
+    // which ANCHOR_ORDER can't place.
+    const at = anchor.children.findIndex((c) => c.type === 'element' && holds(c, name));
     anchor.children = anchor.children.filter((c) => !(c.type === 'element' && holds(c, name)));
-    insertOrdered(anchor, positionElement(axis, relativeFrom, offset), ANCHOR_ORDER);
+    const position = positionElement(axis, relativeFrom, offset);
+    if (at < 0) insertOrdered(anchor, position, ANCHOR_ORDER);
+    else anchor.children.splice(at, 0, position);
     // simplePos="1" would place it at wp:simplePos instead.
     anchor.attrs.simplePos = '0';
   }
