@@ -1376,6 +1376,140 @@ const addFootnoteOp = define({
   },
 });
 
+const chartType = z.enum(['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter']);
+const legendPosition = z.enum(['bottom', 'top', 'left', 'right', 'none']);
+const chartCategories = z.array(z.union([z.string(), z.number()])).min(1);
+const chartSeries = z.array(z.object({ name: z.string(), values: z.array(z.number().nullable()) })).min(1);
+
+const OBJECT_NAMES: Record<DocObject['kind'], string> = {
+  picture: 'a picture',
+  chart: 'a chart',
+  diagram: 'a SmartArt diagram',
+  shape: 'a shape',
+  textBox: 'a text box',
+  group: 'a group of shapes',
+};
+
+/** The chart called "object n", with the paragraph holding it. */
+function chartObject(ctx: DocContext, n: number): NumberedObject {
+  const all = numberedObjects(ctx.editor, ctx.entries);
+  const o = all.find((x) => x.n === n);
+  if (!o) throw new Error(`There is no object ${n}; the document has ${plural(all.length, 'object')}.`);
+  const c = o.image.content;
+  const hasText = c?.type === 'shape' && !!c.shape.text;
+  if (o.object.kind !== 'chart') throw new Error(`Object ${n} is ${hasText ? 'a text box' : OBJECT_NAMES[o.object.kind]}, not a chart.`);
+  return o;
+}
+
+const insertChartOp = define({
+  name: 'insert_chart',
+  title: 'Insert a chart',
+  description:
+    'Insert a chart into a paragraph, at its end or after some text. Give the categories (the labels along the bottom, or the slices of a pie) and one series per line or set of bars, each with a value for every category (null leaves a gap). ' +
+    'The data sits in an embedded workbook, so "Edit Data" in Word shows it. For a scatter chart the categories are the x values (numbers). Without a size it is 6 × 3.5 inches, shrunk to the page width.',
+  role: 'editor',
+  kind: 'add',
+  schema: z.object({
+    paragraph: paragraphNumber.describe('Paragraph to put it in'),
+    after: z.string().min(1).optional().describe('Put it right after this text in the paragraph (default: at the end)'),
+    type: chartType.describe('column (vertical bars), bar (horizontal), line, area, pie, doughnut or scatter'),
+    stacked: z.enum(['stacked', 'percent']).optional().describe('Stack the bars or areas (column, bar and area charts only)'),
+    title: z.string().optional().describe('Chart title'),
+    categories: chartCategories.describe('Category labels, one per value of each series'),
+    series: chartSeries.describe('The data: each series has a name and one value per category (null for none)'),
+    legend: legendPosition.optional().describe('Where the legend goes (default bottom; none hides it)'),
+    categoryTitle: z.string().optional().describe('Title of the category axis'),
+    valueTitle: z.string().optional().describe('Title of the value axis'),
+    width: z.number().min(1).max(2000).optional().describe('Width in points (72 = 1 inch); height follows the proportions'),
+    height: z.number().min(1).max(2000).optional().describe('Height in points'),
+    alt: z.string().optional().describe('Alternative text describing the chart, for accessibility'),
+  }),
+  async run(ctx, args) {
+    const at = insertionPoint(ctx, args.paragraph, args.after);
+    const axisTitles = { ...(args.categoryTitle ? { category: args.categoryTitle } : {}), ...(args.valueTitle ? { value: args.valueTitle } : {}) };
+    const drawing = await ctx.editor.insertChart(at, {
+      type: args.type,
+      ...(args.stacked ? { stacked: args.stacked } : {}),
+      ...(args.title ? { title: args.title } : {}),
+      categories: args.categories,
+      series: args.series,
+      ...(args.legend ? { legend: args.legend } : {}),
+      ...(Object.keys(axisTitles).length ? { axisTitles } : {}),
+      ...(args.width ? { width: args.width } : {}),
+      ...(args.height ? { height: args.height } : {}),
+      ...(args.alt ? { alt: args.alt } : {}),
+    });
+    const made = ctx.editor.objects().find((o) => o.drawing === drawing);
+    const info = made ? ctx.editor.chartInfo(made) : undefined;
+    const kind = info?.kind ?? args.type;
+    return `Inserted a ${kind} chart (object ${made?.n ?? '?'}) in paragraph ${args.paragraph}: ${plural(args.series.length, 'series', 'series')} × ${plural(args.categories.length, 'category', 'categories')}.`;
+  },
+});
+
+const readChartOp = define({
+  name: 'read_chart',
+  title: 'Read a chart',
+  description: 'Show a chart\'s type, titles, legend and data as a table (one line per series). Use the object number from read_document or list_objects.',
+  role: 'viewer',
+  kind: 'read',
+  schema: z.object({ object: z.number().int().min(1).describe('Object number of the chart') }),
+  run(ctx, args) {
+    const o = chartObject(ctx, args.object);
+    const info = ctx.editor.chartInfo(o.object);
+    const parts = [info.kind];
+    if (info.title) parts.push(`title ${quote(info.title)}`);
+    if (info.axisTitles.category) parts.push(`category axis ${quote(info.axisTitles.category)}`);
+    if (info.axisTitles.value) parts.push(`value axis ${quote(info.axisTitles.value)}`);
+    parts.push(info.legend === 'none' ? 'no legend' : `legend ${info.legend}`);
+    const source = info.source === 'embedded' ? 'Data in the embedded workbook.' : info.source === 'linked' ? 'Data linked to an outside file.' : 'No workbook behind the data.';
+    const table = [`| ${info.categories.join(' | ')} |`, ...info.series.map((s) => [s.name, ...s.values.map((v) => v ?? '')].join(' | '))];
+    return [`Chart (object ${o.n}, paragraph ${o.paragraph}): ${parts.join(', ')}. ${source}`, ...table].join('\n');
+  },
+});
+
+const updateChartOp = define({
+  name: 'update_chart',
+  title: 'Change a chart',
+  description:
+    'Change a chart\'s title, axis titles, legend or data, keeping its look. Giving categories or series replaces them all, so give the whole table (read_chart shows the current one). An empty title removes it. ' +
+    'Word does not track chart changes, so with Track Changes on this change is not tracked.',
+  role: 'editor',
+  kind: 'change',
+  schema: z.object({
+    object: z.number().int().min(1).describe('Object number of the chart'),
+    title: z.string().optional().describe('New title (empty removes it)'),
+    categories: chartCategories.optional().describe('All category labels'),
+    series: chartSeries.optional().describe('All series, each with a name and one value per category'),
+    legend: legendPosition.optional().describe('Where the legend goes (none hides it)'),
+    categoryTitle: z.string().optional().describe('Title of the category axis (empty removes it)'),
+    valueTitle: z.string().optional().describe('Title of the value axis (empty removes it)'),
+  }),
+  async run(ctx, args) {
+    const o = chartObject(ctx, args.object);
+    const axisTitles = { ...(args.categoryTitle !== undefined ? { category: args.categoryTitle } : {}), ...(args.valueTitle !== undefined ? { value: args.valueTitle } : {}) };
+    const changed = [
+      ...(args.title !== undefined ? ['title'] : []),
+      ...(args.categoryTitle !== undefined || args.valueTitle !== undefined ? ['axis titles'] : []),
+      ...(args.legend ? ['legend'] : []),
+      ...(args.categories || args.series ? ['data'] : []),
+    ];
+    if (!changed.length) throw new Error('Nothing to change: give a title, axis titles, legend, categories or series.');
+    const result = await ctx.editor.updateChart(o.object, {
+      ...(args.title !== undefined ? { title: args.title } : {}),
+      ...(Object.keys(axisTitles).length ? { axisTitles } : {}),
+      ...(args.legend ? { legend: args.legend } : {}),
+      ...(args.categories ? { categories: args.categories } : {}),
+      ...(args.series ? { series: args.series } : {}),
+    });
+    const notes = [`Changed the ${changed.join(', ')} of the chart (object ${o.n}, paragraph ${o.paragraph}).`];
+    if (result.source === 'linked' && (args.categories || args.series))
+      notes.push("This chart's data is linked to an outside file; only the chart's own copy changed, so refreshing it in Word brings the old numbers back.");
+    if (result.workbookHadMore) notes.push("The old workbook held more than the chart's data; it was replaced with the chart's data only.");
+    if (ctx.editor.trackChanges) notes.push("Track Changes can't record chart data changes, so this change is not tracked.");
+    return notes.join(' ');
+  },
+});
+
 // ---- where an operation works (for live views) ------------------------------------------------------
 
 /**
@@ -1448,6 +1582,7 @@ export const OPERATIONS: readonly Operation[] = [
   listRevisionsOp,
   readStories,
   listObjects,
+  readChartOp,
   addComment,
   replyToComment,
   resolveComment,
@@ -1471,6 +1606,8 @@ export const OPERATIONS: readonly Operation[] = [
   removeHeaderFooter,
   replaceStoryText,
   insertImageOp,
+  insertChartOp,
+  updateChartOp,
   addFootnoteOp,
   setTrackChanges,
   acceptRevisionsOp,

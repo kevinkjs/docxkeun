@@ -264,3 +264,106 @@ describe('live views', () => {
     expect(viewerParagraphs(entries, targetParagraphs(entries, 'edit_paragraph', { paragraph: 3, text: 'New text' }))).toEqual([2]);
   });
 });
+
+describe('chart tools', () => {
+  const revenue = {
+    path: 'charts.docx',
+    paragraph: 2,
+    type: 'column',
+    title: 'Revenue',
+    categories: ['Q1', 'Q2', 'Q3', 'Q4'],
+    series: [
+      { name: 'Revenue', values: [4.3, 2.5, 3.5, 4.5] },
+      { name: 'Costs', values: [2.4, 4.4, 1.8, 2.8] },
+    ],
+    categoryTitle: 'Quarter',
+    valueTitle: 'USD m',
+  };
+  const chartInfo = async (file: string, n = 1) => {
+    const editor = new DocxEditor(await reopen(file));
+    return editor.chartInfo(editor.objects().find((o) => o.n === n)!);
+  };
+
+  it('inserts a chart, lists it and reads it back as a table', async () => {
+    const file = await write(p('Intro') + p('Chart goes here'), 'charts.docx');
+    const client = await connect();
+    expect(await ok(client, 'insert_chart', revenue)).toBe('Inserted a clustered column chart (object 1) in paragraph 2: 2 series × 4 categories.\nSaved charts.docx.');
+    expect((await ok(client, 'list_objects', { path: 'charts.docx' })).split('\n')[0]).toMatch(/^\[2\] object 1: clustered column chart "Revenue"/);
+    expect(await ok(client, 'read_chart', { path: 'charts.docx', object: 1 })).toBe(
+      [
+        'Chart (object 1, paragraph 2): clustered column, title "Revenue", category axis "Quarter", value axis "USD m", legend bottom. Data in the embedded workbook.',
+        '| Q1 | Q2 | Q3 | Q4 |',
+        'Revenue | 4.3 | 2.5 | 3.5 | 4.5',
+        'Costs | 2.4 | 4.4 | 1.8 | 2.8',
+      ].join('\n'),
+    );
+    expect((await chartInfo(file)).series).toHaveLength(2);
+  });
+
+  it('shows a missing value as an empty cell', async () => {
+    await write(p('Intro') + p('Here'), 'charts.docx');
+    const client = await connect();
+    await ok(client, 'insert_chart', { ...revenue, type: 'line', series: [{ name: 'Costs', values: [1, null, 3, 4] }] });
+    expect((await ok(client, 'read_chart', { path: 'charts.docx', object: 1 })).split('\n').at(-1)).toBe('Costs | 1 |  | 3 | 4');
+  });
+
+  it('updates the data and titles, keeping the chart', async () => {
+    const file = await write(p('Intro') + p('Chart goes here'), 'charts.docx');
+    const client = await connect();
+    await ok(client, 'insert_chart', revenue);
+    const text = await ok(client, 'update_chart', {
+      path: 'charts.docx',
+      object: 1,
+      title: 'Sales',
+      series: [...revenue.series, { name: 'Profit', values: [1.9, -1.9, 1.7, 1.7] }],
+    });
+    expect(text).toContain('Changed the title, data of the chart (object 1, paragraph 2).');
+    const info = await chartInfo(file);
+    expect(info.title).toBe('Sales');
+    expect(info.series.map((s) => s.name)).toEqual(['Revenue', 'Costs', 'Profit']);
+    expect(info.axisTitles).toEqual({ category: 'Quarter', value: 'USD m' });
+    expect(info.source).toBe('embedded');
+  });
+
+  it('refuses data that does not fit, with the library message', async () => {
+    await write(p('Intro') + p('Chart goes here'), 'charts.docx');
+    const client = await connect();
+    const bad = await call(client, 'insert_chart', { ...revenue, series: [{ name: 'Costs', values: [1, 2, 3] }] });
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toContain('series "Costs" has 3 values for 4 categories');
+    await ok(client, 'insert_chart', revenue);
+    const bad2 = await call(client, 'update_chart', { path: 'charts.docx', object: 1, series: [{ name: 'Costs', values: [1, 2, 3] }] });
+    expect(bad2.isError).toBe(true);
+    expect(bad2.text).toContain('series "Costs" has 3 values for 4 categories');
+  });
+
+  it('says when an object is not a chart or does not exist, or nothing is asked', async () => {
+    await write(BOX, 'charts.docx');
+    const client = await connect();
+    expect((await call(client, 'read_chart', { path: 'charts.docx', object: 1 })).text).toContain('Object 1 is a text box, not a chart.');
+    expect((await call(client, 'update_chart', { path: 'charts.docx', object: 1, title: 'X' })).text).toContain('Object 1 is a text box, not a chart.');
+    expect((await call(client, 'read_chart', { path: 'charts.docx', object: 5 })).text).toContain('There is no object 5');
+    await ok(client, 'insert_chart', { ...revenue, paragraph: 1 });
+    expect((await call(client, 'update_chart', { path: 'charts.docx', object: 1 })).text).toContain('Nothing to change');
+  });
+
+  it('rejects wrong types and sizes from JSON callers', async () => {
+    await write(p('Intro') + p('Here'), 'charts.docx');
+    const client = await connect();
+    expect((await call(client, 'insert_chart', { ...revenue, width: '300' })).isError).toBe(true);
+    expect((await call(client, 'insert_chart', { ...revenue, height: 5000 })).isError).toBe(true);
+    expect((await call(client, 'insert_chart', { ...revenue, categories: [] })).isError).toBe(true);
+    expect((await call(client, 'insert_chart', { ...revenue, series: [{ name: 'A', values: ['1', '2', '3', '4'] }] })).isError).toBe(true);
+  });
+
+  it('inserts as a tracked change, but chart data changes are never tracked', async () => {
+    const file = await write(p('Intro') + p('Chart goes here'), 'charts.docx');
+    const client = await connect();
+    await ok(client, 'set_track_changes', { path: 'charts.docx', on: true });
+    await ok(client, 'insert_chart', revenue);
+    expect(await ok(client, 'list_revisions', { path: 'charts.docx' })).toMatch(/insert/i);
+    const text = await ok(client, 'update_chart', { path: 'charts.docx', object: 1, title: 'Sales' });
+    expect(text).toContain("Track Changes can't record chart data changes, so this change is not tracked.");
+    expect((await chartInfo(file)).title).toBe('Sales');
+  });
+});

@@ -93,7 +93,7 @@ describe('tools and roles', () => {
   it('offers each role only the tools it may use', async () => {
     const names = async (role: DocxMcpOptions['role']) => (await (await connect({ role })).listTools()).tools.map((t) => t.name).sort();
     const viewer = await names('viewer');
-    expect(viewer).toEqual(['export_pdf', 'find_text', 'get_document_info', 'list_comments', 'list_documents', 'list_links', 'list_objects', 'list_revisions', 'read_document', 'read_headers_footers']);
+    expect(viewer).toEqual(['export_pdf', 'find_text', 'get_document_info', 'list_comments', 'list_documents', 'list_links', 'list_objects', 'list_revisions', 'read_chart', 'read_document', 'read_headers_footers']);
     const commenter = await names('commenter');
     expect(commenter).toEqual([...viewer, 'add_comment', 'delete_comment', 'reply_to_comment', 'resolve_comment'].sort());
     const editor = await names('editor');
