@@ -266,6 +266,30 @@ await editor.updateChart(chart, { series: [...table.series, { name: '2027', valu
 editor.resizeObject(chart, { width: 400 });                             // points; the height keeps the proportions
 ```
 
+### Creating a document
+
+`createDocx()` starts a blank document: A4 with 2.54 cm margins, Calibri 11 pt, and Word's Normal, Heading 1, Heading 2, Hyperlink and Table Grid styles. Every editing call above works on it, in Node or the browser, with no viewer needed.
+
+```ts
+import { writeFile } from 'node:fs/promises';
+import { createDocx } from 'docxkeun';
+import { DocxEditor } from 'docxkeun/editor';
+
+const doc = await createDocx();
+const editor = new DocxEditor(doc);
+
+const title = editor.paragraphs()[0]!.el;              // a new document starts with one empty paragraph
+editor.appendText(title, 'Quarterly report');
+editor.setParagraphStyle(title, 'Heading1');
+
+editor.insertParagraph('end', 'Sales grew in every quarter, helped by:');
+const reasons = ['A new distributor in Surabaya', 'The online store'].map((text) => editor.insertParagraph('end', text));
+await editor.setList(reasons, { format: 'bullet' });
+editor.insertTable('end', [['Quarter', 'Sales'], ['Q1', '120'], ['Q2', '150']], { header: true, widths: [1, 2] });
+
+await writeFile('report.docx', await doc.save());
+```
+
 ### PDF
 
 ```ts
