@@ -42,7 +42,7 @@ export interface ChartUpdate {
   workbookRewritten: boolean;
   /**
    * The old workbook held more than the chart's table (other sheets or cells), which is gone now;
-   * also true when an old embedded object that can't be read (an .xls) was replaced.
+   * also true when a workbook that can't be read (an old .xls object, broken bytes) was replaced.
    */
   workbookHadMore: boolean;
 }

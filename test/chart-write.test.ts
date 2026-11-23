@@ -1,6 +1,6 @@
 /** Writing charts: the embedded workbook, and building chart parts. */
 import { describe, expect, it } from 'vitest';
-import { chartRanges, columnName, workbookFor, workbookHasMore } from '../src/charts/workbook.js';
+import { chartRanges, columnName, isWorkbook, workbookFor, workbookHasMore } from '../src/charts/workbook.js';
 import { parseXml } from '../src/xml/parser.js';
 import { attr, childPath, cloneElement, el, elements, findAll, firstChild, serializeNode, text, textContent, walk, type XmlElement } from '../src/xml/index.js';
 import { readChart, type Grouping, type PlotType } from '../src/charts/index.js';
@@ -14,7 +14,7 @@ import {
   type NewChart,
   type NewChartType,
 } from '../src/charts/write.js';
-import { readZip } from '../src/zip/zip.js';
+import { readZip, writeZip } from '../src/zip/zip.js';
 
 describe('chart workbook', () => {
   it('names columns and chart ranges', () => {
@@ -45,6 +45,12 @@ describe('chart workbook', () => {
     expect(await workbookHasMore(bytes, 2, 1)).toBe(false);
     expect(await workbookHasMore(await workbookFor({ categories: ['a', 'b', 'c'], series: [{ name: 's', values: [1, 2, 3] }] }), 2, 1)).toBe(true);
     expect(await workbookHasMore(new Uint8Array([1, 2, 3]), 2, 1)).toBe(false);
+  });
+
+  it('isWorkbook tells a workbook package from bytes that are not one', async () => {
+    expect(isWorkbook(await workbookFor({ categories: ['Q1'], series: [{ name: 's', values: [1] }] }))).toBe(true);
+    expect(isWorkbook(new Uint8Array([1, 2, 3]))).toBe(false);
+    expect(isWorkbook(await writeZip([{ name: 'word/document.xml', data: new TextEncoder().encode('<w:document/>') }]))).toBe(false);
   });
 });
 

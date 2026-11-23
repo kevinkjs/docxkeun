@@ -123,6 +123,15 @@ function columnIndex(letters: string): number {
   return n - 1;
 }
 
+/** Whether bytes are a workbook package that can be read: a zip with a workbook or worksheet part. */
+export function isWorkbook(bytes: Uint8Array): boolean {
+  try {
+    return readZip(bytes).some((e) => e.name === 'xl/workbook.xml' || /^xl\/worksheets\/[^/]+\.xml$/.test(e.name));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * True when the workbook holds more than the chart's own table: a second worksheet, or a
  * non-empty cell outside A1 to the last series column and category row + 1. False when unreadable.

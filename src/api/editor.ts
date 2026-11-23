@@ -5,7 +5,7 @@
  */
 import { CONTENT_TYPE, IMAGE_CONTENT_TYPES, REL } from '../opc/index.js';
 import { newChartSpace, patchChartSpace, readChartTable, validateChartData, type ChartChanges, type NewChart } from '../charts/write.js';
-import { workbookFor, workbookHasMore } from '../charts/workbook.js';
+import { isWorkbook, workbookFor, workbookHasMore } from '../charts/workbook.js';
 import { imageInfo } from '../images/size.js';
 import { hasEvenPages, hasFirstPage, headerParagraphs, headerText, referencesOf, sectionProperties, SECTPR_ORDER, textWidth, type HeaderFooterInfo, type HeaderFooterKind, type HeaderFooterOptions, type HeaderFooterType } from './headers.js';
 import type { DocParagraph, Block, Inline } from '../model/content.js';
@@ -802,9 +802,11 @@ export class DocxEditor {
       const { type, stacked } = chartKind(chartSpace);
       validateChartData(type, stacked, categories, series);
       if (data.source !== 'linked') {
-        if (data.workbook) result.workbookHadMore = await workbookHasMore(await pkg.getBytes(data.workbook), current.categories.length, current.series.length);
-        // An old embedded object (an .xls) can't be read: it may have held more, so say so.
-        else if (data.source === 'embedded') result.workbookHadMore = true;
+        // What a workbook that can't be read (an old .xls object, broken bytes) held is unknown: it may have held more.
+        if (data.workbook) {
+          const old = await pkg.getBytes(data.workbook);
+          result.workbookHadMore = !isWorkbook(old) || (await workbookHasMore(old, current.categories.length, current.series.length));
+        } else if (data.source === 'embedded') result.workbookHadMore = true;
         workbook = await workbookFor({ categories, series });
       }
     }

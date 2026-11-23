@@ -193,6 +193,17 @@ describe('charts in the editor', () => {
     expect(await editor.updateChart(obj, { series: [{ name: 'Revenue', values: [1, 2] }] })).toEqual({ source: 'embedded', workbookRewritten: true, workbookHadMore: true });
   });
 
+  it('says a workbook it cannot read may have held more', async () => {
+    const { doc, editor } = await open();
+    await editor.insertChart(endOf(editor), COLUMNS);
+    const obj = editor.objects()[0]!;
+    doc.pkg.setBytes(WORKBOOK1, new Uint8Array([0x50, 0x4b, 1, 2, 3]));
+    // Not overwritten yet: nothing to report.
+    expect(await editor.updateChart(obj, { title: 'Sales' })).toEqual({ source: 'embedded', workbookRewritten: false, workbookHadMore: false });
+    expect(await editor.updateChart(obj, { series: [{ name: 'Revenue', values: [1, 2, 3, 4] }] })).toEqual({ source: 'embedded', workbookRewritten: true, workbookHadMore: true });
+    expect(await sheetCells(doc, WORKBOOK1)).toMatchObject({ B1: 'Revenue', B2: '1' });
+  });
+
   it('checks new data against the chart type', async () => {
     const { editor } = await open(p('Pie: ') + p('Scatter: '));
     await editor.insertChart(endOf(editor, 0), { type: 'pie', categories: QUARTERS, series: [TWO[0]!] });
