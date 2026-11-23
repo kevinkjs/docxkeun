@@ -1244,10 +1244,29 @@ const removeHeaderFooter = define({
 
 // ---- pictures, charts, equations --------------------------------------------------------------------
 
-function describeObject(ctx: DocContext, image: ImageInline): string {
+/** What x and y of a floating object count from, in edit_object's words. */
+const REFERENCES: Record<string, string> = { column: 'paragraph', paragraph: 'paragraph', margin: 'margin', page: 'page' };
+
+/** Where a floating object sits and how text wraps around it: "36 pt right and 12 pt down from the margin, square wrap". */
+function placementText(float: NonNullable<ImageInline['float']>): string {
+  const pt = (n: number) => Math.round(n * 10) / 10;
+  const from = (relative: string) => REFERENCES[relative] ?? relative.replace(/[A-Z]/g, (c) => ` ${c.toLowerCase()}`);
+  const h = float.hAlign ? `aligned ${float.hAlign} to the ${from(float.hRelative)}` : `${pt(float.hOffset)} pt right`;
+  const v = float.vAlign ? `aligned ${float.vAlign} to the ${from(float.vRelative)}` : `${pt(float.vOffset)} pt down`;
+  let where: string;
+  if (!float.hAlign && !float.vAlign && from(float.hRelative) === from(float.vRelative)) where = `${h} and ${v} from the ${from(float.hRelative)}`;
+  else where = `${float.hAlign ? h : `${h} of the ${from(float.hRelative)}`}, ${float.vAlign ? v : `${v} from the ${from(float.vRelative)}`}`;
+  const wrap =
+    float.wrap === 'none' ? (float.behindDoc ? 'behind text' : 'in front of text') : float.wrap === 'topAndBottom' ? 'top and bottom wrap' : `${float.wrap} wrap`;
+  return `${where}, ${wrap}`;
+}
+
+/** An object as read_document and list_objects show it; with `placement`, a floating one says where it sits. */
+function describeObject(ctx: DocContext, image: ImageInline, options: { placement?: boolean } = {}): string {
   const c = image.content;
   const alt = image.alt ? ` "${image.alt}"` : '';
-  const size = `${Math.round(image.width)}×${Math.round(image.height)}pt, ${image.float ? 'floating' : 'inline'}`;
+  const place = image.float ? (options.placement ? `floating, ${placementText(image.float)}` : 'floating') : 'inline';
+  const size = `${Math.round(image.width)}×${Math.round(image.height)}pt, ${place}`;
   if (!c || c.type === 'picture') return `picture${alt} (${size})`;
   if (c.type === 'chart') {
     const xml = ctx.doc.xmlSync(c.part)?.root;
@@ -1313,8 +1332,8 @@ export function numberedObjects(editor: DocxEditor, entries: ReadonlyArray<Parag
 }
 
 /** "object 2: clustered column chart "Revenue": … (432×252pt, inline)" */
-function objectLabel(ctx: DocContext, o: NumberedObject): string {
-  return `object ${o.n}: ${describeObject(ctx, o.image)}`;
+function objectLabel(ctx: DocContext, o: NumberedObject, options: { placement?: boolean } = {}): string {
+  return `object ${o.n}: ${describeObject(ctx, o.image, options)}`;
 }
 
 const listObjects = define({
@@ -1322,7 +1341,7 @@ const listObjects = define({
   title: 'List pictures, charts, shapes and equations',
   description:
     'List the pictures, charts (with their data), SmartArt, shapes, text boxes and equations in a document. Each line starts with the number of the paragraph holding it; ' +
-    'pictures, charts, shapes and text boxes have an object number ("object 2") and say whether they sit in the text (inline) or float; edit_object and delete_object use those numbers.',
+    'pictures, charts, shapes and text boxes have an object number ("object 2") and say whether they sit in the text (inline) or float, and where a floating one sits and how text wraps around it; edit_object and delete_object use those numbers.',
   role: 'viewer',
   kind: 'read',
   schema: z.object({}),
@@ -1332,8 +1351,8 @@ const listObjects = define({
     for (const e of ctx.entries) {
       for (const i of e.para.inlines) {
         const o = i.kind === 'image' ? numbered.get(i) : undefined;
-        if (o) out.push(`[${e.n}] ${objectLabel(ctx, o)}`);
-        else if (i.kind === 'image') out.push(`[${e.n}] ${describeObject(ctx, i)}`);
+        if (o) out.push(`[${e.n}] ${objectLabel(ctx, o, { placement: true })}`);
+        else if (i.kind === 'image') out.push(`[${e.n}] ${describeObject(ctx, i, { placement: true })}`);
         else if (i.kind === 'math') out.push(`[${e.n}] ${i.display ? 'display ' : ''}equation: ${i.text}`);
       }
     }
@@ -1580,7 +1599,7 @@ function splitLines(segments: Segment[]): Segment[][] {
 }
 
 const FLOATING_ONLY = 'x, y, from and wrap only apply to floating shapes; leave them out for an inline one.';
-const NEEDS_XY = 'A floating object needs x and y (points from the margin, page or paragraph).';
+const NEEDS_XY = 'A floating object needs x and y (points from the margin, page or paragraph); only one that already floats can leave them out.';
 
 const insertShapeOp = define({
   name: 'insert_shape',
@@ -1657,7 +1676,7 @@ const editObjectOp = define({
   title: 'Resize, move or describe an object',
   description:
     'Change a picture, chart, shape or text box (object numbers from read_document or list_objects): its size (width and/or height in points; one alone keeps the proportions), ' +
-    'its place (`paragraph` moves it to another paragraph, after some text if you give `after`; `placement` makes it floating or inline; x, y, from and wrap position a floating one) and its alt text. ' +
+    'its place (`paragraph` moves it to another paragraph, after some text if you give `after`; `placement` makes it floating or inline; x, y, from and wrap position a floating one, and one that already floats keeps what you leave out, so `wrap` alone changes only the wrap) and its alt text. ' +
     'Word does not track size, floating position, wrap or alt text, so with Track Changes on those apply directly (and are refused where only tracked changes are allowed); moving and switching inline/floating are tracked. Moving a text box carries its paragraphs. Paragraph numbers between the old and new place shift.',
   role: 'editor',
   kind: 'change',
@@ -1668,10 +1687,10 @@ const editObjectOp = define({
     paragraph: paragraphNumber.optional().describe('Move it to this paragraph'),
     after: z.string().min(1).optional().describe('With `paragraph`: put it right after this text (default: at the end)'),
     placement: placementFields.placement.optional(),
-    x: placementFields.x.optional(),
-    y: placementFields.y.optional(),
-    from: placementFields.from.optional(),
-    wrap: placementFields.wrap.optional(),
+    x: placementFields.x.optional().describe('Floating: points to the right of the `from` reference (72 = 1 inch). An object that already floats keeps its own when this is left out'),
+    y: placementFields.y.optional().describe('Floating: points down from the `from` reference. An object that already floats keeps its own when this is left out'),
+    from: placementFields.from.optional().describe('Floating: what x and y count from (left out: an object that already floats keeps its own; otherwise the paragraph)'),
+    wrap: placementFields.wrap.optional().describe('Floating: how text flows around it (left out: an object that already floats keeps its own; otherwise square)'),
     alt: z.string().optional().describe('Alternative text for accessibility (empty removes it)'),
   }),
   async run(ctx, args) {
@@ -1684,7 +1703,8 @@ const editObjectOp = define({
     if (args.after !== undefined && !move) throw new Error('`after` goes with `paragraph`: say which paragraph to move the object to.');
     if (args.placement === 'inline' && geometry) throw new Error(FLOATING_ONLY);
     const floating = args.placement !== 'inline' && place;
-    if (floating && (args.x === undefined || args.y === undefined)) throw new Error(NEEDS_XY);
+    // An object that already floats keeps the offsets, reference and wrap left out.
+    if (floating && !o.object.floating && (args.x === undefined || args.y === undefined)) throw new Error(NEEDS_XY);
     if (ctx.editor.trackChanges && move && place) throw new Error('With Track Changes on, move the object and change how it sits in separate calls.');
     const name = objectName(ctx, o);
     const changed: string[] = [];
@@ -1705,10 +1725,24 @@ const editObjectOp = define({
         o.object,
         args.placement === 'inline'
           ? { inline: true }
-          : { x: args.x!, y: args.y!, ...(args.from ? { from: args.from } : {}), ...(args.wrap ? { wrap: WRAPS[args.wrap] } : {}) },
+          : {
+              ...(args.x !== undefined ? { x: args.x } : {}),
+              ...(args.y !== undefined ? { y: args.y } : {}),
+              ...(args.from ? { from: args.from } : {}),
+              ...(args.wrap ? { wrap: WRAPS[args.wrap] } : {}),
+            },
       );
-      changed.push(args.placement === 'inline' ? 'now inline' : 'position');
-      if (floating && o.object.floating) untracked.push('position');
+      const moved = args.x !== undefined || args.y !== undefined || args.from !== undefined;
+      if (args.placement === 'inline') changed.push('now inline');
+      else if (!o.object.floating) changed.push('position');
+      else {
+        // Already floating: Word doesn't track a new position or wrap.
+        if (moved) changed.push('position');
+        if (args.wrap) changed.push(`wrap ${args.wrap}`);
+        if (moved) untracked.push('position');
+        if (args.wrap) untracked.push('wrap');
+        if (!moved && !args.wrap) changed.push('position');
+      }
     }
     let to = o.paragraph;
     if (move) {

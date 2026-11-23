@@ -762,6 +762,55 @@ describe('changing objects', () => {
     expect(again.objects()).toMatchObject([{ kind: 'shape', floating: true, width: 100, height: 40 }]);
   });
 
+  it('re-wraps or re-references a floating object without a new position', async () => {
+    const { doc, editor } = await open(p('Box: ') + p('After') + `<w:p>${picture(3)}</w:p>`);
+    await editor.insertShape(endOf(editor, 0), { shape: 'textBox', text: 'Boxed', place: { x: 36, y: 12, from: 'margin' } });
+    const [box, pic] = editor.objects();
+    const anchor = frameOf(box!);
+    const wraps = () => [elements(anchor).filter((e) => e.name.startsWith('wp:wrap')).map((e) => e.name), attr(anchor, 'behindDoc')];
+    await editor.placeObject(box!, { wrap: 'behind' });
+    expect(position(anchor, 'H')).toEqual(['margin', String(36 * EMU)]);
+    expect(position(anchor, 'V')).toEqual(['margin', String(12 * EMU)]);
+    expect(wraps()).toEqual([['wp:wrapNone'], '1']);
+    expect(elements(anchor).map((e) => e.name)).toEqual(ANCHOR_CHILDREN.map((n) => (n === 'wp:wrapSquare' ? 'wp:wrapNone' : n)));
+    // One side alone moves that side only; a reference alone keeps both offsets.
+    await editor.placeObject(box!, { y: 24 });
+    expect([position(anchor, 'H'), position(anchor, 'V')]).toEqual([
+      ['margin', String(36 * EMU)],
+      ['margin', String(24 * EMU)],
+    ]);
+    await editor.placeObject(box!, { from: 'page' });
+    expect([position(anchor, 'H'), position(anchor, 'V')]).toEqual([
+      ['page', String(36 * EMU)],
+      ['page', String(24 * EMU)],
+    ]);
+    expect(wraps()).toEqual([['wp:wrapNone'], '1']);
+    expect(editor.revisions()).toEqual([]);
+    expect(new DocxEditor(await reopen(doc)).objects()[0]).toMatchObject({ kind: 'textBox', floating: true });
+
+    // An inline object, or a new shape, still needs both x and y to float.
+    const needsXY = new EditError('A floating object needs x and y in points');
+    await expect(editor.placeObject(pic!, { wrap: 'square' })).rejects.toThrow(needsXY);
+    await expect(editor.placeObject(pic!, { x: 5 })).rejects.toThrow(needsXY);
+    await expect(editor.insertShape(endOf(editor, 2), { shape: 'rect', place: { wrap: 'behind' } })).rejects.toThrow(needsXY);
+    expect(editor.objects().map((o) => o.floating)).toEqual([true, false]);
+
+    // A position aligned rather than offset keeps its alignment under a new reference.
+    const alignedPicture = pictureDrawing(4).replace(
+      /<wp:inline[^>]*>/,
+      '<wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251659264" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>' +
+        `<wp:positionH relativeFrom="page"><wp:align>center</wp:align></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>${6 * EMU}</wp:posOffset></wp:positionV>`,
+    ).replace('<wp:effectExtent l="0" t="0" r="0" b="0"/>', '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapSquare wrapText="bothSides"/>').replace('</wp:inline>', '</wp:anchor>');
+    const aligned = await open(`<w:p><w:r>${alignedPicture}</w:r></w:p>`);
+    const [floating] = aligned.editor.objects();
+    await aligned.editor.placeObject(floating!, { from: 'margin', wrap: 'topAndBottom' });
+    const frame = frameOf(floating!);
+    expect(childPath(frame, 'wp:positionH', 'wp:align')).toBeDefined();
+    expect(attr(firstChild(frame, 'wp:positionH'), 'relativeFrom')).toBe('margin');
+    expect(position(frame, 'V')).toEqual(['margin', String(6 * EMU)]);
+    expect(firstChild(frame, 'wp:wrapTopAndBottom')).toBeDefined();
+  });
+
   it('switches between inline and floating', async () => {
     const { doc, editor } = await open(`<w:p><w:r><w:t xml:space="preserve">Logo: </w:t></w:r>${picture(3)}</w:p>`);
     const [pic] = editor.objects();

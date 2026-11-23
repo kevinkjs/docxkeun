@@ -1064,18 +1064,18 @@ export class DocxEditor {
 
   /**
    * Place an object inline, or floating at a position with a wrap style. Moving or re-wrapping a
-   * floating object (without `from` or `wrap` it keeps its own) isn't tracked by Word, so it applies
+   * floating object (what `place` leaves out of x, y, `from` and `wrap`, it keeps) isn't tracked by Word, so it applies
    * directly and is refused where only tracked changes are allowed. Switching between inline and
    * floating is tracked like a move when Track Changes is on: the original is marked deleted and a
    * copy inserted right after it.
    */
   async placeObject(obj: DocObject, place: ObjectPlacement): Promise<void> {
     if (obj.vml) throw new EditError(OLD_VML);
-    checkPlacement(place);
+    const floating = frameOf(obj.drawing).name === 'wp:anchor';
+    checkPlacement(place, floating);
     const idx = this.index();
     const range = this.objectRange(obj, idx);
     const node = range.start.node;
-    const floating = frameOf(obj.drawing).name === 'wp:anchor';
     const relativeHeight = () => nextRelativeHeight([this.doc.documentXml.root, this.root]);
     if ('inline' in place && !floating) return;
     if (!('inline' in place) && floating) {

@@ -246,7 +246,7 @@ describe('object numbers', () => {
     const listed = await ok(client, 'list_objects', { path: 'objects.docx' });
     expect(listed.split('\n')).toEqual([
       '[2] object 1: text box "Inside the box" (200×80pt, inline)',
-      '[5] object 2: shape (rect) (100×50pt, floating)',
+      '[5] object 2: shape (rect) (100×50pt, floating, 0 pt right and 0 pt down from the paragraph, square wrap)',
       '[5] object 3: clustered column chart "Revenue": series Sales (Q1 4.3, Q2 2.5) (432×252pt, inline)',
     ]);
     const read = await ok(client, 'read_document', { path: 'objects.docx' });
@@ -466,7 +466,7 @@ describe('shape and object tools', () => {
     await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'rectangle', width: 100, height: 50 });
     expect(await call(client, 'edit_object', { path: NAME, object: 1 })).toMatchObject({ isError: true, text: expect.stringContaining('Say what to change: size, place or alt text.') });
     const text = await ok(client, 'edit_object', { path: NAME, object: 1, width: 200, height: 80, alt: 'A box', placement: 'floating', x: 10, y: 20, from: 'margin', wrap: 'behind text' });
-    expect(text).toContain('Changed the shape (object 1, paragraph 2): size 200 × 80 pt, alt text, position.');
+    expect(text).toContain('Changed the shape (object 1, paragraph 2): size 200 × 80 pt, alt text, position, wrap behind text.');
     const o = (await open()).objects()[0]!;
     expect([o.width, o.height, o.alt]).toEqual([200, 80, 'A box']);
     expect(await ok(client, 'edit_object', { path: NAME, object: 1, placement: 'inline' })).toContain('now inline');
@@ -474,6 +474,28 @@ describe('shape and object tools', () => {
     expect((await call(client, 'edit_object', { path: NAME, object: 1, placement: 'floating' })).text).toContain('needs x and y');
     expect((await call(client, 'edit_object', { path: NAME, object: 9, width: 5 })).text).toContain('There is no object 9');
     expect((await call(client, 'edit_object', { path: NAME, object: 1, width: 5000 })).isError).toBe(true);
+  });
+
+  it('re-wraps a floating object without x and y, and list_objects says where it sits', async () => {
+    await write(p('Intro') + p('Here'), NAME);
+    const client = await connect();
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'rectangle', width: 100, height: 50, x: 36, y: 12, from: 'margin' });
+    const listed = async () => ok(client, 'list_objects', { path: NAME });
+    expect(await listed()).toBe('[2] object 1: shape (rect) (100×50pt, floating, 36 pt right and 12 pt down from the margin, square wrap)');
+    expect(await ok(client, 'edit_object', { path: NAME, object: 1, wrap: 'behind text' })).toContain('Changed the shape (object 1, paragraph 2): wrap behind text.');
+    expect(await listed()).toBe('[2] object 1: shape (rect) (100×50pt, floating, 36 pt right and 12 pt down from the margin, behind text)');
+    expect(await ok(client, 'edit_object', { path: NAME, object: 1, from: 'page', wrap: 'top and bottom' })).toContain('Changed the shape (object 1, paragraph 2): position, wrap top and bottom.');
+    expect(await listed()).toBe('[2] object 1: shape (rect) (100×50pt, floating, 36 pt right and 12 pt down from the page, top and bottom wrap)');
+    await ok(client, 'edit_object', { path: NAME, object: 1, y: -6 });
+    expect(await listed()).toContain('36 pt right and -6 pt down from the page');
+    // read_document keeps its short form.
+    expect(paragraphLines(await ok(client, 'read_document', { path: NAME }))[1]).toBe('[2] Here {object 1: shape (rect) (100×50pt, floating)}');
+    // An inline object still needs both to float.
+    await ok(client, 'edit_object', { path: NAME, object: 1, placement: 'inline' });
+    for (const args of [{ wrap: 'square' }, { x: 5 }, { placement: 'floating', from: 'page' }]) {
+      expect((await call(client, 'edit_object', { path: NAME, object: 1, ...args })).text).toContain('A floating object needs x and y');
+    }
+    expect((await open()).objects()[0]!.floating).toBe(false);
   });
 
   it('moves an object to another paragraph, after some text', async () => {

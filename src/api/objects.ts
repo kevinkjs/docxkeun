@@ -54,9 +54,10 @@ export type ShapeKind =
 /**
  * Inline in the text, or floating at (x, y) points from the paragraph (default), margin or page,
  * with text wrapped square around it (default), above and below it, or not at all (in front of or
- * behind the text).
+ * behind the text). An object that already floats keeps what is left out (its offsets, reference
+ * and wrap); a new floating object, or one that was inline, needs x and y.
  */
-export type ObjectPlacement = { inline: true } | { x: number; y: number; from?: 'margin' | 'page' | 'paragraph'; wrap?: 'square' | 'topAndBottom' | 'inFront' | 'behind' };
+export type ObjectPlacement = { inline: true } | { x?: number; y?: number; from?: 'margin' | 'page' | 'paragraph'; wrap?: 'square' | 'topAndBottom' | 'inFront' | 'behind' };
 export type FloatingPlacement = Exclude<ObjectPlacement, { inline: true }>;
 
 /** A new shape or text box (sizes in points; colours RRGGBB or 'none'). */
@@ -168,10 +169,15 @@ export function inlineFrame(id: number, name: string, widthPt: number, heightPt:
 const RELATIVE_FROM: Record<'margin' | 'page' | 'paragraph', [string, string]> = { margin: ['margin', 'margin'], page: ['page', 'page'], paragraph: ['column', 'paragraph'] };
 const WRAPS = ['square', 'topAndBottom', 'inFront', 'behind'];
 
-/** Check a placement's position, reference and wrap style (EditError when wrong). */
-export function checkPlacement(place: ObjectPlacement): void {
+/**
+ * Check a placement's position, reference and wrap style (EditError when wrong). x and y may be left
+ * out only for an object that already floats (`floating`), which keeps its own.
+ */
+export function checkPlacement(place: ObjectPlacement, floating = false): void {
   if ('inline' in place) return;
-  if (!Number.isFinite(place.x) || !Number.isFinite(place.y)) throw new EditError('A floating object needs x and y in points');
+  for (const side of [place.x, place.y]) {
+    if (side === undefined ? !floating : !Number.isFinite(side)) throw new EditError('A floating object needs x and y in points');
+  }
   if (place.from !== undefined && !Object.hasOwn(RELATIVE_FROM, place.from)) throw new EditError(`Place an object from the margin, page or paragraph, not "${place.from}"`);
   if (place.wrap !== undefined && !WRAPS.includes(place.wrap)) throw new EditError(`Wrap text square, topAndBottom, inFront or behind, not "${place.wrap}"`);
 }
@@ -215,8 +221,8 @@ function anchorOf(parts: FrameParts, place: FloatingPlacement, relativeHeight: n
   const frame = { ...attrs, distT: 0, distB: 0, distL: 114300, distR: 114300, simplePos: 0, relativeHeight, behindDoc: wrap === 'behind' ? 1 : 0, locked: 0, layoutInCell: 1, allowOverlap: 1 };
   return el('wp:anchor', frame, [
     el('wp:simplePos', { x: 0, y: 0 }),
-    positionElement('H', h, place.x),
-    positionElement('V', v, place.y),
+    positionElement('H', h, place.x!),
+    positionElement('V', v, place.y!),
     parts.extent,
     ...optional(parts.effectExtent),
     wrapElement(wrap),
@@ -319,21 +325,32 @@ export function resizeFrame(frame: XmlElement, widthPt: number, heightPt: number
 }
 
 /**
- * Move a floating frame to `place`. Without `from` or `wrap` it keeps its own; a position Word
- * stored as a percentage (wp14, inside mc:AlternateContent) is replaced too.
+ * Move a floating frame to `place`. Without `from` or `wrap` it keeps its own; a side without an
+ * offset (x or y) keeps its own offset or alignment, counted from `from` when that is given. A
+ * position Word stored as a percentage (wp14, inside mc:AlternateContent) is replaced when a new
+ * offset is given.
  */
 function moveAnchor(anchor: XmlElement, place: FloatingPlacement): void {
   const holds = (c: XmlElement, name: string) => c.name === name || (c.name === 'mc:AlternateContent' && findAll(c, name).length > 0);
-  const relativeFrom = (name: string) => {
-    const holder = elements(anchor).find((c) => holds(c, name));
-    return attr(holder?.name === name ? holder : holder && findAll(holder, name)[0], 'relativeFrom');
-  };
-  const [h, v] = place.from ? RELATIVE_FROM[place.from] : [relativeFrom('wp:positionH') ?? 'column', relativeFrom('wp:positionV') ?? 'paragraph'];
-  anchor.children = anchor.children.filter((c) => !(c.type === 'element' && (holds(c, 'wp:positionH') || holds(c, 'wp:positionV'))));
-  insertOrdered(anchor, positionElement('H', h, place.x), ANCHOR_ORDER);
-  insertOrdered(anchor, positionElement('V', v, place.y), ANCHOR_ORDER);
-  // simplePos="1" would place it at wp:simplePos instead.
-  anchor.attrs.simplePos = '0';
+  // The frame's own position elements: its child, or the ones in an mc:AlternateContent child.
+  const positions = (name: string) => elements(anchor).flatMap((c) => (c.name === name ? [c] : c.name === 'mc:AlternateContent' ? findAll(c, name) : []));
+  const sides = [
+    ['H', place.x, 0, 'column'],
+    ['V', place.y, 1, 'paragraph'],
+  ] as const;
+  for (const [axis, offset, i, fallback] of sides) {
+    const name = `wp:position${axis}`;
+    const from = place.from ? RELATIVE_FROM[place.from][i] : undefined;
+    if (offset === undefined) {
+      if (from) for (const position of positions(name)) position.attrs.relativeFrom = from;
+      continue;
+    }
+    const relativeFrom = from ?? attr(positions(name)[0], 'relativeFrom') ?? fallback;
+    anchor.children = anchor.children.filter((c) => !(c.type === 'element' && holds(c, name)));
+    insertOrdered(anchor, positionElement(axis, relativeFrom, offset), ANCHOR_ORDER);
+    // simplePos="1" would place it at wp:simplePos instead.
+    anchor.attrs.simplePos = '0';
+  }
   if (place.wrap) {
     anchor.children = anchor.children.filter((c) => !(c.type === 'element' && WRAP_ELEMENTS.has(c.name)));
     insertOrdered(anchor, wrapElement(place.wrap), ANCHOR_ORDER);
@@ -347,8 +364,8 @@ function moveAnchor(anchor: XmlElement, place: FloatingPlacement): void {
  * docPr, extent and graphic, and back; a floating one moves (see `moveAnchor`).
  */
 export function placeFrame(drawing: XmlElement, place: ObjectPlacement, relativeHeight: () => number): void {
-  checkPlacement(place);
   const frame = frameOf(drawing);
+  checkPlacement(place, frame.name === 'wp:anchor');
   let next: XmlElement;
   if ('inline' in place) {
     if (frame.name === 'wp:inline') return;
