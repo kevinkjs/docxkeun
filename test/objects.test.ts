@@ -8,7 +8,7 @@ import { layoutDocument, type PathItem, type TextItem } from '../src/layout/inde
 import { DocxDocument, type ImageInline } from '../src/model/index.js';
 import { CONTENT_TYPE, REL } from '../src/opc/index.js';
 import { AccessPolicy } from '../src/security/index.js';
-import { attr, childPath, elements, findAll, firstChild, NS, parseXml, serializeXml, textContent, type XmlElement } from '../src/xml/index.js';
+import { attr, childPath, cloneElement, elements, findAll, firstChild, NS, parseXml, serializeXml, textContent, type XmlElement } from '../src/xml/index.js';
 import { readZip } from '../src/zip/zip.js';
 import { buildDocx, p } from './helpers/docx.js';
 import { inline, textBoxRun, textBoxRunHolding, textBoxShape, vmlTextBoxRun } from './helpers/drawings.js';
@@ -428,6 +428,88 @@ describe('charts in the editor', () => {
     expect(ed.objects().map((o) => ed.chartInfo(o).series.map((s) => s.name))).toEqual([['Revenue', 'Costs'], ['Only']]);
     expect(await sheetCells(again, workbooks[0]!)).toMatchObject({ B1: 'Revenue', C1: 'Costs' });
     expect(await sheetCells(again, workbooks[1]!)).toMatchObject({ B1: 'Only' });
+  });
+});
+
+describe('chart parts', () => {
+  const CX = 'http://schemas.microsoft.com/office/drawing/2014/chartex';
+  const CHARTEX = 'word/charts/chartEx1.xml';
+  const CHARTEX_TYPE = 'application/vnd.ms-office.chartex+xml';
+  const RELS = (body: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${body}</Relationships>`;
+
+  it('gives copied Word 2016 charts (chartex) their own part and workbook too', async () => {
+    // A waterfall or other chartex chart, as Word saves it: in mc:Choice, with a text fallback for older readers.
+    const run =
+      '<w:r><mc:AlternateContent><mc:Choice xmlns:cx1="http://schemas.microsoft.com/office/drawing/2015/9/8/chartex" Requires="cx1"><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
+      `<wp:extent cx="${200 * 12700}" cy="${100 * 12700}"/><wp:docPr id="7" name="Chart 7"/><a:graphic><a:graphicData uri="${CX}"><cx:chart xmlns:cx="${CX}" r:id="rIdCx"/></a:graphicData></a:graphic>` +
+      '</wp:inline></w:drawing></mc:Choice><mc:Fallback><w:t>Chart</w:t></mc:Fallback></mc:AlternateContent></w:r>';
+    const workbook = await workbookFor({ categories: ['A'], series: [{ name: 'S', values: [1] }] });
+    const { doc, editor } = await open(`<w:p>${run}</w:p>` + p('After'), {
+      rels: [['rIdCx', 'http://schemas.microsoft.com/office/2014/relationships/chartEx', 'charts/chartEx1.xml']],
+      parts: {
+        [CHARTEX]: {
+          data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cx:chartSpace xmlns:cx="${CX}" xmlns:r="${NS.r}"><cx:chartData><cx:externalData r:id="rId1" cx:autoUpdate="0"/></cx:chartData><cx:chart/></cx:chartSpace>`,
+          contentType: CHARTEX_TYPE,
+        },
+        'word/charts/_rels/chartEx1.xml.rels': { data: RELS(`<Relationship Id="rId1" Type="${REL.package}" Target="../embeddings/Microsoft_Excel_Worksheet1.xlsx"/>`) },
+        [WORKBOOK1]: { data: workbook, contentType: CONTENT_TYPE.xlsx },
+      },
+    });
+    const para = editor.paragraphs()[0]!.el;
+    await editor.copyBlocks(para, para, { after: para });
+
+    const again = await reopen(doc);
+    const parts = findAll(again.documentXml.root, 'cx:chart').map((c) => again.rels(again.mainPart).get(attr(c, 'r:id')!)!.target);
+    expect(parts).toEqual([CHARTEX, 'word/charts/chartEx2.xml']);
+    expect(again.pkg.contentType(parts[1]!)).toBe(CHARTEX_TYPE);
+    const workbooks = await Promise.all(parts.map(async (part) => (await again.pkg.relationships(part)).map((r) => again.pkg.resolve(part, r))));
+    expect(workbooks).toEqual([[WORKBOOK1], ['word/embeddings/Microsoft_Excel_Worksheet2.xlsx']]);
+    expect(again.pkg.contentType(workbooks[1]![0]!)).toBe(CONTENT_TYPE.xlsx);
+  });
+
+  it('splits a chart part that several charts share (copies from older versions) before updating one', async () => {
+    const { doc, editor } = await open(p('Chart: ') + p('After'));
+    await editor.insertChart(endOf(editor), COLUMNS);
+    // What copy_paragraphs in docxkeun 0.3.0 and older left: copies pointing at the same chart part,
+    // through the same relationship or a relationship of their own.
+    const para = editor.paragraphs()[0]!.el;
+    const body = firstChild(doc.documentXml.root, 'w:body')!;
+    const [same, other] = [cloneElement(para), cloneElement(para)];
+    findAll(same, 'wp:docPr')[0]!.attrs.id = '20';
+    findAll(other, 'wp:docPr')[0]!.attrs.id = '21';
+    findAll(other, 'c:chart')[0]!.attrs['r:id'] = await doc.pkg.addRelationship(doc.mainPart, REL.chart, CHART1);
+    await doc.refreshRels(doc.mainPart);
+    body.children.splice(body.children.indexOf(para) + 1, 0, same, other);
+    doc.touch(doc.mainPart);
+
+    const shared = await reopen(doc);
+    const ed = new DocxEditor(shared);
+    const [first, second, third] = ed.objects();
+    expect([first, second, third].map((o) => o!.chartPart)).toEqual([CHART1, CHART1, CHART1]);
+    const only = [{ name: 'Only', values: [1, 2, 3, 4] }];
+    await ed.updateChart(second!, { series: only });
+    expect(second!.chartPart).not.toBe(CHART1);
+    expect(ed.chartInfo(second!).series).toEqual(only);
+    expect([first, third].map((o) => ed.chartInfo(o!).series)).toEqual([TWO, TWO]);
+    await ed.updateChart(third!, { title: 'Third' });
+    expect(third!.chartPart).not.toBe(CHART1);
+    expect(third!.chartPart).not.toBe(second!.chartPart);
+    // Alone with its part now, the first is changed in place.
+    await ed.updateChart(first!, { title: 'First' });
+    expect(first!.chartPart).toBe(CHART1);
+
+    const again = new DocxEditor(await reopen(shared));
+    const objects = again.objects();
+    expect(new Set(objects.map((o) => o.chartPart)).size).toBe(3);
+    expect(objects.map((o) => [again.chartInfo(o).title, again.chartInfo(o).series.map((x) => x.name)])).toEqual([
+      ['First', ['Revenue', 'Costs']],
+      ['Sales', ['Only']],
+      ['Third', ['Revenue', 'Costs']],
+    ]);
+    const workbooks = await Promise.all(objects.map(async (o) => (await workbookOf(again.doc, o.chartPart!)).part));
+    expect(new Set(workbooks).size).toBe(3);
+    expect(await sheetCells(again.doc, workbooks[1]!)).toMatchObject({ B1: 'Only' });
+    expect(await sheetCells(again.doc, workbooks[0]!)).toMatchObject({ B1: 'Revenue', C1: 'Costs' });
   });
 });
 
@@ -1102,6 +1184,22 @@ describe('changing objects', () => {
     expect(where(editor)).toEqual([0, 1, 1, 1, 1, 2]);
     await editor.moveObject(pic!, inBox());
     expect(where(editor)).toEqual([0, 1, 1, 1, 2, 3]);
+  });
+
+  it('refuses to move or resize an embedded OLE object but deletes it, saying what it is', async () => {
+    const ole =
+      '<w:r><w:object xmlns:o="urn:schemas-microsoft-com:office:office" w:dxaOrig="1440" w:dyaOrig="720"><v:shape id="_x0000_i1025" style="width:72pt;height:36pt" o:ole=""><v:imagedata r:id="rIdNone" o:title=""/></v:shape>' +
+      '<o:OLEObject Type="Embed" ProgID="Excel.Sheet.12" ShapeID="_x0000_i1025" DrawAspect="Content" ObjectID="_1700000000" r:id="rIdNone"/></w:object></w:r>';
+    const { editor } = await open(p('Before') + `<w:p>${ole}</w:p>`);
+    const [embedded] = editor.objects();
+    expect(embedded).toMatchObject({ vml: true, width: 72, height: 36 });
+    const refusal = new EditError('This is an embedded object (OLE): it can only be deleted');
+    expect(() => editor.resizeObject(embedded!, { width: 10 })).toThrow(refusal);
+    expect(() => editor.setObjectAlt(embedded!, 'Sheet')).toThrow(refusal);
+    await expect(editor.moveObject(embedded!, endOf(editor, 0))).rejects.toThrow(refusal);
+    await expect(editor.placeObject(embedded!, { x: 0, y: 0 })).rejects.toThrow(refusal);
+    editor.deleteObject(embedded!);
+    expect(editor.objects()).toEqual([]);
   });
 
   it('refuses to move or resize an old VML object but deletes it', async () => {

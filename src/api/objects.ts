@@ -20,8 +20,9 @@ export interface DocObject {
   paragraph: DocParagraph;
   /** The w:r holding the object. */
   run: XmlElement;
-  /** The w:drawing (inside mc:Choice when wrapped), or the w:pict / w:object of an old VML object. */
+  /** The w:drawing (inside mc:Choice when wrapped), the w:pict of an old VML object, or the w:object of an embedded OLE object. */
   drawing: XmlElement;
+  /** An old VML object or an embedded OLE object (w:object), drawn in VML: these can only be deleted. */
   vml: boolean;
   /** Size in points. */
   width: number;

@@ -397,6 +397,12 @@ interface KeptObjects {
 }
 
 const OLD_VML = 'This is an old-style (VML) object: it can only be deleted';
+const OLE_OBJECT = 'This is an embedded object (OLE): it can only be deleted';
+
+/** Old VML objects and embedded OLE objects (w:object) can only be deleted. */
+function onlyDeletable(obj: DocObject): void {
+  if (obj.vml) throw new EditError(obj.drawing.name === 'w:object' ? OLE_OBJECT : OLD_VML);
+}
 // Word puts only pictures in a text box (no shapes, text boxes, charts or SmartArt), and only inline.
 const SHAPE_IN_BOX = "Shapes and text boxes can't go inside a text box";
 const PICTURES_IN_BOX = 'Only pictures can go inside a text box';
@@ -947,12 +953,14 @@ export class DocxEditor {
    * Change a chart's titles, legend or data, keeping its formatting (see `patchChartSpace`). New
    * data must suit the chart's type, and rewrites the embedded workbook; a chart with an old embedded
    * object or no workbook gets a new one. A chart linked to an outside file only has its cached data
-   * changed: the file is not, and Word's refresh brings its numbers back. Word does not track chart
-   * changes, so neither does this.
+   * changed: the file is not, and Word's refresh brings its numbers back. A chart part other charts
+   * share is copied for this chart first (see `ownChart`). Word does not track chart changes, so
+   * neither does this.
    */
   async updateChart(obj: DocObject, changes: ChartChanges): Promise<ChartUpdate> {
-    const { part, chartSpace } = chartOf(this.doc, obj);
+    chartOf(this.doc, obj);
     this.checkUntracked(this.objectRange(obj));
+    const { part, chartSpace } = await this.ownChart(obj);
     const { pkg } = this.doc;
     const data = chartData(this.doc, part, chartSpace);
     const result: ChartUpdate = { source: data.source, workbookRewritten: false, workbookHadMore: false };
@@ -985,11 +993,30 @@ export class DocxEditor {
     return result;
   }
 
-  /** Give every chart under `nodes` its own copy of its chart part (and workbook), so copies change independently. */
+  /**
+   * The chart part behind a chart object, for this chart alone: a part that other charts point at
+   * too (as copies made by docxkeun 0.3.0 and older do) is copied first, with its workbook, and this
+   * chart (and `obj.chartPart`) moves to the copy, so changing it leaves the others alone.
+   */
+  private async ownChart(obj: DocObject): Promise<{ part: string; chartSpace: XmlElement }> {
+    const current = chartOf(this.doc, obj);
+    const target = (chart: XmlElement) => this.doc.rels(this.part).get(attr(chart, 'r:id') ?? '')?.target;
+    if (findAll(this.root, 'c:chart').filter((c) => target(c) === current.part).length < 2) return current;
+    await this.copyChartParts([obj.drawing]);
+    const own = target(findAll(obj.drawing, 'c:chart')[0]!);
+    if (own) obj.chartPart = own;
+    this.changed();
+    return chartOf(this.doc, obj);
+  }
+
+  /**
+   * Give every chart under `nodes` (c:chart, and Word 2016's cx:chart) its own copy of its chart part
+   * (and workbook), so copies change independently.
+   */
   private async copyChartParts(nodes: XmlElement[]): Promise<void> {
     const { pkg } = this.doc;
     let copied = false;
-    for (const chart of nodes.flatMap((n) => findAll(n, 'c:chart'))) {
+    for (const chart of nodes.flatMap((n) => [...findAll(n, 'c:chart'), ...findAll(n, 'cx:chart')])) {
       const rel = await pkg.relationshipById(this.part, attr(chart, 'r:id') ?? '');
       if (!rel || rel.external || !pkg.has(pkg.resolve(this.part, rel))) continue;
       const copy = await copyPart(pkg, pkg.resolve(this.part, rel));
@@ -1006,7 +1033,7 @@ export class DocxEditor {
    * directly, and is refused where only tracked changes are allowed.
    */
   resizeObject(obj: DocObject, size: { width?: number; height?: number }): void {
-    if (obj.vml) throw new EditError(OLD_VML);
+    onlyDeletable(obj);
     const range = this.objectRange(obj);
     const frame = frameOf(obj.drawing);
     const { width, height } = resized(frame, size);
@@ -1018,7 +1045,7 @@ export class DocxEditor {
 
   /** Set an object's alt text (empty removes it). Not tracked, as in Word (see `resizeObject`). */
   setObjectAlt(obj: DocObject, alt: string): void {
-    if (obj.vml) throw new EditError(OLD_VML);
+    onlyDeletable(obj);
     const range = this.objectRange(obj);
     const docPr = firstChild(frameOf(obj.drawing), 'wp:docPr');
     if (!docPr) throw new EditError('This object has no description to edit');
@@ -1044,7 +1071,7 @@ export class DocxEditor {
    * pictures can go inside a text box, and an object there can only be inline.
    */
   async moveObject(obj: DocObject, at: DocPosition): Promise<void> {
-    if (obj.vml) throw new EditError(OLD_VML);
+    onlyDeletable(obj);
     const idx = this.index();
     const range = this.objectRange(obj, idx);
     const node = range.start.node;
@@ -1077,7 +1104,7 @@ export class DocxEditor {
    * copy inserted right after it.
    */
   async placeObject(obj: DocObject, place: ObjectPlacement): Promise<void> {
-    if (obj.vml) throw new EditError(OLD_VML);
+    onlyDeletable(obj);
     const floating = frameOf(obj.drawing).name === 'wp:anchor';
     checkPlacement(place, floating);
     const idx = this.index();
