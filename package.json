@@ -1,6 +1,6 @@
 {
   "name": "docxkeun",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Read, render, edit and convert .docx files in the browser with zero runtime dependencies: a DOCX viewer and editor (toolbar, comments, tracked changes, undo), a DOCX-to-PDF converter, and live effects for AI edits.",
   "author": "Kevin Jeremia (https://github.com/kevinkjs)",
   "license": "MIT",

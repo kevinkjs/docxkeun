@@ -2,7 +2,7 @@
 
 All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic versioning](https://semver.org); while the version is 0.x, minor versions may contain breaking changes.
 
-## Unreleased
+## 0.3.0 (2026-11-23)
 
 ### docxkeun
 
@@ -20,7 +20,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 - Claude now sees which words are bold, italic, underlined, struck through, superscript or subscript, and keeps them when it rewrites or translates text (it used to flatten a rewritten paragraph to one formatting).
 - Claude can now copy content with its formatting and make and change tables, so "translate this document onto a new page" keeps the tables and lists instead of retyping them as plain text.
 
-### docxkeun-mcp
+### docxkeun-mcp 0.2.0
 
 - The live preview's header has a **Style** list and a **Marks** switch next to "AI effects", remembered in the browser. Marks build up while the AI works on a document and start over when you open another one.
 - New tools: `copy_paragraphs` copies paragraphs and tables with their formatting and lists (for example onto a new page, to translate a document), `insert_table` makes a table, and `edit_table` adds or deletes rows or deletes a table.
