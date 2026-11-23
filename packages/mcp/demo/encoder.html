@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>encoder</title>
+<script>
+/**
+ * Turns the captured frames into H.264 with WebCodecs, at a constant frame rate:
+ * each output frame shows the latest capture at its time. record.mjs writes the MP4.
+ */
+window.encode = async () => {
+  const { frames, width, height, fps, duration, bitrate } = await (await fetch('/frames.json')).json();
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  const chunks = [];
+  let description;
+  let failure;
+  const encoder = new VideoEncoder({
+    output(chunk, meta) {
+      if (meta?.decoderConfig?.description && !description) description = new Uint8Array(meta.decoderConfig.description);
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      chunks.push({ data, key: chunk.type === 'key', timestamp: chunk.timestamp });
+    },
+    error(e) { failure = e; },
+  });
+  encoder.configure({ codec: 'avc1.640028', width, height, bitrate, framerate: fps, avc: { format: 'avc' }, latencyMode: 'quality' });
+
+  const total = Math.round(duration * fps);
+  let shown = -1;
+  let next = 0;
+  for (let k = 0; k < total; k++) {
+    const t = k / fps;
+    while (next < frames.length && frames[next].t <= t) next++;
+    const index = Math.max(0, next - 1);
+    if (index !== shown) {
+      const blob = await (await fetch(`/frames/${frames[index].file}`)).blob();
+      const bitmap = await createImageBitmap(blob);
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      bitmap.close();
+      shown = index;
+    }
+    const frame = new VideoFrame(canvas, { timestamp: Math.round((k * 1e6) / fps), duration: Math.round(1e6 / fps) });
+    encoder.encode(frame, { keyFrame: k % (fps * 5) === 0 });
+    frame.close();
+    while (encoder.encodeQueueSize > 8) await new Promise((r) => setTimeout(r, 2));
+    if (failure) throw failure;
+  }
+  await encoder.flush();
+  if (failure) throw failure;
+
+  // Send the samples back: a JSON header, then the data.
+  const header = new TextEncoder().encode(JSON.stringify({
+    description: Array.from(description),
+    samples: chunks.map((c) => ({ size: c.data.length, key: c.key, timestamp: c.timestamp })),
+  }));
+  const body = new Blob([new Uint32Array([header.length]), header, ...chunks.map((c) => c.data)]);
+  const res = await fetch('/video', { method: 'POST', body });
+  return { status: res.status, frames: total, chunks: chunks.length };
+};
+</script>
