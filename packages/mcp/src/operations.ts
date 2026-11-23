@@ -6,7 +6,7 @@
  */
 import { z } from 'zod';
 import { blocksToText, describeChart, readChart, type DocParagraph, type DocxDocument, type ImageInline } from 'docxkeun';
-import { DocxEditor as Editor, paragraphText, paragraphsOf, type DocRange, type DocxEditor, type Match, type ParagraphFormat, type Revision, type TextFormat } from 'docxkeun/editor';
+import { DocxEditor as Editor, paragraphText, paragraphsOf, type DocObject, type DocRange, type DocxEditor, type Match, type ParagraphFormat, type Revision, type TextFormat } from 'docxkeun/editor';
 import { readProtection, type Role } from 'docxkeun/security';
 import {
   commentAnchors,
@@ -191,10 +191,11 @@ const readDocument = define({
   name: 'read_document',
   title: 'Read a document',
   description:
-    'Read a Word document as numbered paragraphs. Each line is "[number] (style; list label; table position; alignment; formatting of the whole paragraph; locks; comments) text", ' +
+    'Read a Word document as numbered paragraphs. Each line is "[number] (style; list label; table position or text box; alignment; formatting of the whole paragraph; locks; comments) text {objects}", ' +
     'e.g. "[1] (centered; bold, underlined) AGREEMENT" or "[4] (list item a.; justified) …". ' +
     'Text formatted differently from the rest of its paragraph is tagged: <b>bold</b>, <i>italic</i>, <u>underlined</u>, <s>struck through</s>, <sup>superscript</sup>, <sub>subscript</sub>. ' +
     'The tags are not part of the text (find_text and replace_text ignore them); edit_paragraph and insert_paragraphs take them, so keep them when you rewrite or translate text. ' +
+    "A text box's paragraphs come right after the paragraph holding it, tagged \"text box N\". Pictures, charts and shapes show as {object N: …}. " +
     'Long documents come in pages of paragraphs: pass `from` to continue.',
   role: 'viewer',
   kind: 'read',
@@ -211,6 +212,7 @@ const readDocument = define({
     const comments = commentsByParagraph(anchors);
     const locks = locksByParagraph(ctx.entries, ctx.editor.lockedRegions());
     const lists = ctx.editor.listItems();
+    const numbered = new Map(numberedObjects(ctx.editor, ctx.entries).map((o) => [o.image, o]));
     const protection = readProtection(ctx.doc);
     const revisions = new Map<number, number>();
     for (const r of ctx.editor.revisions()) {
@@ -230,7 +232,10 @@ const readDocument = define({
     let size = 0;
     let last = from - 1;
     for (const e of ctx.entries.slice(from - 1, from - 1 + limit)) {
-      const objects = e.para.inlines.flatMap((i) => (i.kind === 'image' ? [describeObject(ctx, i)] : i.kind === 'math' ? [`equation: ${i.text}`] : []));
+      const objects = e.para.inlines.flatMap((i) => {
+        const o = i.kind === 'image' ? numbered.get(i) : undefined;
+        return o ? [objectLabel(ctx, o)] : i.kind === 'math' ? [`equation: ${i.text}`] : [];
+      });
       const line = describeParagraph(ctx.doc, e, { locks: locks.get(e.n) ?? [], comments: comments.get(e.n) ?? [], list: lists.get(e.para.el), objects, revisions: revisions.get(e.n) ?? 0 });
       if (size + line.length > 60_000 && lines.length > 0) break;
       lines.push(line);
@@ -544,8 +549,8 @@ const deleteParagraphs = define({
     if (to < args.from) throw new Error('`to` must not be before `from`.');
     const doomed = [];
     for (let n = args.from; n <= to; n++) doomed.push(entry(ctx, n));
-    const bodyParagraphs = ctx.entries.filter((e) => !e.cell).length;
-    if (doomed.filter((e) => !e.cell).length >= bodyParagraphs) {
+    const inBody = (e: ParagraphEntry) => !e.cell && !e.box;
+    if (doomed.filter(inBody).length >= ctx.entries.filter(inBody).length) {
       throw new Error('A document needs at least one paragraph outside tables; clear the last one with edit_paragraph instead.');
     }
     for (const e of doomed.reverse()) ctx.editor.deleteParagraph(e.para.el);
@@ -553,18 +558,28 @@ const deleteParagraphs = define({
   },
 });
 
-/** Where new content goes: after or before a paragraph (its table, if it is in one), or at the end. */
-function placeOf(ctx: DocContext, args: { after?: number; before?: number }): { where: { after?: Element; before?: Element } | 'end'; said: string } {
+/**
+ * Where new body content goes: after or before a paragraph (its table, if it is in one), or at the
+ * end. A paragraph in a text box is refused with `inBox`, since body content can't go there.
+ */
+function placeOf(ctx: DocContext, args: { after?: number; before?: number }, inBox: string): { where: { after?: Element; before?: Element } | 'end'; said: string } {
   if (args.after !== undefined && args.before !== undefined) throw new Error('Pass after or before, not both.');
   if (args.after !== undefined) {
-    const e = entry(ctx, args.after);
+    const e = bodyEntry(ctx, args.after, inBox);
     return { where: { after: e.para.el }, said: e.cell ? `after table ${e.cell.table}` : `after paragraph ${args.after}` };
   }
   if (args.before !== undefined) {
-    const e = entry(ctx, args.before);
+    const e = bodyEntry(ctx, args.before, inBox);
     return { where: { before: e.para.el }, said: e.cell ? `before table ${e.cell.table}` : `before paragraph ${args.before}` };
   }
   return { where: 'end', said: 'at the end' };
+}
+
+/** A paragraph that is not in a text box; `inBox` says why one is refused. */
+function bodyEntry(ctx: DocContext, n: number, inBox: string): ParagraphEntry {
+  const e = entry(ctx, n);
+  if (e.box) throw new Error(`Paragraph ${n} is in a text box: ${inBox}.`);
+  return e;
 }
 type Element = ParagraphEntry['para']['el'];
 
@@ -616,8 +631,11 @@ const copyParagraphs = define({
   async run(ctx, args) {
     const to = args.to ?? args.from;
     if (to < args.from) throw new Error('`to` must not be before `from`.');
-    const { where, said } = placeOf(ctx, args);
-    const { blocks, dropped } = await ctx.editor.copyBlocks(entry(ctx, args.from).para.el, entry(ctx, to).para.el, where, {
+    const inBox = 'copy_paragraphs copies body paragraphs and tables; to put text in a text box use insert_paragraphs or edit_paragraph';
+    const first = bodyEntry(ctx, args.from, inBox);
+    const last = bodyEntry(ctx, to, inBox);
+    const { where, said } = placeOf(ctx, args, inBox);
+    const { blocks, dropped } = await ctx.editor.copyBlocks(first.para.el, last.para.el, where, {
       ...(args.pageBreak !== undefined ? { pageBreak: args.pageBreak } : {}),
       ...(args.restartLists !== undefined ? { restartLists: args.restartLists } : {}),
     });
@@ -655,7 +673,7 @@ const insertTableOp = define({
     before: paragraphNumber.optional().describe('Insert before this paragraph (before its table, if it is in one)'),
   }),
   run(ctx, args) {
-    const { where, said } = placeOf(ctx, args);
+    const { where, said } = placeOf(ctx, args, 'insert_table puts tables in the body, not in text boxes; pass a paragraph outside the box');
     const table = ctx.editor.insertTable(where, args.rows, {
       ...(args.header !== undefined ? { header: args.header } : {}),
       ...(args.widths ? { widths: args.widths } : {}),
@@ -1025,28 +1043,6 @@ interface StoryInfo {
   paragraphs: DocParagraph[];
   /** The text to show, when it differs from the paragraphs' (page fields as {PAGE}). */
   text?: string;
-  /** A text box's container (edited in the main document). */
-  container?: ImageInline;
-}
-
-/** Text boxes in the body, with the paragraph they are anchored in. */
-function textBoxes(ctx: DocContext): Array<{ image: ImageInline; paragraph: number }> {
-  const out: Array<{ image: ImageInline; paragraph: number }> = [];
-  const visit = (image: ImageInline, paragraph: number) => {
-    const c = image.content;
-    if (c?.type === 'shape' && c.shape.text) out.push({ image, paragraph });
-    if (c?.type === 'group') {
-      const walk = (children: typeof c.children) => {
-        for (const ch of children) {
-          if (ch.content.type === 'shape' && ch.content.shape.text) out.push({ image: { ...image, content: ch.content }, paragraph });
-          if (ch.content.type === 'group') walk(ch.content.children);
-        }
-      };
-      walk(c.children);
-    }
-  };
-  for (const e of ctx.entries) for (const i of e.para.inlines) if (i.kind === 'image') visit(i, e.n);
-  return out;
 }
 
 function stories(ctx: DocContext): StoryInfo[] {
@@ -1078,10 +1074,18 @@ function stories(ctx: DocContext): StoryInfo[] {
       out.push({ id: `${kind}${id}`, label: `${kind === 'footnote' ? 'Footnote' : 'Endnote'} ${id}`, part: sp.part, paragraphs: paragraphsOf(ctx.doc.note(kind, id)) });
     }
   }
-  textBoxes(ctx).forEach(({ image, paragraph }, i) => {
-    const c = image.content as { type: 'shape'; shape: { text: { blocks: Parameters<typeof paragraphsOf>[0]; container: unknown } } };
-    out.push({ id: `textbox${i + 1}`, label: `Text box ${i + 1} (in paragraph ${paragraph})`, part: ctx.doc.mainPart, paragraphs: paragraphsOf(c.shape.text.blocks), container: image });
-  });
+  // Text boxes, numbered as read_document numbers them ("text box 1").
+  const boxes = new Map<number, StoryInfo>();
+  for (const e of ctx.entries) {
+    if (!e.box) continue;
+    let box = boxes.get(e.box.index);
+    if (!box) {
+      box = { id: `textbox${e.box.index}`, label: `Text box ${e.box.index} (in paragraph ${e.box.host})`, part: ctx.doc.mainPart, paragraphs: [] };
+      boxes.set(e.box.index, box);
+      out.push(box);
+    }
+    box.paragraphs.push(e.para);
+  }
   return out;
 }
 
@@ -1139,7 +1143,6 @@ const replaceStoryText = define({
       else editor.deleteRange(range);
       count++;
     }
-    if (story.container) dropTextBoxFallback(ctx.doc);
     return `Replaced ${plural(count, 'match', 'matches')} of ${quote(args.find)} in ${story.label}.`;
   },
 });
@@ -1182,20 +1185,6 @@ function rangeIn(pt: ReturnType<typeof paragraphText>, a: number, b: number): Do
   const start = at(a, 'start');
   const end = at(b, 'end');
   return start && end ? { start, end } : undefined;
-}
-
-/** Text boxes are stored twice (DrawingML and an old VML copy); after an edit the copy is out of date. */
-function dropTextBoxFallback(doc: DocxDocument): void {
-  const walk = (node: { type: string; name?: string; children?: unknown[] }): void => {
-    if (node.type !== 'element') return;
-    const children = (node.children ?? []) as Array<{ type: string; name?: string; children?: unknown[] }>;
-    if (node.name === 'mc:AlternateContent' && children.some((c) => c.type === 'element' && c.name === 'mc:Choice' && JSON.stringify(c).includes('"w:txbxContent"'))) {
-      node.children = children.filter((c) => !(c.type === 'element' && c.name === 'mc:Fallback'));
-      return;
-    }
-    for (const c of children) walk(c);
-  };
-  walk(doc.documentXml.root as never);
 }
 
 const hfKind = z.enum(['header', 'footer']);
@@ -1247,7 +1236,7 @@ const removeHeaderFooter = define({
 function describeObject(ctx: DocContext, image: ImageInline): string {
   const c = image.content;
   const alt = image.alt ? ` "${image.alt}"` : '';
-  const size = `${Math.round(image.width)}×${Math.round(image.height)}pt${image.float ? ', floating' : ''}`;
+  const size = `${Math.round(image.width)}×${Math.round(image.height)}pt, ${image.float ? 'floating' : 'inline'}`;
   if (!c || c.type === 'picture') return `picture${alt} (${size})`;
   if (c.type === 'chart') {
     const xml = ctx.doc.xmlSync(c.part)?.root;
@@ -1259,7 +1248,7 @@ function describeObject(ctx: DocContext, image: ImageInline): string {
         // keep the generic name
       }
     }
-    return `${text} (${size})`;
+    return `${text.charAt(0).toLowerCase()}${text.slice(1)} (${size})`;
   }
   if (c.type === 'diagram') {
     const data = ctx.doc.xmlSync(c.dataPart)?.root;
@@ -1275,23 +1264,64 @@ function describeObject(ctx: DocContext, image: ImageInline): string {
   if (c.type === 'shape') {
     const prst = c.shape.geometry?.attrs['prst'];
     const text = c.shape.text ? blocksToText(c.shape.text.blocks).replace(/\s+/g, ' ').trim() : '';
-    return `${c.shape.text ? 'text box' : `shape${prst ? ` (${prst})` : ''}`}${text ? `: ${quote(text, 80)}` : ''} (${size})`;
+    return `${c.shape.text ? 'text box' : `shape${prst ? ` (${prst})` : ''}`}${text ? ` ${quote(text, 80)}` : ''} (${size})`;
   }
   return `group of ${c.children.length} shapes (${size})`;
+}
+
+/** An object as the tools show it: its number, the paragraph holding it, and the object itself. */
+export interface NumberedObject {
+  /** Object number, as DocxEditor.objects() numbers it. */
+  n: number;
+  /** read_document's number of the paragraph holding it. */
+  paragraph: number;
+  object: DocObject;
+  image: ImageInline;
+}
+
+/** The objects in the body, numbered as DocxEditor.objects() numbers them, with the paragraphs holding them. */
+export function numberedObjects(editor: DocxEditor, entries: ReadonlyArray<ParagraphEntry>): NumberedObject[] {
+  const byParagraph = new Map<Element, DocObject[]>();
+  for (const o of editor.objects()) {
+    const list = byParagraph.get(o.paragraph.el);
+    if (list) list.push(o);
+    else byParagraph.set(o.paragraph.el, [o]);
+  }
+  const out: NumberedObject[] = [];
+  for (const e of entries) {
+    const objects = byParagraph.get(e.para.el);
+    if (!objects) continue;
+    // DocxEditor.objects() goes along each paragraph's pictures and drawings in order too.
+    const images = e.para.inlines.filter((i): i is ImageInline => i.kind === 'image');
+    images.forEach((image, k) => {
+      const object = objects[k];
+      if (object) out.push({ n: object.n, paragraph: e.n, object, image });
+    });
+  }
+  return out;
+}
+
+/** "object 2: clustered column chart "Revenue": … (432×252pt, inline)" */
+function objectLabel(ctx: DocContext, o: NumberedObject): string {
+  return `object ${o.n}: ${describeObject(ctx, o.image)}`;
 }
 
 const listObjects = define({
   name: 'list_objects',
   title: 'List pictures, charts, shapes and equations',
-  description: 'List the pictures, charts (with their data), SmartArt, shapes, text boxes and equations in a document, with paragraph numbers.',
+  description:
+    'List the pictures, charts (with their data), SmartArt, shapes, text boxes and equations in a document. Each line starts with the number of the paragraph holding it; ' +
+    'pictures, charts and shapes have an object number ("object 2") and say whether they sit in the text (inline) or float.',
   role: 'viewer',
   kind: 'read',
   schema: z.object({}),
   run(ctx) {
+    const numbered = new Map(numberedObjects(ctx.editor, ctx.entries).map((o) => [o.image, o]));
     const out: string[] = [];
     for (const e of ctx.entries) {
       for (const i of e.para.inlines) {
-        if (i.kind === 'image') out.push(`[${e.n}] ${describeObject(ctx, i)}`);
+        const o = i.kind === 'image' ? numbered.get(i) : undefined;
+        if (o) out.push(`[${e.n}] ${objectLabel(ctx, o)}`);
         else if (i.kind === 'math') out.push(`[${e.n}] ${i.display ? 'display ' : ''}equation: ${i.text}`);
       }
     }
@@ -1349,15 +1379,24 @@ const addFootnoteOp = define({
 // ---- where an operation works (for live views) ------------------------------------------------------
 
 /**
- * The paragraphs (numbers from 1) a call will read or change, from its arguments: `paragraph`,
- * `from`/`to`, `after`/`before`, or the paragraphs holding `text`, `find`, `query` or a template
- * placeholder. Empty when it is the whole document or cannot be told. Partial arguments (still
- * being written by the model) are fine.
+ * The paragraphs (read_document's numbers) a call will read or change, from its arguments:
+ * `paragraph`, `from`/`to`, `after`/`before`, the paragraph holding `object` (given the document's
+ * objects), or the paragraphs holding `text`, `find`, `query` or a template placeholder. Empty when
+ * it is the whole document or cannot be told. Partial arguments (still being written by the model)
+ * are fine. A live viewer numbers paragraphs differently: pass the result through viewerParagraphs.
  */
-export function targetParagraphs(entries: ReadonlyArray<{ n: number; text: string }>, name: string, args: Record<string, unknown>): number[] {
+export function targetParagraphs(
+  entries: ReadonlyArray<{ n: number; text: string }>,
+  name: string,
+  args: Record<string, unknown>,
+  objects?: ReadonlyArray<{ n: number; paragraph: number }>,
+): number[] {
   const out = new Set<number>();
   const num = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v >= 1 ? v : undefined);
   const p = num(args.paragraph);
+  const object = num(args.object);
+  const holder = object === undefined ? undefined : objects?.find((o) => o.n === object)?.paragraph;
+  if (holder !== undefined) out.add(holder);
   const from = num(args.from);
   const to = num(args.to);
   const after = num(args.after);
@@ -1366,7 +1405,8 @@ export function targetParagraphs(entries: ReadonlyArray<{ n: number; text: strin
   if (after !== undefined) out.add(after);
   if (before !== undefined) out.add(before);
   const needle = [args.text, args.find, args.query].find((v): v is string => typeof v === 'string' && v.length > 1);
-  if (p !== undefined && (!needle || name === 'insert_image' || name === 'add_footnote')) out.add(p);
+  // For these, `text` is what they write, not where.
+  if (p !== undefined && (!needle || name === 'edit_paragraph' || name === 'insert_image' || name === 'add_footnote')) out.add(p);
   else if (needle) {
     let re: RegExp | undefined;
     if (args.regex === true) {

@@ -1,9 +1,9 @@
 /**
- * A numbered, plain-text view of a document for AI clients: paragraphs (body and table cells) numbered
- * from 1, with their style, table position, locks and comments.
+ * A numbered, plain-text view of a document for AI clients: paragraphs (body, table cells and text
+ * boxes) numbered from 1, with their style, table or text box, locks and comments.
  */
-import { readComments, type Block, type CommentInfo, type DocParagraph, type DocxDocument } from 'docxkeun';
-import type { ListItem, LockedRegion } from 'docxkeun/editor';
+import { readComments, type Block, type CommentInfo, type DocParagraph, type DocxDocument, type DrawingContent } from 'docxkeun';
+import type { ListItem, LockedRegion, SelectionInfo } from 'docxkeun/editor';
 import { markupOf, wholeFormatting } from './markup.js';
 
 type XmlElement = DocParagraph['el'];
@@ -15,6 +15,13 @@ export interface ParagraphEntry {
   /** The text editor.find() searches: text runs, tabs and line breaks. */
   text: string;
   cell?: { table: number; row: number; cell: number };
+  /** In a text box: the box's number (from 1, in the order their paragraphs come) and the number of the paragraph holding it. */
+  box?: { index: number; host: number };
+  /**
+   * The paragraph's number in a live viewer, whose activity effects count body and table-cell
+   * paragraphs only (paragraphsOf); a text box's paragraphs have the number of the paragraph holding the box.
+   */
+  view: number;
 }
 
 export function paragraphTextOf(para: DocParagraph): string {
@@ -27,22 +34,64 @@ export function paragraphTextOf(para: DocParagraph): string {
   return text;
 }
 
-/** Every paragraph in the body (including table cells), in the order DocxEditor.paragraphs() uses. */
+/**
+ * Every paragraph in the body, in the order DocxEditor.paragraphs() lists them: table cells in
+ * place, and a text box's paragraphs right after the paragraph holding the box.
+ */
 export function listParagraphs(doc: DocxDocument): ParagraphEntry[] {
   const out: ParagraphEntry[] = [];
   let tables = 0;
-  const walk = (blocks: Block[], cell?: ParagraphEntry['cell']): void => {
+  let boxes = 0;
+  let views = 0;
+  type Where = { cell?: ParagraphEntry['cell']; box?: ParagraphEntry['box']; view?: number };
+  const walk = (blocks: Block[], where: Where): void => {
     for (const b of blocks) {
       if (b.kind === 'paragraph') {
-        out.push({ n: out.length + 1, para: b, text: paragraphTextOf(b), ...(cell ? { cell } : {}) });
+        const e: ParagraphEntry = { n: out.length + 1, para: b, text: paragraphTextOf(b), view: where.view ?? ++views };
+        if (where.cell) e.cell = where.cell;
+        if (where.box) e.box = where.box;
+        out.push(e);
+        for (const inline of b.inlines) if (inline.kind === 'image' && inline.content) visit(inline.content, e);
+      } else if (where.box) {
+        // A table in a text box is part of the box; table numbers count the body's tables.
+        for (const row of b.rows) for (const c of row.cells) walk(c.blocks, where);
       } else {
         const table = ++tables;
-        b.rows.forEach((row, r) => row.cells.forEach((c, i) => walk(c.blocks, { table, row: r + 1, cell: i + 1 })));
+        b.rows.forEach((row, r) => row.cells.forEach((c, i) => walk(c.blocks, { cell: { table, row: r + 1, cell: i + 1 } })));
       }
     }
   };
-  walk(doc.body().blocks);
+  // A text box (or a shape holding text), or the ones in a group, depth first.
+  const visit = (content: DrawingContent, host: ParagraphEntry): void => {
+    if (content.type === 'shape' && content.shape.text) walk(content.shape.text.blocks, { box: { index: ++boxes, host: host.n }, view: host.view });
+    else if (content.type === 'group') for (const child of content.children) visit(child.content, host);
+  };
+  walk(doc.body().blocks, {});
   return out;
+}
+
+/** read_document's paragraph numbers as a live viewer numbers them (unique, sorted); numbers past the end are left out. */
+export function viewerParagraphs(entries: ReadonlyArray<ParagraphEntry>, numbers: number[]): number[] {
+  const out = new Set<number>();
+  for (const n of numbers) {
+    const e = entries[n - 1];
+    if (e) out.add(e.view);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+/** A selection in a live viewer's body (paragraphs numbered as the viewer numbers them), with read_document's paragraph numbers. */
+export function renumberSelection(info: SelectionInfo, entries: ReadonlyArray<ParagraphEntry>): SelectionInfo {
+  if (info.story !== 'body') return info;
+  const byView = new Map<number, number>();
+  for (const e of entries) if (!e.box) byView.set(e.view, e.n);
+  const n = (view: number) => byView.get(view) ?? view;
+  return {
+    ...info,
+    start: { ...info.start, paragraph: n(info.start.paragraph) },
+    end: { ...info.end, paragraph: n(info.end.paragraph) },
+    paragraphs: info.paragraphs.map((p) => ({ ...p, paragraph: n(p.paragraph) })),
+  };
 }
 
 export function tableCount(doc: DocxDocument): number {
@@ -210,6 +259,7 @@ export function describeParagraph(
   if (list) tags.push(`${list.format === 'bullet' ? 'bullet' : 'list item'}${list.label ? ' ' + list.label : ''}${list.level ? `, level ${list.level + 1}` : ''}`);
   else if (e.para.numbering) tags.push(`list level ${e.para.numbering.ilvl + 1}`);
   if (e.cell) tags.push(`table ${e.cell.table}, row ${e.cell.row}, cell ${e.cell.cell}`);
+  if (e.box) tags.push(`text box ${e.box.index}`);
   const align = ALIGNMENT[e.para.props.jc ?? ''];
   if (align) tags.push(align);
   const whole = e.text.trim() ? wholeFormatting(e.para) : [];

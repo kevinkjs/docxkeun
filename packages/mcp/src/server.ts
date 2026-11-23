@@ -21,9 +21,9 @@ import {
   type Role,
 } from 'docxkeun/security';
 import { fontsFor } from './fonts.js';
-import { activityLabel, describeOperation, newParagraph, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext } from './operations.js';
+import { activityLabel, describeOperation, newParagraph, numberedObjects, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext } from './operations.js';
 import { parseMarkup } from './markup.js';
-import { commentThreads, listParagraphs, locksByParagraph, paragraphStyles, quote, resolveStyle, tableCount, wordCount } from './outline.js';
+import { commentThreads, listParagraphs, locksByParagraph, paragraphStyles, quote, renumberSelection, resolveStyle, tableCount, viewerParagraphs, wordCount } from './outline.js';
 import type { Preview } from './preview.js';
 import { Queue, Workspace, WorkspaceError } from './workspace.js';
 
@@ -296,6 +296,7 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       if (!sel) return `Nothing is selected in the live preview. The user can select text (or click in a paragraph) at ${preview.url}.`;
       await queue.idle();
       const s = await open(sel.path, undefined);
+      // The page numbers body paragraphs as its viewer does (paragraphsOf); the AI gets read_document's numbers.
       const paras = sel.story === 'body' ? paragraphsOf(s.doc.body().blocks) : sel.part && s.doc.xmlSync(sel.part) ? new DocxEditor(s.doc, undefined, { part: sel.part }).paragraphs() : [];
       let layout;
       try {
@@ -311,7 +312,7 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       if (!info) return `The selection in ${s.name} is no longer there (the document changed). Ask the user to select again.`;
       const age = Math.round((Date.now() - sel.at) / 1000);
       const when = age < 5 ? 'just now' : age < 120 ? `${age} seconds ago` : `${Math.round(age / 60)} minutes ago`;
-      return `${describeSelection(info, { document: s.name })}\n(Selected ${when}. Paragraph numbers are read_document's; offsets count characters in the paragraph.)`;
+      return `${describeSelection(renumberSelection(info, s.entries), { document: s.name })}\n(Selected ${when}. Paragraph numbers are read_document's; offsets count characters in the paragraph.)`;
     };
 
     tool(
@@ -389,7 +390,11 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
     type Args = Record<string, unknown> & { path: string; password?: string; output?: string; overwrite?: boolean };
     const run = async (s: Session, args: Args): Promise<string> => {
       // The live preview shimmers the paragraphs the AI works on before the result comes in.
-      preview?.activity({ path: s.path, paragraphs: targetParagraphs(s.entries, op.name, args), mode: op.kind === 'read' ? 'read' : 'edit', label: activityLabel(op.name) });
+      if (preview) {
+        const objects = args.object !== undefined ? numberedObjects(s.editor, s.entries) : undefined;
+        const paragraphs = viewerParagraphs(s.entries, targetParagraphs(s.entries, op.name, args, objects));
+        preview.activity({ path: s.path, paragraphs, mode: op.kind === 'read' ? 'read' : 'edit', label: activityLabel(op.name) });
+      }
       return op.run(s, args as never);
     };
     const save_ = change<Args>(run);

@@ -26,7 +26,7 @@ export interface PreviewEvent {
 /** The AI is about to work on a document: pages shimmer those paragraphs (or scan, for reads). */
 export interface ActivityEvent {
   path: string;
-  /** Paragraph numbers, as read_document counts them (none: the whole document). */
+  /** Paragraph numbers as the viewer counts them: body and table cells, not text boxes (viewerParagraphs); none: the whole document. */
   paragraphs: number[];
   mode: 'read' | 'edit';
   /** A verb for the caret label: "editing", "reading", "commenting"… */

@@ -735,8 +735,8 @@ describe('paragraph formatting, stories and objects', () => {
     const editor = await connect();
     expect(await ok(editor, 'insert_image', { path: 'contract.docx', image: 'logo.png', paragraph: 1, width: 144, alt: 'Company logo' })).toContain('Inserted');
     const objects = await ok(editor, 'list_objects', { path: 'contract.docx' });
-    expect(objects).toBe('[1] picture "Company logo" (144×72pt)');
-    expect(await ok(editor, 'read_document', { path: 'contract.docx' })).toContain('Service Agreement {picture "Company logo" (144×72pt)}');
+    expect(objects).toBe('[1] object 1: picture "Company logo" (144×72pt, inline)');
+    expect(await ok(editor, 'read_document', { path: 'contract.docx' })).toContain('Service Agreement {object 1: picture "Company logo" (144×72pt, inline)}');
     const outside = await call(editor, 'insert_image', { path: 'contract.docx', image: '/etc/hosts', paragraph: 1 });
     expect(outside.isError).toBe(true);
     const notPicture = await call(editor, 'insert_image', { path: 'contract.docx', image: 'contract.docx', paragraph: 1 });

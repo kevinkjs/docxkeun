@@ -5,13 +5,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { BetaMessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { DocxDocument, FontRegistry, loadBundledFonts } from 'docxkeun';
-import { describeSelection, type SelectionInfo } from 'docxkeun/editor';
+import { describeSelection, DocxEditor, type SelectionInfo } from 'docxkeun/editor';
 import { exportPdf } from 'docxkeun/pdf';
 import { PasswordRequiredError, WrongPasswordError } from 'docxkeun/security';
 import { ACTIVITY_STYLES, DocxViewer, type ActivityStyle } from 'docxkeun/viewer';
 import { sampleDocx } from '../../../playground/sample.js';
-import { activityLabel, targetParagraphs } from '../../mcp/src/operations.js';
-import { listParagraphs } from '../../mcp/src/outline.js';
+import { activityLabel, numberedObjects, targetParagraphs } from '../../mcp/src/operations.js';
+import { listParagraphs, renumberSelection, viewerParagraphs } from '../../mcp/src/outline.js';
 import { anthropicStream, MODELS, runTurn, type ModelChoice, type StreamFactory } from './agent.js';
 import { apiMessage, forgetKey, giveKey, keyProblem, NoRelayError, relayClient, relayStatus, START_THE_SERVER } from './auth.js';
 import { renderMarkdown } from './markdown.js';
@@ -390,6 +390,8 @@ viewer.on('selectioninfo', ({ selection: info }) => {
 
 function showSelection(info: SelectionInfo): void {
   if (!viewer.document) return;
+  // Claude's tools number paragraphs as read_document does, text boxes included; the viewer doesn't.
+  if (current) info = renumberSelection(info, listParagraphs(current.doc));
   selection = info;
   const box = $('selection');
   box.hidden = false;
@@ -575,7 +577,11 @@ async function send(text: string): Promise<void> {
           const kind = toolbox.kind(name);
           if (!kind || !current || Date.now() - lastDraft < 120) return;
           lastDraft = Date.now();
-          const paragraphs = targetParagraphs(listParagraphs(current.doc), name, (input ?? {}) as Record<string, unknown>);
+          // Claude's numbers count text box paragraphs; the viewer's don't.
+          const entries = listParagraphs(current.doc);
+          const args = (input ?? {}) as Record<string, unknown>;
+          const objects = args.object !== undefined ? numberedObjects(new DocxEditor(current.doc), entries) : undefined;
+          const paragraphs = viewerParagraphs(entries, targetParagraphs(entries, name, args, objects));
           const key = `${name}:${paragraphs.join(',')}`;
           if (key === drafted) return;
           drafted = key;

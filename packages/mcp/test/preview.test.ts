@@ -10,6 +10,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encryptPackage } from 'docxkeun/security';
 import { buildDocx, p } from '../../../test/helpers/docx.js';
+import { textBoxRun } from '../../../test/helpers/drawings.js';
 import { createServer, startPreview, type Preview } from '../src/index.js';
 import { PREVIEW_SCRIPT } from '../src/preview-page.js';
 import { parseColors } from '../src/preview.js';
@@ -275,6 +276,38 @@ describe('live preview server', () => {
       const activity = seen.filter((e) => e.type === 'activity');
       expect(activity[0]).toEqual({ type: 'activity', path: 'letter.docx', paragraphs: [2], mode: 'edit', label: 'editing' });
       expect(activity[1]).toEqual({ type: 'activity', path: 'letter.docx', paragraphs: [], mode: 'read', label: 'reading' });
+    });
+
+    // read_document numbers a text box's paragraphs after the paragraph holding it; the viewer does not.
+    const WITH_BOX = p('One') + `<w:p>${textBoxRun('Boxed')}</w:p>` + p('Three');
+
+    it("gives pages the viewer's paragraph numbers when the document has a text box", async () => {
+      await writeFile(join(dir, 'letter.docx'), await buildDocx({ body: WITH_BOX }));
+      const pv = await start({ port: 0, watch: false });
+      const client = await connectTo(pv);
+      const seen = await events(
+        pv.url,
+        async () => {
+          await client.callTool({ name: 'edit_paragraph', arguments: { path: 'letter.docx', paragraph: 3, text: 'In the box' } });
+          await client.callTool({ name: 'replace_text', arguments: { path: 'letter.docx', find: 'Three', replace: '3' } });
+        },
+        (s) => s.filter((e) => e.type === 'activity').length >= 2,
+      );
+      // Paragraph 3 is in the box the viewer's paragraph 2 holds; paragraph 4 is the viewer's 3.
+      expect(seen.filter((e) => e.type === 'activity').map((e) => e.paragraphs)).toEqual([[2], [3]]);
+    });
+
+    it("tells the AI read_document's paragraph numbers for a selection after a text box", async () => {
+      await writeFile(join(dir, 'letter.docx'), await buildDocx({ body: WITH_BOX }));
+      const pv = await start({ port: 0, watch: false });
+      const client = await connectTo(pv);
+      const token = await tokenOf(pv.url);
+      // The page counts paragraphs as the viewer does: "Three" is its paragraph 3.
+      await post(pv.url, { path: 'letter.docx', story: 'body', start: { paragraph: 1, offset: 0 }, end: { paragraph: 3, offset: 5 } }, { 'x-docxkeun-token': token, origin: pv.url });
+      const said = ((await client.callTool({ name: 'get_selection', arguments: {} })).content as Array<{ text: string }>)[0]!.text;
+      expect(said).toContain('Selected in letter.docx: paragraphs 1–4');
+      expect(said).toContain('[4] «Three»');
+      expect(said).not.toContain('[3]');
     });
   });
 });
