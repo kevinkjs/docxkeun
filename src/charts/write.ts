@@ -141,31 +141,43 @@ function greyLine(): XmlElement {
   return el('a:ln', { w: 9525, cap: 'flat', cmpd: 'sng', algn: 'ctr' }, [el('a:solidFill', {}, [grey]), el('a:round')]);
 }
 
-function strRef(formula: string, values: string[]): XmlElement {
-  return el('c:strRef', {}, [
-    el('c:f', {}, [text(formula)]),
-    el('c:strCache', {}, [v('c:ptCount', values.length), ...values.map((s, i) => el('c:pt', { idx: i }, [el('c:v', {}, [text(s)])]))]),
-  ]);
+// Data: with a formula, a reference (c:strRef, c:numRef) and its cache; without one, a literal
+// (c:strLit, c:numLit, or c:v for a series name) for data that has no cells.
+
+function strData(formula: string | undefined, values: string[]): XmlElement {
+  const points = [v('c:ptCount', values.length), ...values.map((s, i) => el('c:pt', { idx: i }, [el('c:v', {}, [text(s)])]))];
+  return formula === undefined ? el('c:strLit', {}, points) : el('c:strRef', {}, [el('c:f', {}, [text(formula)]), el('c:strCache', {}, points)]);
 }
 
 /** A missing value has no c:pt. */
-function numRef(formula: string, values: Array<number | null>, formatCode: string): XmlElement {
-  const pts: XmlElement[] = [];
+function numData(formula: string | undefined, values: Array<number | null>, formatCode: string): XmlElement {
+  const points = [el('c:formatCode', {}, [text(formatCode)]), v('c:ptCount', values.length)];
   values.forEach((n, i) => {
-    if (n !== null) pts.push(el('c:pt', { idx: i }, [el('c:v', {}, [text(String(n))])]));
+    if (n !== null) points.push(el('c:pt', { idx: i }, [el('c:v', {}, [text(String(n))])]));
   });
-  return el('c:numRef', {}, [el('c:f', {}, [text(formula)]), el('c:numCache', {}, [el('c:formatCode', {}, [text(formatCode)]), v('c:ptCount', values.length), ...pts])]);
+  return formula === undefined ? el('c:numLit', {}, points) : el('c:numRef', {}, [el('c:f', {}, [text(formula)]), el('c:numCache', {}, points)]);
 }
 
-/** c:cat or c:xVal: a number cache when every category is a number, text otherwise. */
-function categoryData(name: string, formula: string, categories: Array<string | number>, formatCode = 'General'): XmlElement {
+function seriesName(formula: string | undefined, name: string): XmlElement {
+  return el('c:tx', {}, [formula === undefined ? el('c:v', {}, [text(name)]) : strData(formula, [name])]);
+}
+
+/** c:cat or c:xVal: numbers when every category is a number, text otherwise. */
+function categoryData(name: string, formula: string | undefined, categories: Array<string | number>, formatCode = 'General'): XmlElement {
   const numeric = categories.every((c): c is number => typeof c === 'number');
-  return el(name, {}, [numeric ? numRef(formula, categories as number[], formatCode) : strRef(formula, categories.map(String))]);
+  return el(name, {}, [numeric ? numData(formula, categories as number[], formatCode) : strData(formula, categories.map(String))]);
 }
 
 function formatCodeOf(data: XmlElement | undefined): string | undefined {
   const fc = firstChild(childPath(data, 'c:numRef', 'c:numCache') ?? firstChild(data, 'c:numLit'), 'c:formatCode');
   return fc ? textContent(fc) : undefined;
+}
+
+/** The cell reference of a series name, categories or values; undefined for literal data. */
+function formulaOf(data: XmlElement | undefined): string | undefined {
+  const ref = firstChild(data, 'c:strRef') ?? firstChild(data, 'c:numRef') ?? firstChild(data, 'c:multiLvlStrRef');
+  const f = firstChild(ref, 'c:f');
+  return f ? textContent(f) : undefined;
 }
 
 /** Replace the text of a c:rich (or c:txPr) body, keeping its first paragraph and run formatting. */
@@ -223,7 +235,7 @@ const VAL_AX = '100000002';
 
 function newSeries(style: SeriesStyle, i: number, data: ChartSeriesData, categories: Array<string | number>, ranges: Ranges): XmlElement {
   const color = accentColor(i);
-  const children: XmlElement[] = [v('c:idx', i), v('c:order', i), el('c:tx', {}, [strRef(ranges.name(i), [data.name])])];
+  const children: XmlElement[] = [v('c:idx', i), v('c:order', i), seriesName(ranges.name(i), data.name)];
   switch (style) {
     case 'bar':
     case 'area':
@@ -253,7 +265,7 @@ function newSeries(style: SeriesStyle, i: number, data: ChartSeriesData, categor
   }
   const xy = style === 'scatter';
   children.push(categoryData(xy ? 'c:xVal' : 'c:cat', ranges.categories, categories));
-  children.push(el(xy ? 'c:yVal' : 'c:val', {}, [numRef(ranges.values(i), data.values, 'General')]));
+  children.push(el(xy ? 'c:yVal' : 'c:val', {}, [numData(ranges.values(i), data.values, 'General')]));
   if (style === 'line' || style === 'scatter') children.push(v('c:smooth', 0));
   return el('c:ser', {}, children);
 }
@@ -329,7 +341,8 @@ function newPlotArea(chart: NewChart): XmlElement {
     layout,
     plot,
     newAxis('c:catAx', CAT_AX, VAL_AX, catPos, { title: titles.category, axisLine: true }),
-    newAxis('c:valAx', VAL_AX, CAT_AX, catPos === 'b' ? 'l' : 'b', { title: titles.value, gridlines: true }),
+    // Areas run from edge to edge of the plot; columns, bars and lines sit between the tick marks.
+    newAxis('c:valAx', VAL_AX, CAT_AX, catPos === 'b' ? 'l' : 'b', { title: titles.value, gridlines: true, crossBetween: chart.type === 'area' ? 'midCat' : 'between' }),
   ]);
 }
 
@@ -403,6 +416,8 @@ export function readChartTable(chartSpace: XmlElement): ChartTable {
 interface SeriesSlot {
   plot: XmlElement;
   ser: XmlElement;
+  /** Added by this patch. */
+  added?: boolean;
 }
 
 /** Series in the order the reader lists them: plots in document order, each sorted by c:order. */
@@ -459,16 +474,21 @@ function addSeries(plotArea: XmlElement | undefined, slots: SeriesSlot[]): Serie
   }
   ensureChild(slot.ser, 'c:idx', SER_ORDER).attrs.val = String(idx);
   ensureChild(slot.ser, 'c:order', SER_ORDER).attrs.val = String(order);
+  slot.added = true;
   return slot;
 }
 
-function fillSeries({ plot, ser }: SeriesSlot, i: number, data: ChartSeriesData, categories: Array<string | number>, ranges: Ranges): void {
+function fillSeries(slot: SeriesSlot, i: number, data: ChartSeriesData, categories: Array<string | number>, ranges: Ranges, keepFormulas: boolean): void {
+  const { plot, ser } = slot;
   const xy = plot.name === 'c:scatterChart' || plot.name === 'c:bubbleChart';
-  const catName = xy ? 'c:xVal' : 'c:cat';
-  const valName = xy ? 'c:yVal' : 'c:val';
-  replaceChild(ser, el('c:tx', {}, [strRef(ranges.name(i), [data.name])]), SER_ORDER);
-  replaceChild(ser, categoryData(catName, ranges.categories, categories, formatCodeOf(firstChild(ser, catName))), SER_ORDER);
-  replaceChild(ser, el(valName, {}, [numRef(ranges.values(i), data.values, formatCodeOf(firstChild(ser, valName)) ?? 'General')]), SER_ORDER);
+  const tx = firstChild(ser, 'c:tx');
+  const cat = firstChild(ser, xy ? 'c:xVal' : 'c:cat');
+  const val = firstChild(ser, xy ? 'c:yVal' : 'c:val');
+  // With keepFormulas, existing references stay; added series have no cells, so they hold literals.
+  const formula = (old: XmlElement | undefined, fresh: string): string | undefined => (!keepFormulas ? fresh : slot.added ? undefined : formulaOf(old));
+  replaceChild(ser, seriesName(formula(tx, ranges.name(i)), data.name), SER_ORDER);
+  replaceChild(ser, categoryData(xy ? 'c:xVal' : 'c:cat', formula(cat, ranges.categories), categories, formatCodeOf(cat)), SER_ORDER);
+  replaceChild(ser, el(xy ? 'c:yVal' : 'c:val', {}, [numData(formula(val, ranges.values(i)), data.values, formatCodeOf(val) ?? 'General')]), SER_ORDER);
   // Formatting of points past the new last one goes.
   const n = categories.length;
   const pastEnd = (c: XmlNode, name: string): boolean => c.type === 'element' && c.name === name && (numOf(c, 'c:idx') ?? -1) >= n;
@@ -477,13 +497,21 @@ function fillSeries({ plot, ser }: SeriesSlot, i: number, data: ChartSeriesData,
   if (labels) labels.children = labels.children.filter((c) => !pastEnd(c, 'c:dLbl'));
 }
 
-function patchData(chart: XmlElement, categories: Array<string | number>, series: ChartSeriesData[]): void {
+function patchData(chart: XmlElement, categories: Array<string | number>, series: ChartSeriesData[], keepFormulas: boolean): void {
   const plotArea = firstChild(chart, 'c:plotArea');
   const slots = orderedSeries(plotArea);
-  for (const { plot, ser } of slots.splice(series.length)) plot.children = plot.children.filter((c) => c !== ser);
+  const removed = slots.splice(series.length);
+  for (const { plot, ser } of removed) plot.children = plot.children.filter((c) => c !== ser);
+  // A plot left without series goes, and so do the axes only it used (a combination chart's secondary axes).
+  const emptied = new Set(removed.map((s) => s.plot).filter((p) => elements(p, 'c:ser').length === 0));
+  if (plotArea && emptied.size > 0) {
+    plotArea.children = plotArea.children.filter((c) => !(c.type === 'element' && emptied.has(c)));
+    const used = new Set(elements(plotArea).filter(isPlot).flatMap((p) => elements(p, 'c:axId').map((a) => attr(a, 'val'))));
+    plotArea.children = plotArea.children.filter((c) => !(c.type === 'element' && AXES.has(c.name) && !used.has(valOf(c, 'c:axId'))));
+  }
   while (slots.length < series.length) slots.push(addSeries(plotArea, slots));
   const ranges = chartRanges(series.length, categories.length);
-  slots.forEach((slot, i) => fillSeries(slot, i, series[i]!, categories, ranges));
+  slots.forEach((slot, i) => fillSeries(slot, i, series[i]!, categories, ranges, keepFormulas));
 }
 
 /** Set, replace or (with '') remove the c:title of a chart or axis, keeping the formatting it had. */
@@ -527,13 +555,16 @@ function setLegend(chart: XmlElement, position: LegendPosition): void {
 }
 
 /**
- * Change an existing chart in place. New data rewrites every series' name, categories, values and
- * formulas (series i in workbook column i + 1); series keep their formatting by position, added
- * series copy the last one's in the next accent colour, extra series are removed from the end.
- * Categories or series alone are combined with the chart's current data. Throws ChartDataError
- * (before changing anything) when the resulting table is invalid.
+ * Change an existing chart in place. New data rewrites every series' name, categories and values;
+ * series keep their formatting by position, added series copy the last one's in the next accent
+ * colour, and extra series are removed from the end, along with any plot (and the axes only it
+ * used) left without series. Formulas point into Sheet1 of the chart's own workbook (series i in
+ * column i + 1); with `keepFormulas`, for a chart linked to an outside workbook, existing references
+ * stay and only their caches change, while added series hold literal data. Categories or series
+ * alone are combined with the chart's current data. Throws ChartDataError (before changing
+ * anything) when the resulting table is invalid.
  */
-export function patchChartSpace(chartSpace: XmlElement, changes: ChartChanges): void {
+export function patchChartSpace(chartSpace: XmlElement, changes: ChartChanges, options: { keepFormulas?: boolean } = {}): void {
   const chart = firstChild(chartSpace, 'c:chart');
   if (!chart) throw new ChartDataError('the chart part has no c:chart element');
   if (changes.categories !== undefined || changes.series !== undefined) {
@@ -541,7 +572,7 @@ export function patchChartSpace(chartSpace: XmlElement, changes: ChartChanges): 
     const categories = changes.categories ?? current!.categories;
     const series = changes.series ?? current!.series;
     validateChartData(undefined, undefined, categories, series);
-    patchData(chart, categories, series);
+    patchData(chart, categories, series, options.keepFormulas === true);
   }
   if (changes.title !== undefined) {
     setTitle(chart, CHART_ORDER, changes.title, 1400, false);

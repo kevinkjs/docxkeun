@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { chartRanges, columnName, workbookFor, workbookHasMore } from '../src/charts/workbook.js';
 import { parseXml } from '../src/xml/parser.js';
-import { attr, childPath, el, elements, findAll, firstChild, serializeNode, textContent, walk, type XmlElement } from '../src/xml/index.js';
+import { attr, childPath, cloneElement, el, elements, findAll, firstChild, serializeNode, text, textContent, walk, type XmlElement } from '../src/xml/index.js';
 import { readChart, type Grouping, type PlotType } from '../src/charts/index.js';
 import {
   ChartDataError,
@@ -78,6 +78,8 @@ const SEQUENCES: Record<string, string[]> = {
   'c:rich': ['a:bodyPr', 'a:lstStyle', 'a:p'],
   'c:strCache': ['c:ptCount', 'c:pt', 'c:extLst'],
   'c:numCache': ['c:formatCode', 'c:ptCount', 'c:pt', 'c:extLst'],
+  'c:strLit': ['c:ptCount', 'c:pt', 'c:extLst'],
+  'c:numLit': ['c:formatCode', 'c:ptCount', 'c:pt', 'c:extLst'],
 };
 
 const AXES = new Set(['c:catAx', 'c:valAx', 'c:dateAx', 'c:serAx']);
@@ -241,6 +243,9 @@ describe('chart writer', () => {
     const scatter = childPath(newChartSpace({ type: 'scatter', categories: [1, 2, 3, 4], series: TWO }, 'rId1'), 'c:chart', 'c:plotArea')!;
     expect(names(scatter)).toEqual(['c:layout', 'c:scatterChart', 'c:valAx', 'c:valAx']);
     expect(elements(scatter, 'c:valAx').map((a) => val(a, 'c:crossBetween'))).toEqual(['midCat', 'midCat']);
+    // Areas run from edge to edge; lines sit between the tick marks.
+    const crossBetween = (type: NewChartType): string | undefined => val(childPath(newChartSpace({ type, categories: QUARTERS, series: TWO }, 'rId1'), 'c:chart', 'c:plotArea', 'c:valAx'), 'c:crossBetween');
+    expect([crossBetween('area'), crossBetween('line'), crossBetween('column')]).toEqual(['midCat', 'between', 'between']);
     expect(names(findAll(scatter, 'c:ser')[0])).toContain('c:xVal');
   });
 
@@ -393,5 +398,100 @@ describe('chart writer', () => {
     expect(names(firstChild(ser, 'c:xVal'))).toEqual(['c:numRef']);
     expect(formula(firstChild(ser, 'c:yVal'))).toBe('Sheet1!$B$2:$B$3');
     expect(readChart(scatter).plots[0]!.series[0]).toMatchObject({ categoryNumbers: [10, 20], values: [5, 6] });
+  });
+  it('keeps the formulas of a linked chart and gives added series literal data', () => {
+    const linked = newChartSpace({ type: 'column', categories: QUARTERS, series: TWO }, 'rId1');
+    for (const f of findAll(findAll(linked, 'c:ser')[0]!, 'c:f')) f.children = [text(textContent(f).replace('Sheet1', '[1]Data'))];
+    const plain = cloneElement(linked);
+    const three: ChartSeriesData[] = [
+      { name: 'One', values: [1, 2] },
+      { name: 'Two', values: [3, 4] },
+      { name: 'Three', values: [5, null] },
+    ];
+
+    patchChartSpace(linked, { categories: ['A', 'B'], series: three }, { keepFormulas: true });
+    expect(orderProblems(linked)).toEqual([]);
+    const sers = findAll(linked, 'c:ser');
+    expect(findAll(sers[0]!, 'c:f').map(textContent)).toEqual(['[1]Data!$B$1', '[1]Data!$A$2:$A$5', '[1]Data!$B$2:$B$5']);
+    expect(findAll(sers[1]!, 'c:f').map(textContent)).toEqual(['Sheet1!$C$1', 'Sheet1!$A$2:$A$5', 'Sheet1!$C$2:$C$5']);
+    expect(val(childPath(sers[0], 'c:val', 'c:numRef', 'c:numCache'), 'c:ptCount')).toBe('2');
+    const added = sers[2]!;
+    expect(findAll(added, 'c:f')).toEqual([]);
+    expect(textContent(childPath(added, 'c:tx', 'c:v')!)).toBe('Three');
+    expect(names(firstChild(added, 'c:cat'))).toEqual(['c:strLit']);
+    expect(names(firstChild(added, 'c:val'))).toEqual(['c:numLit']);
+    expect(findAll(firstChild(added, 'c:val')!, 'c:pt').map((p) => attr(p, 'idx'))).toEqual(['0']);
+    expect(readChartTable(reparse(linked))).toMatchObject({ categories: ['A', 'B'], series: three });
+
+    // Literal data stays literal; references keep their formulas when the categories become numbers.
+    patchChartSpace(linked, { categories: [2024, 2025] }, { keepFormulas: true });
+    expect(orderProblems(linked)).toEqual([]);
+    expect(names(firstChild(findAll(linked, 'c:ser')[2], 'c:cat'))).toEqual(['c:numLit']);
+    expect(findAll(findAll(linked, 'c:ser')[2]!, 'c:f')).toEqual([]);
+    expect(formula(firstChild(findAll(linked, 'c:ser')[0], 'c:cat'))).toBe('[1]Data!$A$2:$A$5');
+    expect(readChartTable(linked).categories).toEqual([2024, 2025]);
+
+    // Without the option every formula points into Sheet1 of the chart's own workbook.
+    patchChartSpace(plain, { categories: ['A', 'B'], series: three });
+    expect(findAll(findAll(plain, 'c:ser')[0]!, 'c:f').map(textContent)).toEqual(['Sheet1!$B$1', 'Sheet1!$A$2:$A$3', 'Sheet1!$B$2:$B$3']);
+    expect(findAll(findAll(plain, 'c:ser')[2]!, 'c:f').map(textContent)).toEqual(['Sheet1!$D$1', 'Sheet1!$A$2:$A$3', 'Sheet1!$D$2:$D$3']);
+
+    // Scatter: an added series gets literal x and y values.
+    const scatter = newChartSpace({ type: 'scatter', categories: [1, 2], series: [{ name: 'A', values: [1, 2] }] }, 'rId1');
+    patchChartSpace(scatter, { series: [{ name: 'A', values: [3, 4] }, { name: 'B', values: [5, 6] }] }, { keepFormulas: true });
+    expect(orderProblems(scatter)).toEqual([]);
+    const [a, b] = findAll(scatter, 'c:ser');
+    expect(formula(firstChild(a, 'c:yVal'))).toBe('Sheet1!$B$2:$B$3');
+    expect([names(firstChild(b, 'c:xVal')), names(firstChild(b, 'c:yVal'))]).toEqual([['c:numLit'], ['c:numLit']]);
+    expect(findAll(b!, 'c:f')).toEqual([]);
+    expect(readChart(scatter).plots[0]!.series[1]).toMatchObject({ name: 'B', categoryNumbers: [1, 2], values: [5, 6] });
+  });
+
+  it('removes plots and axes left without series', () => {
+    /** Columns North and South, plus a line plot with Trend on the same axes or its own secondary ones. */
+    const combo = (secondary: boolean): XmlElement => {
+      const cs = newChartSpace({ type: 'column', categories: QUARTERS, series: TWO }, 'rId1');
+      const lineArea = childPath(newChartSpace({ type: 'line', categories: QUARTERS, series: [...TWO, { name: 'Trend', values: [2, 3, 4, 5] }] }, 'rId1'), 'c:chart', 'c:plotArea')!;
+      const line = firstChild(lineArea, 'c:lineChart')!;
+      line.children = line.children.filter((c) => !(c.type === 'element' && c.name === 'c:ser' && val(c, 'c:idx') !== '2'));
+      const plotArea = childPath(cs, 'c:chart', 'c:plotArea')!;
+      plotArea.children.splice(2, 0, line);
+      if (secondary) {
+        const [catId, valId] = elements(line, 'c:axId');
+        catId!.attrs.val = '3';
+        valId!.attrs.val = '4';
+        const cat = firstChild(lineArea, 'c:catAx')!;
+        const value = firstChild(lineArea, 'c:valAx')!;
+        firstChild(cat, 'c:axId')!.attrs.val = '3';
+        firstChild(cat, 'c:crossAx')!.attrs.val = '4';
+        firstChild(cat, 'c:delete')!.attrs.val = '1';
+        firstChild(value, 'c:axId')!.attrs.val = '4';
+        firstChild(value, 'c:crossAx')!.attrs.val = '3';
+        firstChild(value, 'c:axPos')!.attrs.val = 'r';
+        plotArea.children.push(cat, value);
+      }
+      return cs;
+    };
+    const plotNames = (cs: XmlElement): string[] => names(childPath(cs, 'c:chart', 'c:plotArea'));
+
+    for (const secondary of [false, true]) {
+      const cs = combo(secondary);
+      const label = secondary ? 'secondary axes' : 'shared axes';
+      expect(orderProblems(cs), label).toEqual([]);
+      expect(readChartTable(cs), label).toMatchObject({ kind: 'clustered column + line', series: [{ name: 'North' }, { name: 'South' }, { name: 'Trend' }] });
+      const before = plotNames(cs);
+      expect(before, label).toEqual(['c:layout', 'c:barChart', 'c:lineChart', 'c:catAx', 'c:valAx', ...(secondary ? ['c:catAx', 'c:valAx'] : [])]);
+
+      // Every plot keeps a series: nothing goes.
+      patchChartSpace(cs, { series: [...TWO, { name: 'Trend', values: [1, 1, 1, 1] }] });
+      expect(plotNames(cs), label).toEqual(before);
+
+      patchChartSpace(cs, { series: TWO });
+      expect(plotNames(cs), label).toEqual(['c:layout', 'c:barChart', 'c:catAx', 'c:valAx']);
+      const plotArea = childPath(cs, 'c:chart', 'c:plotArea')!;
+      expect([...elements(plotArea, 'c:catAx'), ...elements(plotArea, 'c:valAx')].map((a) => val(a, 'c:axId')), label).toEqual(['100000001', '100000002']);
+      expect(readChartTable(cs), label).toMatchObject({ kind: 'clustered column', series: TWO });
+      expect(orderProblems(reparse(cs)), label).toEqual([]);
+    }
   });
 });
