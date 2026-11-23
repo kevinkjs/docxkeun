@@ -421,7 +421,7 @@ function readData(node: XmlElement | undefined): DataRef {
 // Automatic colours
 
 /** The chart colour style's variations for series 7+ (Office's colors1.xml, cycling the accents). */
-const VARIATIONS: Array<[number, number]> = [
+export const VARIATIONS: Array<[number, number]> = [
   [1, 0],
   [0.6, 0],
   [0.8, 0.2],
@@ -875,7 +875,8 @@ export function readChart(chartSpace: XmlElement, options: ReadChartOptions = {}
 // ---------------------------------------------------------------------------------------------
 // Description
 
-function plotName(plot: ChartPlot): string {
+/** A plot's plain name: "clustered column", "100% stacked bar", "line", "pie", … */
+export function plotName(plot: ChartPlot): string {
   const dir = plot.barDir === 'bar' ? 'bar' : 'column';
   const g = plot.grouping;
   const prefix = g === 'stacked' ? 'stacked ' : g === 'percentStacked' ? '100% stacked ' : '';
