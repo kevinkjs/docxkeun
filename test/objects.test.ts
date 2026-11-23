@@ -1,13 +1,16 @@
-/** Objects in the editor: listing them, and inserting, reading, updating and copying charts. */
+/** Objects in the editor: listing them; inserting, reading, updating and copying charts; inserting shapes and text boxes. */
 import { describe, expect, it } from 'vitest';
-import { DocxEditor, LockedRegionError, type DocPosition } from '../src/api/index.js';
+import { DocxEditor, EditError, LockedRegionError, paragraphText, type DocPosition, type ShapeKind } from '../src/api/index.js';
 import { ChartDataError, type NewChart } from '../src/charts/index.js';
 import { workbookFor } from '../src/charts/workbook.js';
+import { createDocx } from '../src/index.js';
+import { layoutDocument, type PathItem, type TextItem } from '../src/layout/index.js';
 import { DocxDocument, type ImageInline } from '../src/model/index.js';
 import { CONTENT_TYPE, REL } from '../src/opc/index.js';
-import { attr, childPath, findAll, firstChild, parseXml, textContent, type XmlElement } from '../src/xml/index.js';
+import { attr, childPath, elements, findAll, firstChild, NS, parseXml, textContent, type XmlElement } from '../src/xml/index.js';
 import { readZip } from '../src/zip/zip.js';
 import { buildDocx, p } from './helpers/docx.js';
+import { testRegistry } from './helpers/fonts.js';
 
 const QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
 const TWO = [
@@ -339,5 +342,196 @@ describe('charts in the editor', () => {
     expect(ed.objects().map((o) => ed.chartInfo(o).series.map((s) => s.name))).toEqual([['Revenue', 'Costs'], ['Only']]);
     expect(await sheetCells(again, workbooks[0]!)).toMatchObject({ B1: 'Revenue', C1: 'Costs' });
     expect(await sheetCells(again, workbooks[1]!)).toMatchObject({ B1: 'Only' });
+  });
+});
+
+describe('shapes and text boxes', () => {
+  const EMU = 12700;
+  /** The paragraphs' text, as the editor lists them (text box paragraphs right after their holder). */
+  const texts = (editor: DocxEditor) => editor.paragraphs().map((para) => paragraphText(para).text);
+  const shapeOf = (drawing: XmlElement) => childPath(elements(drawing)[0], 'a:graphic', 'a:graphicData', 'wps:wsp')!;
+  const position = (anchor: XmlElement, axis: 'H' | 'V') => {
+    const pos = firstChild(anchor, `wp:position${axis}`);
+    return [attr(pos, 'relativeFrom'), textContent(firstChild(pos, 'wp:posOffset')!)];
+  };
+
+  it('adds a floating text box with text, white with a black outline', async () => {
+    const { doc, editor } = await open(p('Before') + p('After'));
+    const drawing = await editor.insertShape(endOf(editor), { shape: 'textBox', text: 'Line one\nLine two' });
+    expect(drawing.name).toBe('w:drawing');
+
+    const again = await reopen(doc);
+    const run = findAll(again.documentXml.root, 'w:r').find((r) => firstChild(r, 'mc:AlternateContent'))!;
+    const alternate = firstChild(run, 'mc:AlternateContent')!;
+    expect(elements(alternate).map((e) => [e.name, attr(e, 'Requires')])).toEqual([['mc:Choice', 'wps']]);
+    const anchor = childPath(alternate, 'mc:Choice', 'w:drawing', 'wp:anchor')!;
+    expect(elements(anchor).map((e) => e.name)).toEqual([
+      'wp:simplePos', 'wp:positionH', 'wp:positionV', 'wp:extent', 'wp:effectExtent', 'wp:wrapSquare', 'wp:docPr', 'wp:cNvGraphicFramePr', 'a:graphic',
+    ]);
+    expect(anchor.attrs).toMatchObject({ behindDoc: '0', distL: '114300', distR: '114300', simplePos: '0', locked: '0', layoutInCell: '1', allowOverlap: '1', relativeHeight: '251659264' });
+    expect(attr(firstChild(anchor, 'wp:wrapSquare'), 'wrapText')).toBe('bothSides');
+    expect(position(anchor, 'H')).toEqual(['column', '0']);
+    expect(position(anchor, 'V')).toEqual(['paragraph', '0']);
+    expect(firstChild(anchor, 'wp:extent')!.attrs).toEqual({ cx: String(180 * EMU), cy: String(72 * EMU) });
+    expect(attr(firstChild(anchor, 'wp:docPr'), 'name')).toMatch(/^Text Box \d+$/);
+
+    const wsp = childPath(anchor, 'a:graphic', 'a:graphicData', 'wps:wsp')!;
+    expect(elements(wsp).map((e) => e.name)).toEqual(['wps:cNvSpPr', 'wps:spPr', 'wps:txbx', 'wps:bodyPr']);
+    expect(attr(firstChild(wsp, 'wps:cNvSpPr'), 'txBox')).toBe('1');
+    const spPr = firstChild(wsp, 'wps:spPr')!;
+    expect(elements(spPr).map((e) => e.name)).toEqual(['a:xfrm', 'a:prstGeom', 'a:solidFill', 'a:ln']);
+    expect(attr(childPath(spPr, 'a:prstGeom'), 'prst')).toBe('rect');
+    expect(attr(childPath(spPr, 'a:solidFill', 'a:srgbClr'), 'val')).toBe('FFFFFF');
+    const ln = firstChild(spPr, 'a:ln')!;
+    expect(attr(ln, 'w')).toBe('9525');
+    expect(attr(childPath(ln, 'a:solidFill', 'a:srgbClr'), 'val')).toBe('000000');
+    expect(firstChild(wsp, 'wps:bodyPr')!.attrs).toMatchObject({ lIns: '91440', tIns: '45720', rIns: '91440', bIns: '45720', anchor: 't' });
+    const paras = elements(childPath(wsp, 'wps:txbx', 'w:txbxContent')!, 'w:p');
+    expect(paras.map((x) => textContent(x))).toEqual(['Line one', 'Line two']);
+
+    const ed = new DocxEditor(again);
+    expect(texts(ed)).toEqual(['Before', 'Line one', 'Line two', 'After']);
+    expect(ed.objects()).toMatchObject([{ n: 1, kind: 'textBox', floating: true, width: 180, height: 72 }]);
+    expect(ed.objects()[0]!.paragraph.el).toBe(ed.paragraphs()[0]!.el);
+  });
+
+  it('adds a shape in the theme accent with white centred text', async () => {
+    const { editor } = await open();
+    const drawing = await editor.insertShape(endOf(editor), { shape: 'wedgeRectCallout', text: 'Note' });
+    const wsp = shapeOf(drawing);
+    expect(elements(wsp).map((e) => e.name)).toEqual(['wps:cNvSpPr', 'wps:spPr', 'wps:style', 'wps:txbx', 'wps:bodyPr']);
+    expect(attr(firstChild(wsp, 'wps:cNvSpPr'), 'txBox')).toBeUndefined();
+    const spPr = firstChild(wsp, 'wps:spPr')!;
+    expect(attr(firstChild(spPr, 'a:prstGeom'), 'prst')).toBe('wedgeRectCallout');
+    // The style gives the fill and outline.
+    expect(elements(spPr).map((e) => e.name)).toEqual(['a:xfrm', 'a:prstGeom']);
+    const style = firstChild(wsp, 'wps:style')!;
+    expect(elements(style).map((e) => e.name)).toEqual(['a:lnRef', 'a:fillRef', 'a:effectRef', 'a:fontRef']);
+    const fillRef = firstChild(style, 'a:fillRef')!;
+    expect(attr(fillRef, 'idx')).toBe('1');
+    expect(attr(firstChild(fillRef, 'a:schemeClr'), 'val')).toBe('accent1');
+    const lnRef = firstChild(style, 'a:lnRef')!;
+    expect(attr(lnRef, 'idx')).toBe('2');
+    expect(attr(firstChild(lnRef, 'a:schemeClr'), 'val')).toBe('accent1');
+    expect(attr(childPath(lnRef, 'a:schemeClr', 'a:shade'), 'val')).toBe('50000');
+    expect(attr(firstChild(wsp, 'wps:bodyPr'), 'anchor')).toBe('ctr');
+    const para = findAll(wsp, 'w:p')[0]!;
+    expect(attr(childPath(para, 'w:pPr', 'w:jc'), 'w:val')).toBe('center');
+    expect(attr(childPath(firstChild(para, 'w:r'), 'w:rPr', 'w:color'), 'w:val')).toBe('FFFFFF');
+    expect(textContent(para)).toBe('Note');
+    expect(firstChild(elements(drawing)[0], 'wp:extent')!.attrs).toEqual({ cx: String(108 * EMU), cy: String(72 * EMU) });
+    expect(editor.objects()).toMatchObject([{ kind: 'shape', floating: true }]);
+    expect(texts(editor)).toEqual(['Sales by quarter', 'Note']);
+  });
+
+  it('places a shape inline or in front of or behind text', async () => {
+    const { doc, editor } = await open(p('One') + p('Two') + p('Three') + p('Four') + p('Five'));
+    const inline = await editor.insertShape(endOf(editor, 0), { shape: 'rect', place: { inline: true } });
+    const front = await editor.insertShape(endOf(editor, 1), { shape: 'ellipse', place: { x: 0, y: 0, wrap: 'inFront' } });
+    const behind = await editor.insertShape(endOf(editor, 2), { shape: 'star5', place: { x: 0, y: 0, wrap: 'behind' } });
+    const page = await editor.insertShape(endOf(editor, 3), { shape: 'rightArrow', place: { x: 36, y: 18, from: 'page', wrap: 'topAndBottom' } });
+    const margin = await editor.insertShape(endOf(editor, 4), { shape: 'line', place: { x: -9, y: 0, from: 'margin' } });
+
+    expect(elements(inline).map((e) => e.name)).toEqual(['wp:inline']);
+    expect(findAll(doc.documentXml.root, 'mc:Choice').map((c) => firstChild(c, 'w:drawing'))).toEqual([inline, front, behind, page, margin]);
+
+    const anchors = [front, behind, page, margin].map((d) => firstChild(d, 'wp:anchor')!);
+    const wraps = anchors.map((a) => elements(a).find((e) => e.name.startsWith('wp:wrap'))!.name);
+    expect(wraps).toEqual(['wp:wrapNone', 'wp:wrapNone', 'wp:wrapTopAndBottom', 'wp:wrapSquare']);
+    expect(anchors.map((a) => attr(a, 'behindDoc'))).toEqual(['0', '1', '0', '0']);
+    expect(position(anchors[2]!, 'H')).toEqual(['page', '457200']);
+    expect(position(anchors[2]!, 'V')).toEqual(['page', '228600']);
+    expect(position(anchors[3]!, 'H')).toEqual(['margin', String(-9 * EMU)]);
+    expect(position(anchors[3]!, 'V')).toEqual(['margin', '0']);
+    // Each new floating object goes on top of the ones before it.
+    expect(anchors.map((a) => Number(attr(a, 'relativeHeight')))).toEqual([251659264, 251659265, 251659266, 251659267]);
+
+    // A line: a connector, 144 × 0 pt, with no text.
+    const line = shapeOf(margin);
+    expect(elements(line).map((e) => e.name)).toEqual(['wps:cNvCnPr', 'wps:spPr', 'wps:style', 'wps:bodyPr']);
+    expect(attr(childPath(line, 'wps:spPr', 'a:prstGeom'), 'prst')).toBe('line');
+    expect(firstChild(anchors[3]!, 'wp:extent')!.attrs).toEqual({ cx: String(144 * EMU), cy: '0' });
+
+    const ids = findAll(doc.documentXml.root, 'wp:docPr').map((d) => attr(d, 'id'));
+    expect(new Set(ids).size).toBe(5);
+    expect(editor.objects().map((o) => [o.kind, o.floating])).toEqual([
+      ['shape', false],
+      ['shape', true],
+      ['shape', true],
+      ['shape', true],
+      ['shape', true],
+    ]);
+  });
+
+  it('takes colours or none', async () => {
+    const { editor } = await open(p('One') + p('Two') + p('Three'));
+    const plain = await editor.insertShape(endOf(editor, 0), { shape: 'ellipse', fill: 'none', outline: 'C00000' });
+    const box = await editor.insertShape(endOf(editor, 1), { shape: 'textBox', fill: '#ffeeaa', outline: 'none' });
+    const spPr = (d: XmlElement) => firstChild(shapeOf(d), 'wps:spPr')!;
+    expect(elements(spPr(plain)).map((e) => e.name)).toEqual(['a:xfrm', 'a:prstGeom', 'a:noFill', 'a:ln']);
+    expect(attr(childPath(spPr(plain), 'a:ln', 'a:solidFill', 'a:srgbClr'), 'val')).toBe('C00000');
+    expect(attr(childPath(spPr(box), 'a:solidFill', 'a:srgbClr'), 'val')).toBe('FFEEAA');
+    expect(elements(firstChild(spPr(box), 'a:ln')!).map((e) => e.name)).toEqual(['a:noFill']);
+    // An empty text box still has a paragraph to type in.
+    expect(elements(childPath(shapeOf(box), 'wps:txbx', 'w:txbxContent')!).map((e) => e.name)).toEqual(['w:p']);
+
+    const before = editor.objects().length;
+    const at = endOf(editor, 3);
+    await expect(editor.insertShape(at, { shape: 'rect', fill: 'red' })).rejects.toThrow(EditError);
+    await expect(editor.insertShape(at, { shape: 'rect', outline: '12345' })).rejects.toThrow(EditError);
+    await expect(editor.insertShape(at, { shape: 'rect', width: 0 })).rejects.toThrow(EditError);
+    await expect(editor.insertShape(at, { shape: 'rect', height: Number.NaN })).rejects.toThrow(EditError);
+    await expect(editor.insertShape(at, { shape: 'line', text: 'No' })).rejects.toThrow(EditError);
+    await expect(editor.insertShape(at, { shape: 'hexagon' as ShapeKind })).rejects.toThrow(EditError);
+    await expect(editor.insertShape(at, { shape: 'rect', place: { x: Number.POSITIVE_INFINITY, y: 0 } })).rejects.toThrow(EditError);
+    await expect(editor.insertShape(at, { shape: 'rect', place: { x: 0, y: 0, wrap: 'tight' as 'square' } })).rejects.toThrow(EditError);
+    expect(editor.objects()).toHaveLength(before);
+  });
+
+  it('works in a document made from scratch', async () => {
+    const doc = await createDocx();
+    const editor = new DocxEditor(doc);
+    editor.insertParagraph('end', 'Arrow here');
+    editor.insertParagraph('end', 'Box here');
+    await editor.insertChart({ node: editor.paragraphs()[0]!.el, offset: 0 }, COLUMNS);
+    await editor.insertShape(editor.find('Arrow here')[0]!.end, { shape: 'rightArrow', text: 'Go', place: { inline: true } });
+    await editor.insertShape(editor.find('Box here')[0]!.end, { shape: 'textBox', text: 'Boxed', place: { x: 0, y: 24 } });
+
+    const again = await reopen(doc);
+    const root = again.documentXml.root;
+    for (const prefix of ['wp', 'a', 'wps', 'mc', 'r']) expect(attr(root, `xmlns:${prefix}`)).toBe(NS[prefix as keyof typeof NS]);
+    const ed = new DocxEditor(again);
+    expect(ed.objects().map((o) => o.kind)).toEqual(['chart', 'shape', 'textBox']);
+    expect(texts(ed)).toEqual(['', 'Arrow here', 'Go', 'Box here', 'Boxed']);
+
+    const items = layoutDocument(again, { fonts: testRegistry() }).pages[0]!.items;
+    const words = items.filter((i): i is TextItem => i.type === 'text').map((t) => t.text);
+    expect(words).toEqual(expect.arrayContaining(['Sales', 'Q1', 'Go', 'Boxed']));
+    const shapes = items.filter((i): i is PathItem => i.type === 'path');
+    // The arrow in the theme's accent 1, the text box white with a black outline.
+    expect(shapes.some((s) => s.fill === '4472C4' && s.stroke !== undefined)).toBe(true);
+    expect(shapes.some((s) => s.fill === 'FFFFFF' && s.stroke === '000000')).toBe(true);
+    expect(items.filter((i): i is TextItem => i.type === 'text').find((t) => t.text === 'Go')!.color).toBe('FFFFFF');
+  });
+
+  it('records a new shape as an insertion with Track Changes on', async () => {
+    const doc = await DocxDocument.open(await buildDocx({ body: p('Notes') }));
+    const editor = new DocxEditor(doc, undefined, { trackChanges: true, author: 'AI' });
+    const drawing = await editor.insertShape(endOf(editor), { shape: 'textBox', text: 'Tracked' });
+    const ins = findAll(doc.documentXml.root, 'w:ins').find((i) => findAll(i, 'w:drawing').includes(drawing));
+    expect(ins).toBeDefined();
+    expect(attr(ins, 'w:author')).toBe('AI');
+    expect(editor.revisions()).toMatchObject([{ kind: 'insert', author: 'AI' }]);
+    // Rejecting it takes the whole box away.
+    editor.rejectRevisions();
+    expect(editor.objects()).toEqual([]);
+    expect(texts(editor)).toEqual(['Notes']);
+  });
+
+  it('refuses to insert in a locked region', async () => {
+    const { editor } = await open(p('The rate is 3.75 percent per year'));
+    editor.lockRange(editor.find('3.75 percent')[0]!, { title: 'Agreed rate' });
+    await expect(editor.insertShape(editor.find('.75')[0]!.start, { shape: 'textBox', text: 'No' })).rejects.toThrow(LockedRegionError);
+    expect(editor.objects()).toEqual([]);
   });
 });

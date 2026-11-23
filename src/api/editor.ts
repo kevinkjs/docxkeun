@@ -34,7 +34,29 @@ import {
 } from './revisions.js';
 import { SETTINGS_ORDER } from '../security/protection.js';
 import { ensureNamespaces, ensurePart, randomHexId, ROOT_NAMESPACES } from './parts.js';
-import { addWorkbook, chartData, chartGraphic, chartKind, chartOf, chartSize, copyPart, freePartName, inlineFrame, listObjects, replaceWorkbook, sectionAt, type ChartInfo, type ChartUpdate, type DocObject } from './objects.js';
+import {
+  addWorkbook,
+  anchorFrame,
+  chartData,
+  chartGraphic,
+  chartKind,
+  chartOf,
+  chartSize,
+  checkShape,
+  copyPart,
+  freePartName,
+  inlineFrame,
+  listObjects,
+  nextRelativeHeight,
+  replaceWorkbook,
+  sectionAt,
+  SHAPE_NAMES,
+  shapeGraphic,
+  type ChartInfo,
+  type ChartUpdate,
+  type DocObject,
+  type NewShape,
+} from './objects.js';
 import {
   between,
   EditError,
@@ -805,6 +827,28 @@ export class DocxEditor {
     const id = this.newDrawingId();
     const drawing = inlineFrame(id, `Chart ${id}`, size.width, size.height, chartGraphic(rId), chart.alt);
     this.insertRunContent(at, [drawing]);
+    return drawing;
+  }
+
+  /**
+   * Insert a text box or a preset shape at a position, with optional text (each line a paragraph,
+   * listed by `paragraphs()` right after the paragraph holding it). By default it floats at the top
+   * left of the paragraph with square wrap; see `NewShape` for sizes and colours. Returns the
+   * w:drawing.
+   */
+  async insertShape(at: DocPosition, shape: NewShape): Promise<XmlElement> {
+    this.check('edit', { start: at, end: at });
+    const { width, height, place } = checkShape(shape);
+    const graphic = shapeGraphic(shape, width, height, (text, format) => newRun(text, undefined, format));
+    const id = this.newDrawingId();
+    for (const prefix of ['a', 'wps', 'mc'] as const) if (this.root.attrs[`xmlns:${prefix}`] === undefined) this.root.attrs[`xmlns:${prefix}`] = NS[prefix];
+    const name = `${SHAPE_NAMES[shape.shape]} ${id}`;
+    const drawing =
+      'inline' in place
+        ? inlineFrame(id, name, width, height, graphic, shape.alt)
+        : anchorFrame(id, name, width, height, place, graphic, shape.alt, nextRelativeHeight([this.doc.documentXml.root, this.root]));
+    // Word 2010+ shapes go in mc:Choice; no old VML copy (mc:Fallback) is written.
+    this.insertRunContent(at, [el('mc:AlternateContent', {}, [el('mc:Choice', { Requires: 'wps' }, [drawing])])]);
     return drawing;
   }
 

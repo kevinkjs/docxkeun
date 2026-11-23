@@ -7,7 +7,8 @@ import type { ChartTable, NewChart, NewChartType } from '../charts/write.js';
 import type { DocParagraph, ImageInline } from '../model/content.js';
 import type { DocxDocument } from '../model/document.js';
 import { CONTENT_TYPE, REL, type OpcPackage } from '../opc/index.js';
-import { attr, childPath, cloneElement, el, elements, firstChild, insertOrdered, NS, walk, type XmlElement } from '../xml/index.js';
+import { attr, childPath, cloneElement, el, elements, findAll, firstChild, insertOrdered, NS, text, walk, type XmlElement } from '../xml/index.js';
+import type { TextFormat } from './editor.js';
 import { sectionProperties } from './headers.js';
 import { EditError, TreeIndex } from './positions.js';
 
@@ -29,6 +30,50 @@ export interface DocObject {
   alt?: string;
   /** The chart part, for a chart. */
   chartPart?: string;
+}
+
+export type ShapeKind =
+  | 'textBox'
+  | 'rect'
+  | 'roundRect'
+  | 'ellipse'
+  | 'triangle'
+  | 'diamond'
+  | 'rightArrow'
+  | 'leftArrow'
+  | 'upArrow'
+  | 'downArrow'
+  | 'chevron'
+  | 'pentagon'
+  | 'star5'
+  | 'wedgeRectCallout'
+  | 'wedgeRoundRectCallout'
+  | 'cloudCallout'
+  | 'line';
+
+/**
+ * Inline in the text, or floating at (x, y) points from the paragraph (default), margin or page,
+ * with text wrapped square around it (default), above and below it, or not at all (in front of or
+ * behind the text).
+ */
+export type ObjectPlacement = { inline: true } | { x: number; y: number; from?: 'margin' | 'page' | 'paragraph'; wrap?: 'square' | 'topAndBottom' | 'inFront' | 'behind' };
+export type FloatingPlacement = Exclude<ObjectPlacement, { inline: true }>;
+
+/** A new shape or text box (sizes in points; colours RRGGBB or 'none'). */
+export interface NewShape {
+  shape: ShapeKind;
+  /** Text inside: each line becomes a paragraph. */
+  text?: string;
+  /** Default: text box 180 × 72, line 144 × 0, other shapes 108 × 72. */
+  width?: number;
+  height?: number;
+  /** Default: white for a text box, the theme's accent 1 for a shape. */
+  fill?: string;
+  /** Default: thin black for a text box, a darker accent 1 for a shape. */
+  outline?: string;
+  /** Default: floating at the top left of the paragraph, square wrap. */
+  place?: ObjectPlacement;
+  alt?: string;
 }
 
 /** A chart's data, and where it comes from: an embedded workbook, a linked outside file, or neither. */
@@ -119,9 +164,161 @@ export function inlineFrame(id: number, name: string, widthPt: number, heightPt:
   ]);
 }
 
+/** Where a floating object sits: relativeFrom of wp:positionH and wp:positionV. */
+const RELATIVE_FROM: Record<'margin' | 'page' | 'paragraph', [string, string]> = { margin: ['margin', 'margin'], page: ['page', 'page'], paragraph: ['column', 'paragraph'] };
+const WRAPS = ['square', 'topAndBottom', 'inFront', 'behind'];
+
+/** Check a placement's position, reference and wrap style (EditError when wrong). */
+export function checkPlacement(place: ObjectPlacement): void {
+  if ('inline' in place) return;
+  if (!Number.isFinite(place.x) || !Number.isFinite(place.y)) throw new EditError('A floating object needs x and y in points');
+  if (place.from !== undefined && !Object.hasOwn(RELATIVE_FROM, place.from)) throw new EditError(`Place an object from the margin, page or paragraph, not "${place.from}"`);
+  if (place.wrap !== undefined && !WRAPS.includes(place.wrap)) throw new EditError(`Wrap text square, topAndBottom, inFront or behind, not "${place.wrap}"`);
+}
+
+/** The z-order for a new floating object: above every other one in `roots` (Word starts at 251659264). */
+export function nextRelativeHeight(roots: XmlElement[]): number {
+  let top = 0;
+  for (const root of roots) for (const anchor of findAll(root, 'wp:anchor')) top = Math.max(top, Number(attr(anchor, 'relativeHeight')) || 0);
+  return Math.max(top + 1, 251659264);
+}
+
+/**
+ * A w:drawing with a floating frame (wp:anchor) of `widthPt` × `heightPt` points around
+ * `graphicData`, at `place` (from the paragraph by default, square wrap by default) and at z-order
+ * `relativeHeight`.
+ */
+export function anchorFrame(
+  id: number,
+  name: string,
+  widthPt: number,
+  heightPt: number,
+  place: FloatingPlacement,
+  graphicData: XmlElement,
+  alt: string | undefined,
+  relativeHeight: number,
+): XmlElement {
+  checkPlacement(place);
+  const [h, v] = RELATIVE_FROM[place.from ?? 'paragraph'];
+  const wrap = place.wrap ?? 'square';
+  const docPr: Record<string, string> = { id: String(id), name };
+  if (alt) docPr.descr = alt;
+  const position = (axis: 'H' | 'V', relativeFrom: string, offset: number) => el(`wp:position${axis}`, { relativeFrom }, [el('wp:posOffset', {}, [text(emu(offset))])]);
+  return el('w:drawing', {}, [
+    el('wp:anchor', { distT: 0, distB: 0, distL: 114300, distR: 114300, simplePos: 0, relativeHeight, behindDoc: wrap === 'behind' ? 1 : 0, locked: 0, layoutInCell: 1, allowOverlap: 1 }, [
+      el('wp:simplePos', { x: 0, y: 0 }),
+      position('H', h, place.x),
+      position('V', v, place.y),
+      el('wp:extent', { cx: emu(widthPt), cy: emu(heightPt) }),
+      el('wp:effectExtent', { l: 0, t: 0, r: 0, b: 0 }),
+      wrap === 'square' ? el('wp:wrapSquare', { wrapText: 'bothSides' }) : wrap === 'topAndBottom' ? el('wp:wrapTopAndBottom') : el('wp:wrapNone'),
+      el('wp:docPr', docPr),
+      el('wp:cNvGraphicFramePr'),
+      el('a:graphic', { 'xmlns:a': NS.a }, [graphicData]),
+    ]),
+  ]);
+}
+
 /** The graphic of a chart whose part the relationship `relId` points at. */
 export function chartGraphic(relId: string): XmlElement {
   return el('a:graphicData', { uri: 'http://schemas.openxmlformats.org/drawingml/2006/chart' }, [el('c:chart', { 'xmlns:c': NS.c, 'xmlns:r': NS.r, 'r:id': relId })]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shapes and text boxes
+
+/** Word's names for new shapes (the wp:docPr name, before the drawing id). */
+export const SHAPE_NAMES: Record<ShapeKind, string> = {
+  textBox: 'Text Box',
+  rect: 'Rectangle',
+  roundRect: 'Rectangle: Rounded Corners',
+  ellipse: 'Oval',
+  triangle: 'Isosceles Triangle',
+  diamond: 'Diamond',
+  rightArrow: 'Arrow: Right',
+  leftArrow: 'Arrow: Left',
+  upArrow: 'Arrow: Up',
+  downArrow: 'Arrow: Down',
+  chevron: 'Arrow: Chevron',
+  pentagon: 'Regular Pentagon',
+  star5: 'Star: 5 Points',
+  wedgeRectCallout: 'Speech Bubble: Rectangle',
+  wedgeRoundRectCallout: 'Speech Bubble: Rectangle with Corners Rounded',
+  cloudCallout: 'Thought Bubble: Cloud',
+  line: 'Straight Connector',
+};
+
+/** A colour option: RRGGBB (a leading # is fine) or 'none'. */
+function checkColour(value: string | undefined, what: string): void {
+  if (value !== undefined && value !== 'none' && !/^#?[0-9A-Fa-f]{6}$/.test(value)) throw new EditError(`A ${what} colour is RRGGBB (like 4472C4) or "none", not "${value}"`);
+}
+
+/**
+ * Check a new shape's options (EditError when wrong) and fill in its size and placement: a text box
+ * is 180 × 72 pt, a line 144 × 0 pt, other shapes 108 × 72 pt; by default it floats at the top left
+ * of its paragraph.
+ */
+export function checkShape(shape: NewShape): { width: number; height: number; place: ObjectPlacement } {
+  if (!Object.hasOwn(SHAPE_NAMES, shape.shape)) throw new EditError(`Unknown shape "${shape.shape}"`);
+  const line = shape.shape === 'line';
+  if (line && shape.text) throw new EditError('A line cannot hold text');
+  const [w, h] = shape.shape === 'textBox' ? [180, 72] : line ? [144, 0] : [108, 72];
+  const width = shape.width ?? w;
+  const height = shape.height ?? h;
+  // A line may be flat in one direction, not both; other shapes need both sides.
+  const sized = (n: number) => Number.isFinite(n) && (line ? n >= 0 : n > 0);
+  if (!sized(width) || !sized(height) || width + height === 0) throw new EditError(line ? 'A line needs a length' : 'A shape needs a positive width and height');
+  checkColour(shape.fill, 'fill');
+  checkColour(shape.outline, 'outline');
+  const place = shape.place ?? { x: 0, y: 0 };
+  checkPlacement(place);
+  return { width, height, place };
+}
+
+const solid = (colour: string) => el('a:solidFill', {}, [el('a:srgbClr', { val: colour.replace(/^#/, '').toUpperCase() })]);
+
+/**
+ * The graphic of a new shape (wps:wsp) of `widthPt` × `heightPt` points, holding `shape.text` (each
+ * line a paragraph, each run made by `newRun`). A text box is white with a thin black outline and
+ * top-aligned text; other shapes take the theme's accent 1 with a darker outline (wps:style) and
+ * white, centred text; `fill` and `outline` override either.
+ */
+export function shapeGraphic(shape: NewShape, widthPt: number, heightPt: number, newRun: (text: string, format?: TextFormat) => XmlElement): XmlElement {
+  const box = shape.shape === 'textBox';
+  const line = shape.shape === 'line';
+  const spPr = el('wps:spPr', {}, [
+    el('a:xfrm', {}, [el('a:off', { x: 0, y: 0 }), el('a:ext', { cx: emu(widthPt), cy: emu(heightPt) })]),
+    el('a:prstGeom', { prst: box ? 'rect' : shape.shape }, [el('a:avLst')]),
+  ]);
+  const fill = shape.fill ?? (box ? 'FFFFFF' : undefined);
+  if (fill !== undefined) spPr.children.push(fill === 'none' ? el('a:noFill') : solid(fill));
+  const outline = shape.outline ?? (box ? '000000' : undefined);
+  // A shape's own outline keeps the style's width.
+  if (outline !== undefined) spPr.children.push(el('a:ln', { w: box ? 9525 : undefined }, [outline === 'none' ? el('a:noFill') : solid(outline)]));
+  const children = [line ? el('wps:cNvCnPr') : el('wps:cNvSpPr', { txBox: box ? 1 : undefined }), spPr];
+  if (!box) {
+    const scheme = (...transforms: XmlElement[]) => el('a:schemeClr', { val: 'accent1' }, transforms);
+    children.push(
+      el('wps:style', {}, [
+        el('a:lnRef', { idx: 2 }, [scheme(el('a:shade', { val: 50000 }))]),
+        el('a:fillRef', { idx: 1 }, [scheme()]),
+        el('a:effectRef', { idx: 0 }, [scheme()]),
+        el('a:fontRef', { idx: 'minor' }, [el('a:schemeClr', { val: 'lt1' })]),
+      ]),
+    );
+  }
+  if (box || shape.text) {
+    // An empty text box still has a paragraph to type in.
+    const lines = (shape.text ?? '').split(/\r?\n/);
+    const paragraphs = lines.map((t) =>
+      box ? el('w:p', {}, t ? [newRun(t)] : []) : el('w:p', {}, [el('w:pPr', {}, [el('w:jc', { 'w:val': 'center' })]), ...(t ? [newRun(t, { color: 'FFFFFF' })] : [])]),
+    );
+    children.push(el('wps:txbx', {}, [el('w:txbxContent', {}, paragraphs)]));
+  }
+  children.push(
+    el('wps:bodyPr', { rot: 0, vert: 'horz', wrap: 'square', lIns: 91440, tIns: 45720, rIns: 91440, bIns: 45720, anchor: box ? 't' : 'ctr', anchorCtr: 0 }, [el('a:noAutofit')]),
+  );
+  return el('a:graphicData', { uri: 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape' }, [el('wps:wsp', {}, children)]);
 }
 
 /** The w:sectPr of the section holding `node`: the next paragraph section break, or the body's own. */
