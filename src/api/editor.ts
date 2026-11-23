@@ -504,15 +504,15 @@ export class DocxEditor {
     if (!range) return;
     const idx = this.index();
     if (action === 'edit' || action === 'format' || action === 'link') this.assertUnlocked(range, idx);
-    this.dropStaleFallbacks(range, idx);
+    this.dropStaleFallbacks([range.start.node, range.end.node], idx);
   }
 
   /**
    * Word stores a text box twice: DrawingML in mc:Choice and an old VML copy in mc:Fallback. A
-   * change inside the box leaves the copy stale, so it goes.
+   * change inside the box (at any of `nodes`) leaves the copy stale, so it goes.
    */
-  private dropStaleFallbacks(range: DocRange, idx: TreeIndex): void {
-    for (const { node } of [range.start, range.end]) {
+  private dropStaleFallbacks(nodes: XmlElement[], idx = this.index()): void {
+    for (const node of nodes) {
       let inBox = false;
       for (let cur: XmlElement | undefined = node; cur; cur = idx.parent.get(cur)) {
         if (cur.name === 'w:txbxContent') inBox = true;
@@ -647,6 +647,7 @@ export class DocxEditor {
       // Typing at the very edge of a locked region goes just outside it, as in Word.
       this.guard?.assert('edit', { start: at, end: at }, track ? { tracked: true } : undefined);
       const idx = this.index();
+      this.dropStaleFallbacks([at.node], idx);
       const run = newRun(text, idx.parentOf(at.node), format);
       const parent = idx.parentOf(edge.sdt);
       parent.children.splice(indexOfChild(parent, edge.sdt) + (edge.after ? 1 : 0), 0, this.placed(run, track));
@@ -1132,6 +1133,7 @@ export class DocxEditor {
       // Enter at the start or end of a locked block adds a paragraph outside it.
       this.guard?.assert('edit', { start: at, end: at });
       const idx = this.index();
+      this.dropStaleFallbacks([at.node], idx);
       const pPr = firstChild(blockEdge.paragraph, 'w:pPr');
       const newPPr = pPr ? structuredClone(pPr) : undefined;
       if (newPPr) removeChildren(newPPr, 'w:sectPr');
@@ -1714,8 +1716,8 @@ export class DocxEditor {
       const idx = this.index();
       const parent = idx.parentOf(table);
       parent.children.splice(indexOfChild(parent, table), 1);
-      // A table cell, and the body, must keep a paragraph.
-      if (parent.name === 'w:tc' && !elements(parent, 'w:p').length) parent.children.push(el('w:p'));
+      // A table cell, a text box, and the body, must keep a paragraph.
+      if ((parent.name === 'w:tc' || parent.name === 'w:txbxContent') && !elements(parent, 'w:p').length) parent.children.push(el('w:p'));
       if (parent === this.body && !elements(parent).some((c) => c.name === 'w:p' || c.name === 'w:tbl' || c.name === 'w:sdt')) {
         const sect = firstChild(parent, 'w:sectPr');
         parent.children.splice(sect ? parent.children.indexOf(sect) : parent.children.length, 0, el('w:p'));
@@ -1950,6 +1952,7 @@ export class DocxEditor {
   async setHyperlinkTarget(hyperlink: XmlElement, target: { url: string } | { bookmark: string }): Promise<void> {
     this.check('link');
     if ('url' in target && !/^(https?|mailto|tel|ftp):/i.test(target.url)) throw new EditError(`Refusing link to "${target.url}": unsupported scheme`);
+    this.dropStaleFallbacks([hyperlink]);
     const old = hyperlink.attrs['r:id'];
     if ('url' in target) {
       hyperlink.attrs['r:id'] = await this.doc.pkg.addRelationship(this.part, REL.hyperlink, target.url, true);
@@ -1981,6 +1984,7 @@ export class DocxEditor {
     this.check('edit');
     const props = drawing.name === 'wp:docPr' ? drawing : findAll(drawing, 'wp:docPr')[0];
     if (!props) throw new EditError('This object has no description to edit');
+    this.dropStaleFallbacks([props]);
     props.attrs['descr'] = text;
     this.changed();
   }
@@ -1989,6 +1993,7 @@ export class DocxEditor {
   async removeHyperlink(link: XmlElement): Promise<void> {
     this.check('link');
     const idx = this.index();
+    this.dropStaleFallbacks([link], idx);
     const parent = idx.parentOf(link);
     const runs = link.children;
     for (const run of findAll(link, 'w:r')) {
@@ -2033,7 +2038,9 @@ export class DocxEditor {
     if (!start) return;
     const id = attr(start, 'w:id');
     const idx = this.index();
-    for (const node of [start, ...findAll(this.root, 'w:bookmarkEnd').filter((b) => attr(b, 'w:id') === id)]) {
+    const nodes = [start, ...findAll(this.root, 'w:bookmarkEnd').filter((b) => attr(b, 'w:id') === id)];
+    this.dropStaleFallbacks(nodes, idx);
+    for (const node of nodes) {
       const parent = idx.parentOf(node);
       parent.children.splice(indexOfChild(parent, node), 1);
     }
@@ -2192,6 +2199,7 @@ export class DocxEditor {
     this.check('protect');
     const region = this.lockedRegions().find((r) => r.id === id);
     if (!region) throw new EditError(`No locked region with id ${id}`);
+    this.dropStaleFallbacks([region.el]);
     if (region.tag === LOCK_TAG) {
       const idx = this.index();
       const parent = idx.parentOf(region.el);
