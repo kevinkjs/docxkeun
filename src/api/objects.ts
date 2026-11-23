@@ -1,13 +1,13 @@
 /**
  * Objects in a story (pictures, charts, SmartArt, shapes, text boxes, groups): listing them in
- * document order, the drawing XML for new ones, and the parts behind a chart (its workbook, and
- * copies of a chart part for copied content).
+ * document order, the drawing XML for new ones, resizing and placing existing ones, and the parts
+ * behind a chart (its workbook, and copies of a chart part for copied content).
  */
 import type { ChartTable, NewChart, NewChartType } from '../charts/write.js';
 import type { DocParagraph, ImageInline } from '../model/content.js';
 import type { DocxDocument } from '../model/document.js';
 import { CONTENT_TYPE, REL, type OpcPackage } from '../opc/index.js';
-import { attr, childPath, cloneElement, el, elements, findAll, firstChild, insertOrdered, NS, text, walk, type XmlElement } from '../xml/index.js';
+import { attr, childPath, cloneElement, el, elements, findAll, firstChild, insertOrdered, NS, removeChildren, text, walk, type XmlElement } from '../xml/index.js';
 import type { TextFormat } from './editor.js';
 import { sectionProperties } from './headers.js';
 import { EditError, TreeIndex } from './positions.js';
@@ -183,6 +183,49 @@ export function nextRelativeHeight(roots: XmlElement[]): number {
   return Math.max(top + 1, 251659264);
 }
 
+/** What an inline or floating frame is built around: its size, name and alt text, and graphic. */
+interface FrameParts {
+  extent: XmlElement;
+  effectExtent: XmlElement | undefined;
+  docPr: XmlElement;
+  cNvGraphicFramePr: XmlElement | undefined;
+  graphic: XmlElement;
+}
+
+/** wp:anchor's children in schema order (wp14 relative sizes last). */
+const ANCHOR_ORDER = [
+  'wp:simplePos', 'wp:positionH', 'wp:positionV', 'wp:extent', 'wp:effectExtent', 'wp:wrapNone', 'wp:wrapSquare', 'wp:wrapTight', 'wp:wrapThrough', 'wp:wrapTopAndBottom',
+  'wp:docPr', 'wp:cNvGraphicFramePr', 'a:graphic', 'wp14:sizeRelH', 'wp14:sizeRelV',
+];
+const WRAP_ELEMENTS = new Set(['wp:wrapNone', 'wp:wrapSquare', 'wp:wrapTight', 'wp:wrapThrough', 'wp:wrapTopAndBottom']);
+
+const wrapElement = (wrap: NonNullable<FloatingPlacement['wrap']>): XmlElement =>
+  wrap === 'square' ? el('wp:wrapSquare', { wrapText: 'bothSides' }) : wrap === 'topAndBottom' ? el('wp:wrapTopAndBottom') : el('wp:wrapNone');
+
+const positionElement = (axis: 'H' | 'V', relativeFrom: string, offset: number): XmlElement =>
+  el(`wp:position${axis}`, { relativeFrom }, [el('wp:posOffset', {}, [text(emu(offset))])]);
+
+const optional = (e: XmlElement | undefined): XmlElement[] => (e ? [e] : []);
+
+/** A wp:anchor around `parts` at `place` (from the paragraph and square wrap by default), at z-order `relativeHeight`. */
+function anchorOf(parts: FrameParts, place: FloatingPlacement, relativeHeight: number, attrs: Record<string, string> = {}): XmlElement {
+  checkPlacement(place);
+  const [h, v] = RELATIVE_FROM[place.from ?? 'paragraph'];
+  const wrap = place.wrap ?? 'square';
+  const frame = { ...attrs, distT: 0, distB: 0, distL: 114300, distR: 114300, simplePos: 0, relativeHeight, behindDoc: wrap === 'behind' ? 1 : 0, locked: 0, layoutInCell: 1, allowOverlap: 1 };
+  return el('wp:anchor', frame, [
+    el('wp:simplePos', { x: 0, y: 0 }),
+    positionElement('H', h, place.x),
+    positionElement('V', v, place.y),
+    parts.extent,
+    ...optional(parts.effectExtent),
+    wrapElement(wrap),
+    parts.docPr,
+    ...optional(parts.cNvGraphicFramePr),
+    parts.graphic,
+  ]);
+}
+
 /**
  * A w:drawing with a floating frame (wp:anchor) of `widthPt` × `heightPt` points around
  * `graphicData`, at `place` (from the paragraph by default, square wrap by default) and at z-order
@@ -198,30 +241,160 @@ export function anchorFrame(
   alt: string | undefined,
   relativeHeight: number,
 ): XmlElement {
-  checkPlacement(place);
-  const [h, v] = RELATIVE_FROM[place.from ?? 'paragraph'];
-  const wrap = place.wrap ?? 'square';
   const docPr: Record<string, string> = { id: String(id), name };
   if (alt) docPr.descr = alt;
-  const position = (axis: 'H' | 'V', relativeFrom: string, offset: number) => el(`wp:position${axis}`, { relativeFrom }, [el('wp:posOffset', {}, [text(emu(offset))])]);
-  return el('w:drawing', {}, [
-    el('wp:anchor', { distT: 0, distB: 0, distL: 114300, distR: 114300, simplePos: 0, relativeHeight, behindDoc: wrap === 'behind' ? 1 : 0, locked: 0, layoutInCell: 1, allowOverlap: 1 }, [
-      el('wp:simplePos', { x: 0, y: 0 }),
-      position('H', h, place.x),
-      position('V', v, place.y),
-      el('wp:extent', { cx: emu(widthPt), cy: emu(heightPt) }),
-      el('wp:effectExtent', { l: 0, t: 0, r: 0, b: 0 }),
-      wrap === 'square' ? el('wp:wrapSquare', { wrapText: 'bothSides' }) : wrap === 'topAndBottom' ? el('wp:wrapTopAndBottom') : el('wp:wrapNone'),
-      el('wp:docPr', docPr),
-      el('wp:cNvGraphicFramePr'),
-      el('a:graphic', { 'xmlns:a': NS.a }, [graphicData]),
-    ]),
-  ]);
+  const parts: FrameParts = {
+    extent: el('wp:extent', { cx: emu(widthPt), cy: emu(heightPt) }),
+    effectExtent: el('wp:effectExtent', { l: 0, t: 0, r: 0, b: 0 }),
+    docPr: el('wp:docPr', docPr),
+    cNvGraphicFramePr: el('wp:cNvGraphicFramePr'),
+    graphic: el('a:graphic', { 'xmlns:a': NS.a }, [graphicData]),
+  };
+  return el('w:drawing', {}, [anchorOf(parts, place, relativeHeight)]);
 }
 
 /** The graphic of a chart whose part the relationship `relId` points at. */
 export function chartGraphic(relId: string): XmlElement {
   return el('a:graphicData', { uri: 'http://schemas.openxmlformats.org/drawingml/2006/chart' }, [el('c:chart', { 'xmlns:c': NS.c, 'xmlns:r': NS.r, 'r:id': relId })]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Changing objects
+
+/** The frame (wp:inline or wp:anchor) of an object's w:drawing. */
+export function frameOf(drawing: XmlElement): XmlElement {
+  const frame = elements(drawing).find((e) => e.name === 'wp:inline' || e.name === 'wp:anchor');
+  if (!frame) throw new EditError('This object has no frame to change');
+  return frame;
+}
+
+function partsOf(frame: XmlElement): FrameParts {
+  const [extent, docPr, graphic] = ['wp:extent', 'wp:docPr', 'a:graphic'].map((n) => firstChild(frame, n));
+  if (!extent || !docPr || !graphic) throw new EditError('This object is missing part of its frame');
+  return { extent, effectExtent: firstChild(frame, 'wp:effectExtent'), docPr, cNvGraphicFramePr: firstChild(frame, 'wp:cNvGraphicFramePr'), graphic };
+}
+
+/** The namespace declarations on an element, kept when its frame is rebuilt. */
+function declarations(e: XmlElement): Record<string, string> {
+  return Object.fromEntries(Object.entries(e.attrs).filter(([k]) => k === 'xmlns' || k.startsWith('xmlns:')));
+}
+
+/**
+ * Word's old VML copy of an object (the mc:Fallback beside its mc:Choice) is stale once the
+ * object changes, so it goes. `node` is the run's child holding the object.
+ */
+export function dropFallback(node: XmlElement): void {
+  if (node.name === 'mc:AlternateContent') removeChildren(node, 'mc:Fallback');
+}
+
+/** An object's new size in points: as given, or with one side given, the other keeps the frame's proportions. */
+export function resized(frame: XmlElement, size: { width?: number | undefined; height?: number | undefined }): { width: number; height: number } {
+  const { width, height } = size;
+  if (width === undefined && height === undefined) throw new EditError('Give a new width, height or both');
+  for (const side of [width, height]) {
+    if (side !== undefined && !(side > 0 && Number.isFinite(side))) throw new EditError('An object needs a positive width and height');
+  }
+  const extent = firstChild(frame, 'wp:extent');
+  const cx = Number(attr(extent, 'cx')) || 0;
+  const cy = Number(attr(extent, 'cy')) || 0;
+  if (width !== undefined) return { width, height: height ?? (cx > 0 ? (cy * width) / cx : cy / 12700) };
+  return { width: cy > 0 ? (cx * height!) / cy : cx / 12700, height: height! };
+}
+
+/** Size a frame to `widthPt` × `heightPt`, with the picture, shape or group in it (a group's children scale with it). */
+export function resizeFrame(frame: XmlElement, widthPt: number, heightPt: number): void {
+  const size = { cx: emu(widthPt), cy: emu(heightPt) };
+  const extent = firstChild(frame, 'wp:extent');
+  if (!extent) throw new EditError('This object has no size to change');
+  Object.assign(extent.attrs, size);
+  // A size relative to the page or margin would win over the new one.
+  removeChildren(frame, 'wp14:sizeRelH');
+  removeChildren(frame, 'wp14:sizeRelV');
+  const graphicData = childPath(frame, 'a:graphic', 'a:graphicData');
+  for (const content of graphicData ? elements(graphicData) : []) {
+    const props = firstChild(content, 'pic:spPr') ?? firstChild(content, 'wps:spPr') ?? firstChild(content, 'wpg:grpSpPr');
+    const ext = childPath(props, 'a:xfrm', 'a:ext');
+    if (ext) Object.assign(ext.attrs, size);
+  }
+}
+
+/**
+ * Move a floating frame to `place`. Without `from` or `wrap` it keeps its own; a position Word
+ * stored as a percentage (wp14, inside mc:AlternateContent) is replaced too.
+ */
+function moveAnchor(anchor: XmlElement, place: FloatingPlacement): void {
+  const holds = (c: XmlElement, name: string) => c.name === name || (c.name === 'mc:AlternateContent' && findAll(c, name).length > 0);
+  const relativeFrom = (name: string) => {
+    const holder = elements(anchor).find((c) => holds(c, name));
+    return attr(holder?.name === name ? holder : holder && findAll(holder, name)[0], 'relativeFrom');
+  };
+  const [h, v] = place.from ? RELATIVE_FROM[place.from] : [relativeFrom('wp:positionH') ?? 'column', relativeFrom('wp:positionV') ?? 'paragraph'];
+  anchor.children = anchor.children.filter((c) => !(c.type === 'element' && (holds(c, 'wp:positionH') || holds(c, 'wp:positionV'))));
+  insertOrdered(anchor, positionElement('H', h, place.x), ANCHOR_ORDER);
+  insertOrdered(anchor, positionElement('V', v, place.y), ANCHOR_ORDER);
+  // simplePos="1" would place it at wp:simplePos instead.
+  anchor.attrs.simplePos = '0';
+  if (place.wrap) {
+    anchor.children = anchor.children.filter((c) => !(c.type === 'element' && WRAP_ELEMENTS.has(c.name)));
+    insertOrdered(anchor, wrapElement(place.wrap), ANCHOR_ORDER);
+    anchor.attrs.behindDoc = place.wrap === 'behind' ? '1' : '0';
+  }
+}
+
+/**
+ * Place an object's w:drawing inline, or floating at `place`: an inline frame becomes a wp:anchor
+ * (at z-order `relativeHeight()`, from the paragraph and square wrap by default) around the same
+ * docPr, extent and graphic, and back; a floating one moves (see `moveAnchor`).
+ */
+export function placeFrame(drawing: XmlElement, place: ObjectPlacement, relativeHeight: () => number): void {
+  checkPlacement(place);
+  const frame = frameOf(drawing);
+  let next: XmlElement;
+  if ('inline' in place) {
+    if (frame.name === 'wp:inline') return;
+    const parts = partsOf(frame);
+    next = el('wp:inline', { ...declarations(frame), distT: 0, distB: 0, distL: 0, distR: 0 }, [
+      parts.extent,
+      ...optional(parts.effectExtent),
+      parts.docPr,
+      ...optional(parts.cNvGraphicFramePr),
+      parts.graphic,
+    ]);
+  } else if (frame.name === 'wp:inline') {
+    next = anchorOf(partsOf(frame), place, relativeHeight(), declarations(frame));
+  } else {
+    moveAnchor(frame, place);
+    return;
+  }
+  drawing.children[drawing.children.indexOf(frame)] = next;
+}
+
+/**
+ * A copy of an object: of `node`, the run's child holding it (a w:drawing, or the
+ * mc:AlternateContent around one), without Word's old VML copy; and the w:drawing in the copy that
+ * stands where `drawing` stands in the original.
+ */
+export function cloneObject(idx: TreeIndex, node: XmlElement, drawing: XmlElement): { copy: XmlElement; drawing: XmlElement } {
+  const path: number[] = [];
+  for (let cur = drawing; cur !== node; cur = idx.parentOf(cur)) path.unshift(idx.parentOf(cur).children.indexOf(cur));
+  const copy = cloneElement(node);
+  let found = copy;
+  for (const i of path) found = found.children[i] as XmlElement;
+  dropFallback(copy);
+  return { copy, drawing: found };
+}
+
+const RUN_REVISIONS = new Set(['w:ins', 'w:del', 'w:moveFrom', 'w:moveTo']);
+
+/** Take an object's run child out of its run; a run (and a tracked change around it) left empty goes too. */
+export function takeOut(idx: TreeIndex, node: XmlElement): void {
+  let parent = idx.parentOf(node);
+  parent.children.splice(parent.children.indexOf(node), 1);
+  const empty = (e: XmlElement) => !e.children.some((c) => c.type === 'element' && c.name !== 'w:rPr');
+  for (let cur = parent; (cur.name === 'w:r' || RUN_REVISIONS.has(cur.name)) && empty(cur); cur = parent) {
+    parent = idx.parentOf(cur);
+    parent.children.splice(parent.children.indexOf(cur), 1);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

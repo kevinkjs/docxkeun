@@ -51,6 +51,10 @@ describe('recording tracked changes', () => {
     editor.deleteRange(range(editor, 'very '));
     expect(findAll(doc.documentXml.root, 'w:del')).toHaveLength(0);
     expect(finalText(doc)).toContain('Very Second paragraph.');
+    // All of it: no empty w:ins is left behind.
+    editor.deleteRange(range(editor, 'Very '));
+    expect(findAll(doc.documentXml.root, 'w:ins')).toHaveLength(0);
+    expect(finalText(doc)).toContain('Second paragraph.');
   });
 
   it("marks another author's insertion as deleted instead of removing it", async () => {

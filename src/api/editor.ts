@@ -12,7 +12,7 @@ import type { DocParagraph, Block, DrawingContent, Inline } from '../model/conte
 import type { DocxDocument } from '../model/document.js';
 import { attr, el, elements, ensureChild, findAll, firstChild, insertOrdered, NS, removeChildren, textContent, type XmlElement, type XmlNode } from '../xml/index.js';
 import { createList, listItems, type ListFormat, type ListItem } from './lists.js';
-import { buildTable, cleanCopy, columnWidths, markInserted, markRow, type CopyDropped, type TableOptions } from './tables.js';
+import { buildTable, cleanCopy, columnWidths, markInserted, markRow, type CopyDropped, type CopyIds, type TableOptions } from './tables.js';
 import { cloneElement } from '../xml/index.js';
 import {
   acceptRevisions,
@@ -42,21 +42,30 @@ import {
   chartKind,
   chartOf,
   chartSize,
+  checkPlacement,
   checkShape,
+  cloneObject,
   copyPart,
+  dropFallback,
+  frameOf,
   freePartName,
   inlineFrame,
   inTextBox,
   listObjects,
   nextRelativeHeight,
+  placeFrame,
   replaceWorkbook,
+  resized,
+  resizeFrame,
   sectionAt,
   SHAPE_NAMES,
   shapeGraphic,
+  takeOut,
   type ChartInfo,
   type ChartUpdate,
   type DocObject,
   type NewShape,
+  type ObjectPlacement,
 } from './objects.js';
 import {
   between,
@@ -376,6 +385,11 @@ function newRun(text: string, template?: XmlElement, format?: TextFormat): XmlEl
 
 const BOOKMARK_NAME = /^[\p{L}_][\p{L}\p{N}_]{0,39}$/u;
 
+const OLD_VML = 'This is an old-style (VML) object: it can only be deleted';
+// Word doesn't put shapes or text boxes in a text box, nor floating objects.
+const SHAPE_IN_BOX = "Shapes and text boxes can't go inside a text box";
+const INLINE_IN_BOX = 'An object inside a text box can only be inline';
+
 export class DocxEditor {
   private trackOverride: boolean | undefined;
   private readonly authorName: string | undefined;
@@ -527,6 +541,18 @@ export class DocxEditor {
     if (!range) return;
     const idx = this.index();
     if (action === 'edit' || action === 'format' || action === 'link') this.assertUnlocked(range, idx);
+    this.dropStaleFallbacks([range.start.node, range.end.node], idx);
+  }
+
+  /**
+   * Permission for a change Word can't track (an object's size, a floating object's position or
+   * wrap, alt text, chart data): it applies directly even with Track Changes on, so it is refused
+   * where only tracked changes are allowed. Locks hold as for any edit.
+   */
+  private checkUntracked(range: DocRange): void {
+    this.guard?.assert('format', range, { tracked: false });
+    const idx = this.index();
+    this.assertUnlocked(range, idx);
     this.dropStaleFallbacks([range.start.node, range.end.node], idx);
   }
 
@@ -785,13 +811,31 @@ export class DocxEditor {
     return drawing;
   }
 
+  /** Declare namespace prefixes on the story's root element where they are missing. */
+  private declare(...prefixes: Array<keyof typeof NS>): void {
+    for (const prefix of prefixes) if (this.root.attrs[`xmlns:${prefix}`] === undefined) this.root.attrs[`xmlns:${prefix}`] = NS[prefix];
+  }
+
   /** An id for a new drawing (wp:docPr ids must be unique in the document); the root gets the prefixes drawings use. */
   private newDrawingId(): number {
     let id = 0;
     for (const root of [this.doc.documentXml.root, this.root]) for (const d of findAll(root, 'wp:docPr')) id = Math.max(id, Number(attr(d, 'id')) || 0);
-    if (this.root.attrs['xmlns:wp'] === undefined) this.root.attrs['xmlns:wp'] = NS.wp;
-    if (this.root.attrs['xmlns:r'] === undefined) this.root.attrs['xmlns:r'] = NS.r;
+    this.declare('wp', 'r');
     return id + 1;
+  }
+
+  /** Fresh ids for copied content (see `cleanCopy`): tracked changes, drawings and content controls stay unique. */
+  private copyIds(): CopyIds {
+    let drawing = this.newDrawingId() - 1;
+    const sdtIds = new Set(findAll(this.root, 'w:sdtPr').map((s) => attr(firstChild(s, 'w:id'), 'w:val')));
+    const sdt = () => {
+      let id: string;
+      do id = String(1 + Math.floor(Math.random() * 2147483646));
+      while (sdtIds.has(id));
+      sdtIds.add(id);
+      return id;
+    };
+    return { revision: nextRevisionId(this.root), drawing: () => String(++drawing), sdt };
   }
 
   // ---- objects and charts ---------------------------------------------------------------------
@@ -801,9 +845,22 @@ export class DocxEditor {
     return listObjects(this.paragraphs());
   }
 
+  /**
+   * The run's child holding an object (its w:drawing or w:pict, or the mc:AlternateContent around
+   * it), found in the tree as it is now; EditError when the object is no longer in the document or
+   * is marked deleted (as the original of a tracked move is).
+   */
+  private objectNodeOf(obj: DocObject, idx = this.index()): XmlElement {
+    if (!idx.contains(obj.drawing)) throw new EditError(`Object ${obj.n} is no longer in the document (list the objects again)`);
+    if (idx.ancestor(obj.drawing, 'w:del') || idx.ancestor(obj.drawing, 'w:moveFrom')) throw new EditError(`Object ${obj.n} is deleted (a tracked change; list the objects again)`);
+    let node = obj.drawing;
+    for (let parent = idx.parentOf(node); parent.name !== 'w:r'; parent = idx.parentOf(parent)) node = parent;
+    return node;
+  }
+
   /** The range of an object, for access and lock checks. */
-  private objectRange(obj: DocObject): DocRange {
-    const node = objectNode(obj) ?? obj.drawing;
+  private objectRange(obj: DocObject, idx = this.index()): DocRange {
+    const node = this.objectNodeOf(obj, idx);
     return { start: { node, offset: 0 }, end: { node, offset: 1 } };
   }
 
@@ -838,12 +895,12 @@ export class DocxEditor {
    * text box (Word doesn't nest them). Returns the w:drawing.
    */
   async insertShape(at: DocPosition, shape: NewShape): Promise<XmlElement> {
-    if (inTextBox(this.index(), at.node)) throw new EditError("Shapes and text boxes can't go inside a text box");
+    if (inTextBox(this.index(), at.node)) throw new EditError(SHAPE_IN_BOX);
     this.check('edit', { start: at, end: at });
     const { width, height, place } = checkShape(shape);
     const graphic = shapeGraphic(shape, width, height, (text, format) => newRun(text, undefined, format));
     const id = this.newDrawingId();
-    for (const prefix of ['a', 'wps', 'mc'] as const) if (this.root.attrs[`xmlns:${prefix}`] === undefined) this.root.attrs[`xmlns:${prefix}`] = NS[prefix];
+    this.declare('a', 'wps', 'mc');
     const name = `${SHAPE_NAMES[shape.shape]} ${id}`;
     const drawing =
       'inline' in place
@@ -869,7 +926,7 @@ export class DocxEditor {
    */
   async updateChart(obj: DocObject, changes: ChartChanges): Promise<ChartUpdate> {
     const { part, chartSpace } = chartOf(this.doc, obj);
-    this.check('edit', this.objectRange(obj));
+    this.checkUntracked(this.objectRange(obj));
     const { pkg } = this.doc;
     const data = chartData(this.doc, part, chartSpace);
     const result: ChartUpdate = { source: data.source, workbookRewritten: false, workbookHadMore: false };
@@ -913,6 +970,138 @@ export class DocxEditor {
       copied = true;
     }
     if (copied) await this.doc.refreshRels(this.part);
+  }
+
+  /**
+   * Resize an object (points). With one side given, the other keeps the object's proportions. A
+   * group's shapes scale with it; a chart redraws to fit. Word doesn't track size, so this applies
+   * directly, and is refused where only tracked changes are allowed.
+   */
+  resizeObject(obj: DocObject, size: { width?: number; height?: number }): void {
+    if (obj.vml) throw new EditError(OLD_VML);
+    const range = this.objectRange(obj);
+    const frame = frameOf(obj.drawing);
+    const { width, height } = resized(frame, size);
+    this.checkUntracked(range);
+    resizeFrame(frame, width, height);
+    dropFallback(range.start.node);
+    this.changed();
+  }
+
+  /** Set an object's alt text (empty removes it). Not tracked, as in Word (see `resizeObject`). */
+  setObjectAlt(obj: DocObject, alt: string): void {
+    if (obj.vml) throw new EditError(OLD_VML);
+    const range = this.objectRange(obj);
+    const docPr = firstChild(frameOf(obj.drawing), 'wp:docPr');
+    if (!docPr) throw new EditError('This object has no description to edit');
+    this.checkUntracked(range);
+    if (alt) docPr.attrs['descr'] = alt;
+    else delete docPr.attrs['descr'];
+    dropFallback(range.start.node);
+    this.changed();
+  }
+
+  /** Delete an object. With Track Changes on the deletion is tracked: its run (and any text in it) is marked deleted. */
+  deleteObject(obj: DocObject): void {
+    const range = this.objectRange(obj);
+    this.deleteRange(range);
+    // What a tracked deletion keeps is the object, not Word's old copy of it.
+    dropFallback(range.start.node);
+  }
+
+  /**
+   * Move an object to `at`, keeping its size and placement (a floating object is anchored there
+   * instead). With Track Changes on this is tracked as Word tracks a cut and paste: the original is
+   * marked deleted and a copy inserted (a chart's copy gets its own chart part and workbook). Shapes,
+   * text boxes and groups can't go inside a text box, and an object there can only be inline.
+   */
+  async moveObject(obj: DocObject, at: DocPosition): Promise<void> {
+    if (obj.vml) throw new EditError(OLD_VML);
+    const idx = this.index();
+    const range = this.objectRange(obj, idx);
+    const node = range.start.node;
+    if (!idx.contains(at.node)) throw new EditError('That position is not in the document (stale position?)');
+    // Right before or after itself: already there.
+    if (at.node === node) return;
+    for (let cur = idx.parent.get(at.node); cur; cur = idx.parent.get(cur)) if (cur === node) throw new EditError("An object can't move inside itself");
+    if (inTextBox(idx, at.node)) {
+      if (obj.kind === 'shape' || obj.kind === 'textBox' || obj.kind === 'group') throw new EditError(SHAPE_IN_BOX);
+      if (frameOf(obj.drawing).name === 'wp:anchor') throw new EditError(INLINE_IN_BOX);
+    }
+    this.check('edit', range);
+    if (this.trackChanges) {
+      await this.replaceTracked(obj, node, at);
+      return;
+    }
+    const run = this.objectRun(at, idx.parentOf(node));
+    takeOut(this.index(), node);
+    run.children.push(node);
+    dropFallback(node);
+    this.changed();
+  }
+
+  /**
+   * Place an object inline, or floating at a position with a wrap style. Moving or re-wrapping a
+   * floating object (without `from` or `wrap` it keeps its own) isn't tracked by Word, so it applies
+   * directly and is refused where only tracked changes are allowed. Switching between inline and
+   * floating is tracked like a move when Track Changes is on: the original is marked deleted and a
+   * copy inserted right after it.
+   */
+  async placeObject(obj: DocObject, place: ObjectPlacement): Promise<void> {
+    if (obj.vml) throw new EditError(OLD_VML);
+    checkPlacement(place);
+    const idx = this.index();
+    const range = this.objectRange(obj, idx);
+    const node = range.start.node;
+    const floating = frameOf(obj.drawing).name === 'wp:anchor';
+    const relativeHeight = () => nextRelativeHeight([this.doc.documentXml.root, this.root]);
+    if ('inline' in place && !floating) return;
+    if (!('inline' in place) && floating) {
+      // Moving or re-wrapping a floating object: Word doesn't track it.
+      this.checkUntracked(range);
+    } else {
+      // Switching between inline and floating.
+      if (!floating && inTextBox(idx, node)) throw new EditError(INLINE_IN_BOX);
+      this.check('edit', range);
+      if (this.trackChanges) {
+        await this.replaceTracked(obj, node, { node, offset: 1 }, (drawing) => placeFrame(drawing, place, relativeHeight));
+        return;
+      }
+    }
+    placeFrame(obj.drawing, place, relativeHeight);
+    dropFallback(node);
+    this.changed();
+  }
+
+  /** A new, empty run at `at` (a tracked insertion when tracking) formatted like `like`, for an object. */
+  private objectRun(at: DocPosition, like: XmlElement): XmlElement {
+    const run = this.insertRunContent(at, []);
+    removeChildren(run, 'w:rPr');
+    const rPr = firstChild(like, 'w:rPr');
+    if (rPr) {
+      run.children.unshift(cloneElement(rPr));
+      cleanRunProps(run);
+    }
+    return run;
+  }
+
+  /**
+   * A tracked move: a copy of the object (`node` is the run's child holding it), changed by
+   * `change`, goes in at `at` as an insertion, with its own drawing id and chart part; the original
+   * is marked deleted.
+   */
+  private async replaceTracked(obj: DocObject, node: XmlElement, at: DocPosition, change?: (drawing: XmlElement) => void): Promise<void> {
+    const idx = this.index();
+    const original = idx.parentOf(node);
+    const { copy, drawing } = cloneObject(idx, node, obj.drawing);
+    change?.(drawing);
+    const run = this.objectRun(at, original);
+    await this.copyChartParts([copy]);
+    // Ids from the tree as it is now, with the new insertion in it.
+    cleanCopy(copy, this.copyIds(), { comments: 0, notes: 0, bookmarks: 0 });
+    run.children.push(copy);
+    this.deleteRange({ start: { node, offset: 0 }, end: { node, offset: 1 } });
+    dropFallback(node);
   }
 
   /** Add a footnote whose reference mark goes at a position. Returns the note's id. */
@@ -1264,8 +1453,15 @@ export class DocxEditor {
     const track = this.tracking();
     if (track) {
       const { startMark, endMark, idx } = this.trackedCut(range, track);
+      const holders = new Set([idx.parentOf(startMark), idx.parentOf(endMark)]);
       replaceMark(idx, startMark, []);
       replaceMark(this.index(), endMark, []);
+      // Deleting all of the author's own insertion takes it out, w:ins and all.
+      const after = this.index();
+      for (const holder of holders) {
+        const parent = after.parent.get(holder);
+        if (parent && (holder.name === 'w:ins' || holder.name === 'w:moveTo') && !elements(holder).length) parent.children.splice(parent.children.indexOf(holder), 1);
+      }
       this.changed();
       return;
     }
@@ -1576,20 +1772,9 @@ export class DocxEditor {
     const originals = kids.slice(first, last + 1).filter((c): c is XmlElement => c.type === 'element' && c.name !== 'w:sectPr');
     const copies = originals.map(cloneElement);
 
-    // Ids that must stay unique in the document.
-    const revision = nextRevisionId(this.root);
-    let drawing = 0;
-    for (const d of findAll(this.root, 'wp:docPr')) drawing = Math.max(drawing, Number(attr(d, 'id')) || 0);
-    const sdtIds = new Set(findAll(this.root, 'w:sdtPr').map((s) => attr(firstChild(s, 'w:id'), 'w:val')));
-    const sdt = () => {
-      let id: string;
-      do id = String(1 + Math.floor(Math.random() * 2147483646));
-      while (sdtIds.has(id));
-      sdtIds.add(id);
-      return id;
-    };
+    const ids = this.copyIds();
     const dropped: CopyDropped = { comments: 0, notes: 0, bookmarks: 0 };
-    for (const c of copies) cleanCopy(c, { revision, drawing: () => String(++drawing), sdt }, dropped);
+    for (const c of copies) cleanCopy(c, ids, dropped);
 
     // Lists in the copy: a new list of the same look for each list copied, so numbering restarts.
     if (options.restartLists ?? true) {

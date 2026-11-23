@@ -1,16 +1,17 @@
 /** Objects in the editor: listing them; inserting, reading, updating and copying charts; inserting shapes and text boxes. */
 import { describe, expect, it } from 'vitest';
-import { DocxEditor, EditError, LockedRegionError, paragraphText, type DocPosition, type ShapeKind } from '../src/api/index.js';
+import { DocxEditor, EditError, LockedRegionError, paragraphText, type DocObject, type DocPosition, type ShapeKind } from '../src/api/index.js';
 import { ChartDataError, type NewChart } from '../src/charts/index.js';
 import { workbookFor } from '../src/charts/workbook.js';
 import { createDocx } from '../src/index.js';
 import { layoutDocument, type PathItem, type TextItem } from '../src/layout/index.js';
 import { DocxDocument, type ImageInline } from '../src/model/index.js';
 import { CONTENT_TYPE, REL } from '../src/opc/index.js';
-import { attr, childPath, elements, findAll, firstChild, NS, parseXml, textContent, type XmlElement } from '../src/xml/index.js';
+import { AccessPolicy } from '../src/security/index.js';
+import { attr, childPath, elements, findAll, firstChild, NS, parseXml, serializeXml, textContent, type XmlElement } from '../src/xml/index.js';
 import { readZip } from '../src/zip/zip.js';
 import { buildDocx, p } from './helpers/docx.js';
-import { textBoxRun } from './helpers/drawings.js';
+import { inline, textBoxRun, textBoxRunHolding, textBoxShape, vmlTextBoxRun } from './helpers/drawings.js';
 import { testRegistry } from './helpers/fonts.js';
 
 const QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
@@ -549,5 +550,422 @@ describe('shapes and text boxes', () => {
 
     await editor.insertChart(inBox(), COLUMNS);
     expect(editor.objects().map((o) => o.kind)).toEqual(['shape', 'chart']);
+  });
+});
+
+describe('changing objects', () => {
+  const EMU = 12700;
+  const PICTURE = 'http://schemas.openxmlformats.org/drawingml/2006/picture';
+  /** A w × h pt inline picture's w:drawing, with drawing id `id`. */
+  const pictureDrawing = (id = 1, w = 200, h = 100) =>
+    `<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${w * EMU}" cy="${h * EMU}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${id}" name="Picture ${id}"/><wp:cNvGraphicFramePr/>` +
+    `<a:graphic><a:graphicData uri="${PICTURE}"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="Picture ${id}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdNone"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
+    `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${w * EMU}" cy="${h * EMU}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+  const picture = (id = 1, w = 200, h = 100) => `<w:r>${pictureDrawing(id, w, h)}</w:r>`;
+  /** A 50 × 50 pt inline oval (wps:wsp). */
+  const oval = () => inline(`<wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${50 * EMU}" cy="${50 * EMU}"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom></wps:spPr><wps:bodyPr/></wps:wsp>`, 50, 50);
+  const frameOf = (o: DocObject) => elements(o.drawing)[0]!;
+  const extentOf = (o: DocObject) => {
+    const extent = firstChild(frameOf(o), 'wp:extent')!;
+    return [attr(extent, 'cx'), attr(extent, 'cy')];
+  };
+  const position = (anchor: XmlElement, axis: 'H' | 'V') => {
+    const pos = firstChild(anchor, `wp:position${axis}`);
+    return [attr(pos, 'relativeFrom'), textContent(firstChild(pos, 'wp:posOffset')!)];
+  };
+  /** Which paragraphs (by index in `paragraphs()`) hold the objects. */
+  const where = (editor: DocxEditor) => {
+    const paras = editor.paragraphs().map((x) => x.el);
+    return editor.objects().map((o) => paras.indexOf(o.paragraph.el));
+  };
+  const texts = (editor: DocxEditor) => editor.paragraphs().map((para) => paragraphText(para).text);
+  /** The w:ins or w:del elements holding a node named `name`. */
+  const marked = (root: XmlElement, kind: 'w:ins' | 'w:del', name: string) => findAll(root, kind).filter((m) => findAll(m, name).length > 0);
+  const drawingIds = (root: XmlElement) => findAll(root, 'wp:docPr').map((d) => attr(d, 'id'));
+  const ANCHOR_CHILDREN = ['wp:simplePos', 'wp:positionH', 'wp:positionV', 'wp:extent', 'wp:effectExtent', 'wp:wrapSquare', 'wp:docPr', 'wp:cNvGraphicFramePr', 'a:graphic'];
+
+  it('resizes keeping proportions', async () => {
+    const group =
+      `<w:r><w:drawing><wp:inline><wp:extent cx="${100 * EMU}" cy="${100 * EMU}"/><wp:docPr id="7" name="Group 7"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"><wpg:wgp><wpg:cNvGrpSpPr/>` +
+      `<wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${100 * EMU}" cy="${100 * EMU}"/><a:chOff x="0" y="0"/><a:chExt cx="${100 * EMU}" cy="${100 * EMU}"/></a:xfrm></wpg:grpSpPr>` +
+      `<wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${50 * EMU}" cy="${100 * EMU}"/></a:xfrm></wps:spPr><wps:bodyPr/></wps:wsp></wpg:wgp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+    const { doc, editor } = await open(`<w:p>${picture()}</w:p>` + p('Chart: ') + `<w:p>${group}</w:p>`);
+    await editor.insertChart(endOf(editor, 1), COLUMNS);
+    const [pic, chart, grp] = editor.objects();
+
+    editor.resizeObject(pic!, { width: 100 });
+    expect(extentOf(pic!)).toEqual(['1270000', '635000']);
+    const ext = childPath(frameOf(pic!), 'a:graphic', 'a:graphicData', 'pic:pic', 'pic:spPr', 'a:xfrm', 'a:ext')!;
+    expect([attr(ext, 'cx'), attr(ext, 'cy')]).toEqual(['1270000', '635000']);
+    // The proportions are the object's current ones; both sides are taken as given.
+    editor.resizeObject(pic!, { height: 25 });
+    expect(extentOf(pic!)).toEqual([String(50 * EMU), String(25 * EMU)]);
+    editor.resizeObject(pic!, { width: 30, height: 40 });
+    expect(extentOf(pic!)).toEqual([String(30 * EMU), String(40 * EMU)]);
+    expect([attr(ext, 'cx'), attr(ext, 'cy')]).toEqual([String(30 * EMU), String(40 * EMU)]);
+
+    // A chart: its frame changes, its part does not.
+    const chartXml = serializeXml(doc.xmlSync(CHART1)!);
+    const relId = attr(findAll(chart!.drawing, 'c:chart')[0], 'r:id');
+    editor.resizeObject(chart!, { width: 216 });
+    expect(extentOf(chart!)).toEqual([String(216 * EMU), String(126 * EMU)]);
+    expect(attr(findAll(chart!.drawing, 'c:chart')[0], 'r:id')).toBe(relId);
+    expect(serializeXml(doc.xmlSync(CHART1)!)).toBe(chartXml);
+
+    // A group: its own size changes and its child coordinates stay, so the shapes in it scale.
+    editor.resizeObject(grp!, { width: 50 });
+    const xfrm = childPath(frameOf(grp!), 'a:graphic', 'a:graphicData', 'wpg:wgp', 'wpg:grpSpPr', 'a:xfrm')!;
+    expect(firstChild(xfrm, 'a:ext')!.attrs).toEqual({ cx: String(50 * EMU), cy: String(50 * EMU) });
+    expect(firstChild(xfrm, 'a:chOff')!.attrs).toEqual({ x: '0', y: '0' });
+    expect(firstChild(xfrm, 'a:chExt')!.attrs).toEqual({ cx: String(100 * EMU), cy: String(100 * EMU) });
+    expect(childPath(findAll(grp!.drawing, 'wps:wsp')[0], 'wps:spPr', 'a:xfrm', 'a:ext')!.attrs).toEqual({ cx: String(50 * EMU), cy: String(100 * EMU) });
+
+    const ed = new DocxEditor(await reopen(doc));
+    expect(ed.objects().map((o) => [o.kind, o.width, o.height])).toEqual([
+      ['picture', 30, 40],
+      ['chart', 216, 126],
+      ['group', 50, 50],
+    ]);
+    expect(ed.objects()[1]!.chartPart).toBe(CHART1);
+
+    // A size is a positive number of points.
+    for (const size of [{}, { width: 0 }, { height: -5 }, { width: Number.NaN }, { width: 10, height: Number.POSITIVE_INFINITY }]) {
+      expect(() => editor.resizeObject(pic!, size)).toThrow(EditError);
+    }
+    expect(extentOf(pic!)).toEqual([String(30 * EMU), String(40 * EMU)]);
+  });
+
+  it('moves an inline object to another paragraph', async () => {
+    // The picture shares a run with text: only the picture moves.
+    const { doc, editor } = await open(`<w:p><w:r><w:t xml:space="preserve">Logo: </w:t>${pictureDrawing(4)}<w:t xml:space="preserve"> (2026)</w:t></w:r></w:p>` + p('Middle') + p('Target'));
+    const [pic] = editor.objects();
+    await editor.moveObject(pic!, endOf(editor, 2));
+    const paras = editor.paragraphs();
+    expect(editor.objects()[0]!.paragraph.el).toBe(paras[2]!.el);
+    expect(findAll(paras[0]!.el, 'w:drawing')).toEqual([]);
+    expect(texts(editor)).toEqual(['Logo:  (2026)', 'Middle', 'Target']);
+    // The same object: no copy, no tracked change.
+    expect(editor.objects()[0]!.drawing).toBe(pic!.drawing);
+    expect(drawingIds(doc.documentXml.root)).toEqual(['4']);
+    expect(findAll(doc.documentXml.root, 'w:ins')).toEqual([]);
+    // It sits after the paragraph's text.
+    expect(elements(paras[2]!.el).at(-1)).toBe(editor.objects()[0]!.run);
+
+    const ed = new DocxEditor(await reopen(doc));
+    expect(where(ed)).toEqual([2]);
+    // Moving it next to itself changes nothing.
+    await ed.moveObject(ed.objects()[0]!, { node: ed.objects()[0]!.drawing, offset: 1 });
+    expect(where(ed)).toEqual([2]);
+  });
+
+  it('tracks a move as a deletion and an insertion', async () => {
+    const doc = await DocxDocument.open(await buildDocx({ body: p('Chart: ') + p('Middle') + p('Target') }));
+    const setup = new DocxEditor(doc);
+    await setup.insertChart(endOf(setup, 0), COLUMNS);
+    const editor = new DocxEditor(doc, undefined, { trackChanges: true, author: 'AI' });
+    const [chart] = editor.objects();
+    await editor.moveObject(chart!, endOf(editor, 2));
+
+    const root = doc.documentXml.root;
+    const [del] = marked(root, 'w:del', 'c:chart');
+    const [ins] = marked(root, 'w:ins', 'c:chart');
+    const paras = editor.paragraphs();
+    expect(findAll(paras[0]!.el, 'w:del')).toEqual([del]);
+    expect(elements(del!)[0]).toBe(chart!.run);
+    expect(findAll(paras[2]!.el, 'w:ins')).toEqual([ins]);
+    expect([attr(del, 'w:author'), attr(ins, 'w:author')]).toEqual(['AI', 'AI']);
+    expect(editor.revisions().map((r) => r.kind)).toEqual(['delete', 'insert']);
+    // The copy has its own drawing id, chart part and workbook.
+    const ids = drawingIds(root);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    const copyChart = findAll(ins!, 'c:chart')[0]!;
+    const copyPart = doc.rels(doc.mainPart).get(attr(copyChart, 'r:id')!)!.target;
+    expect(copyPart).not.toBe(CHART1);
+    expect(doc.pkg.contentType(copyPart)).toBe(CONTENT_TYPE.chart);
+    expect((await workbookOf(doc, copyPart)).part).not.toBe(WORKBOOK1);
+    expect(editor.chartInfo(editor.objects().find((o) => o.chartPart === copyPart)!).series).toEqual(TWO);
+    // Only the copy is listed now; the deleted original can't be changed.
+    expect(editor.objects().map((o) => o.chartPart)).toEqual([copyPart]);
+    expect(() => editor.resizeObject(chart!, { width: 100 })).toThrow(/is deleted/);
+    // Moving the author's own insertion again takes it out of its old place outright.
+    const again = new DocxEditor(await reopen(doc), undefined, { trackChanges: true, author: 'AI' });
+    await again.moveObject(again.objects()[0]!, endOf(again, 1));
+    const againRoot = again.doc.documentXml.root;
+    expect(findAll(againRoot, 'w:ins').map((i) => [where(again)[0], findAll(i, 'c:chart').length])).toEqual([[1, 1]]);
+    expect(findAll(againRoot, 'w:ins').every((i) => elements(i).length > 0)).toBe(true);
+    expect(again.revisions().map((r) => r.kind)).toEqual(['delete', 'insert']);
+
+    // Rejecting puts the chart back where it was; accepting leaves it at the target.
+    const rejected = new DocxEditor(await reopen(doc));
+    rejected.rejectRevisions();
+    expect(where(rejected)).toEqual([0]);
+    expect(rejected.objects()[0]!.chartPart).toBe(CHART1);
+    const accepted = new DocxEditor(await reopen(doc));
+    accepted.acceptRevisions();
+    expect(where(accepted)).toEqual([2]);
+    expect(accepted.objects()[0]!.chartPart).toBe(copyPart);
+  });
+
+  it('repositions and re-wraps a floating object, untracked', async () => {
+    const { doc, editor } = await open(p('Box: ') + p('After'));
+    await editor.insertShape(endOf(editor, 0), { shape: 'textBox', text: 'Boxed' });
+    editor.trackChanges = true;
+    const [box] = editor.objects();
+    const anchor = frameOf(box!);
+    await editor.placeObject(box!, { x: 72, y: 36, from: 'margin', wrap: 'topAndBottom' });
+    expect(frameOf(box!)).toBe(anchor);
+    expect(position(anchor, 'H')).toEqual(['margin', '914400']);
+    expect(position(anchor, 'V')).toEqual(['margin', '457200']);
+    expect(elements(anchor).map((e) => e.name)).toEqual(ANCHOR_CHILDREN.map((n) => (n === 'wp:wrapSquare' ? 'wp:wrapTopAndBottom' : n)));
+    const root = doc.documentXml.root;
+    expect([...findAll(root, 'w:ins'), ...findAll(root, 'w:del')]).toEqual([]);
+    expect(editor.revisions()).toEqual([]);
+
+    // Leaving out the reference or the wrap keeps the object's own.
+    await editor.placeObject(box!, { x: 0, y: 12 });
+    expect(position(anchor, 'H')).toEqual(['margin', '0']);
+    expect(position(anchor, 'V')).toEqual(['margin', String(12 * EMU)]);
+    expect(firstChild(anchor, 'wp:wrapTopAndBottom')).toBeDefined();
+    await editor.placeObject(box!, { x: 0, y: 0, wrap: 'behind' });
+    expect([elements(anchor).filter((e) => e.name.startsWith('wp:wrap')).map((e) => e.name), attr(anchor, 'behindDoc')]).toEqual([['wp:wrapNone'], '1']);
+    await editor.placeObject(box!, { x: 0, y: 0, wrap: 'inFront', from: 'page' });
+    expect([elements(anchor).filter((e) => e.name.startsWith('wp:wrap')).map((e) => e.name), attr(anchor, 'behindDoc')]).toEqual([['wp:wrapNone'], '0']);
+    expect(position(anchor, 'H')).toEqual(['page', '0']);
+    expect(editor.revisions()).toEqual([]);
+    await expect(editor.placeObject(box!, { x: Number.NaN, y: 0 })).rejects.toThrow(EditError);
+
+    // A box Word placed and sized relative to the page (percentages, with a VML copy).
+    const wp14 = 'xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"';
+    const wordBox =
+      `<w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:anchor ${wp14} distT="0" distB="0" distL="114300" distR="114300" simplePos="1" relativeHeight="251660000" behindDoc="1" locked="0" layoutInCell="1" allowOverlap="1">` +
+      '<wp:simplePos x="5" y="5"/><mc:AlternateContent><mc:Choice Requires="wp14"><wp:positionH relativeFrom="page"><wp14:pctPosHOffset>10000</wp14:pctPosHOffset></wp:positionH></mc:Choice>' +
+      '<mc:Fallback><wp:positionH relativeFrom="page"><wp:posOffset>777240</wp:posOffset></wp:positionH></mc:Fallback></mc:AlternateContent><wp:positionV relativeFrom="paragraph"><wp:align>top</wp:align></wp:positionV>' +
+      `<wp:extent cx="${200 * EMU}" cy="${80 * EMU}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="9" name="Text Box 9"/><wp:cNvGraphicFramePr/>` +
+      `<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">${textBoxShape('Word box')}</a:graphicData></a:graphic>` +
+      '<wp14:sizeRelH relativeFrom="margin"><wp14:pctWidth>40000</wp14:pctWidth></wp14:sizeRelH><wp14:sizeRelV relativeFrom="margin"><wp14:pctHeight>0</wp14:pctHeight></wp14:sizeRelV></wp:anchor></w:drawing></mc:Choice>' +
+      '<mc:Fallback><w:pict><v:rect style="position:absolute;width:200pt;height:80pt"><v:textbox><w:txbxContent><w:p><w:r><w:t>Old copy</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></mc:Fallback></mc:AlternateContent></w:r>';
+    const word = await open(`<w:p>${wordBox}</w:p>`);
+    const [placed] = word.editor.objects();
+    const wordAnchor = frameOf(placed!);
+    await word.editor.placeObject(placed!, { x: 36, y: 6 });
+    expect(elements(wordAnchor).map((e) => e.name)).toEqual([...ANCHOR_CHILDREN.map((n) => (n === 'wp:wrapSquare' ? 'wp:wrapNone' : n)), 'wp14:sizeRelH', 'wp14:sizeRelV']);
+    expect(position(wordAnchor, 'H')).toEqual(['page', String(36 * EMU)]);
+    expect(position(wordAnchor, 'V')).toEqual(['paragraph', String(6 * EMU)]);
+    expect([attr(wordAnchor, 'simplePos'), attr(wordAnchor, 'behindDoc')]).toEqual(['0', '1']);
+    // Word's old copy of the box is stale now.
+    expect(findAll(word.doc.documentXml.root, 'mc:Fallback')).toEqual([]);
+    // A new size replaces the relative one.
+    word.editor.resizeObject(placed!, { width: 100 });
+    expect(elements(wordAnchor).map((e) => e.name).filter((n) => n.startsWith('wp14:'))).toEqual([]);
+    const again = new DocxEditor(await reopen(word.doc));
+    expect(again.objects()).toMatchObject([{ kind: 'shape', floating: true, width: 100, height: 40 }]);
+  });
+
+  it('switches between inline and floating', async () => {
+    const { doc, editor } = await open(`<w:p><w:r><w:t xml:space="preserve">Logo: </w:t></w:r>${picture(3)}</w:p>`);
+    const [pic] = editor.objects();
+    const before = frameOf(pic!);
+    const [docPr, extent, graphic] = ['wp:docPr', 'wp:extent', 'a:graphic'].map((n) => firstChild(before, n));
+    await editor.placeObject(pic!, { x: 0, y: 0 });
+    const anchor = frameOf(pic!);
+    expect(elements(pic!.drawing).map((e) => e.name)).toEqual(['wp:anchor']);
+    expect(elements(anchor).map((e) => e.name)).toEqual(ANCHOR_CHILDREN);
+    expect(firstChild(anchor, 'wp:docPr')).toBe(docPr);
+    expect(firstChild(anchor, 'wp:extent')).toBe(extent);
+    expect(firstChild(anchor, 'a:graphic')).toBe(graphic);
+    expect(position(anchor, 'H')).toEqual(['column', '0']);
+    expect(position(anchor, 'V')).toEqual(['paragraph', '0']);
+    expect(Number(attr(anchor, 'relativeHeight'))).toBe(251659264);
+    expect(editor.objects()).toMatchObject([{ floating: true, width: 200, height: 100 }]);
+
+    await editor.placeObject(editor.objects()[0]!, { inline: true });
+    const back = frameOf(pic!);
+    expect(back.name).toBe('wp:inline');
+    expect(elements(back).map((e) => e.name)).toEqual(['wp:extent', 'wp:effectExtent', 'wp:docPr', 'wp:cNvGraphicFramePr', 'a:graphic']);
+    expect(firstChild(back, 'wp:docPr')).toBe(docPr);
+    expect(editor.objects()).toMatchObject([{ floating: false, width: 200, height: 100 }]);
+    // Already inline: nothing to do.
+    await editor.placeObject(editor.objects()[0]!, { inline: true });
+    expect(frameOf(pic!)).toBe(back);
+
+    // With Track Changes on, the inline original is deleted and a floating copy inserted right after it.
+    editor.trackChanges = true;
+    await editor.placeObject(editor.objects()[0]!, { x: 36, y: 0, wrap: 'inFront' });
+    const root = doc.documentXml.root;
+    const [del] = marked(root, 'w:del', 'wp:inline');
+    const [ins] = marked(root, 'w:ins', 'wp:anchor');
+    expect(del).toBeDefined();
+    expect(ins).toBeDefined();
+    const kids = elements(editor.paragraphs()[0]!.el);
+    expect(kids.at(-2)).toBe(del);
+    expect(kids.at(-1)).toBe(ins);
+    expect(new Set(drawingIds(root)).size).toBe(2);
+    expect(texts(editor)).toEqual(['Logo: ']);
+    const accepted = new DocxEditor(await reopen(doc));
+    accepted.acceptRevisions();
+    expect(accepted.objects()).toMatchObject([{ kind: 'picture', floating: true, width: 200, height: 100 }]);
+    expect(firstChild(frameOf(accepted.objects()[0]!), 'wp:wrapNone')).toBeDefined();
+  });
+
+  it('deletes an object, tracked with Track Changes on', async () => {
+    const { doc, editor } = await open(`<w:p><w:r><w:t xml:space="preserve">Logo: </w:t>${pictureDrawing(1)}<w:t xml:space="preserve"> (2026)</w:t></w:r></w:p>` + `<w:p>${textBoxRun('Boxed')}</w:p>`);
+    editor.deleteObject(editor.objects()[0]!);
+    expect(editor.objects().map((o) => o.kind)).toEqual(['shape']);
+    expect(texts(editor)).toEqual(['Logo:  (2026)', '', 'Boxed']);
+    const root = doc.documentXml.root;
+    expect(findAll(root, 'w:del')).toEqual([]);
+
+    editor.trackChanges = true;
+    const [box] = editor.objects();
+    editor.deleteObject(box!);
+    const [del] = marked(root, 'w:del', 'w:drawing');
+    expect(elements(del!)[0]).toBe(box!.run);
+    // Word's old copy of the box goes; the box's own text is marked deleted with it.
+    expect(findAll(root, 'mc:Fallback')).toEqual([]);
+    expect(findAll(box!.run, 'w:t')).toEqual([]);
+    expect(editor.revisions().every((r) => r.kind === 'delete')).toBe(true);
+    editor.rejectRevisions();
+    expect(editor.objects().map((o) => o.kind)).toEqual(['shape']);
+    expect(texts(editor)).toEqual(['Logo:  (2026)', '', 'Boxed']);
+  });
+
+  it('sets alt text', async () => {
+    const { doc, editor } = await open(`<w:p>${picture()}</w:p>` + `<w:p>${textBoxRun('Boxed')}</w:p>`);
+    const [pic, box] = editor.objects();
+    editor.setObjectAlt(pic!, 'Company logo');
+    expect(attr(firstChild(frameOf(pic!), 'wp:docPr'), 'descr')).toBe('Company logo');
+    editor.trackChanges = true;
+    editor.setObjectAlt(box!, 'Contact details');
+    expect(attr(firstChild(frameOf(box!), 'wp:docPr'), 'descr')).toBe('Contact details');
+    // Not tracked (Word doesn't), and the box's old copy is stale.
+    expect(editor.revisions()).toEqual([]);
+    expect(findAll(doc.documentXml.root, 'mc:Fallback')).toEqual([]);
+    expect(new DocxEditor(await reopen(doc)).objects().map((o) => o.alt)).toEqual(['Company logo', 'Contact details']);
+    editor.setObjectAlt(pic!, '');
+    expect(attr(firstChild(frameOf(pic!), 'wp:docPr'), 'descr')).toBeUndefined();
+  });
+
+  it('refuses untrackable changes when the document only allows tracked changes', async () => {
+    const doc = await DocxDocument.open(await buildDocx({ body: p('Chart: ') + p('Box: ') + p('Target'), settings: '<w:documentProtection w:edit="trackedChanges" w:enforcement="1"/>' }));
+    const setup = new DocxEditor(doc, undefined, { trackChanges: false });
+    await setup.insertChart(endOf(setup, 0), COLUMNS);
+    await setup.insertShape(endOf(setup, 1), { shape: 'textBox', text: 'Boxed' });
+    const editor = new DocxEditor(doc, new AccessPolicy(doc, { user: { id: 'u1', name: 'Sari' }, role: 'editor' }));
+    expect(editor.trackChanges).toBe(true);
+    const [chart, box] = editor.objects();
+    const onlyTracked = /only allows changes that are tracked/;
+    expect(() => editor.resizeObject(chart!, { width: 100 })).toThrow(onlyTracked);
+    expect(() => editor.setObjectAlt(chart!, 'Sales chart')).toThrow(onlyTracked);
+    await expect(editor.updateChart(chart!, { title: 'Changed' })).rejects.toThrow(onlyTracked);
+    await expect(editor.placeObject(box!, { x: 10, y: 10 })).rejects.toThrow(onlyTracked);
+    expect(extentOf(chart!)).toEqual([String(432 * EMU), String(252 * EMU)]);
+    expect(editor.chartInfo(chart!).title).toBe('Sales');
+    expect(position(frameOf(box!), 'H')).toEqual(['column', '0']);
+
+    // Deleting, moving, switching and inserting are tracked, so they are allowed.
+    const root = doc.documentXml.root;
+    editor.deleteObject(box!);
+    expect(marked(root, 'w:del', 'wps:wsp')).toHaveLength(1);
+    const target = () => editor.find('Target')[0]!.end;
+    await editor.moveObject(chart!, target());
+    expect(marked(root, 'w:ins', 'c:chart')).toHaveLength(1);
+    await editor.insertShape(target(), { shape: 'rect' });
+    expect(marked(root, 'w:ins', 'wps:wsp')).toHaveLength(1);
+    const moved = editor.objects().find((o) => marked(root, 'w:ins', 'c:chart')[0]!.children.includes(o.run))!;
+    await editor.placeObject(moved, { x: 0, y: 0 });
+    expect(marked(root, 'w:ins', 'wp:anchor').filter((i) => findAll(i, 'c:chart').length)).toHaveLength(1);
+    expect(new Set(editor.revisions().map((r) => r.author))).toEqual(new Set(['Sari']));
+  });
+
+  it('refuses changes to an object in a locked region', async () => {
+    const { editor } = await open(p('Chart: ') + p('After'));
+    await editor.insertChart(endOf(editor), COLUMNS);
+    editor.lockParagraphs(editor.paragraphs()[0]!.el, undefined, { title: 'Figures' });
+    const [chart] = editor.objects();
+    await expect(editor.updateChart(chart!, { title: 'Changed' })).rejects.toThrow(LockedRegionError);
+    expect(() => editor.resizeObject(chart!, { width: 100 })).toThrow(LockedRegionError);
+    expect(() => editor.deleteObject(chart!)).toThrow(LockedRegionError);
+    expect(() => editor.setObjectAlt(chart!, 'Sales')).toThrow(LockedRegionError);
+    await expect(editor.moveObject(chart!, endOf(editor, 1))).rejects.toThrow(LockedRegionError);
+    await expect(editor.placeObject(chart!, { x: 0, y: 0 })).rejects.toThrow(LockedRegionError);
+    expect(editor.objects()).toMatchObject([{ kind: 'chart', floating: false, width: 432, height: 252 }]);
+    expect(editor.objects()[0]!.alt).toBeUndefined();
+    expect(editor.chartInfo(chart!).title).toBe('Sales');
+
+    // Nor can an object move into one.
+    const other = await open(`<w:p>${picture()}</w:p>` + p('Locked text'));
+    other.editor.lockParagraphs(other.editor.paragraphs()[1]!.el, undefined, { title: 'Terms' });
+    await expect(other.editor.moveObject(other.editor.objects()[0]!, other.editor.find('Locked')[0]!.end)).rejects.toThrow(LockedRegionError);
+    expect(where(other.editor)).toEqual([0]);
+  });
+
+  it('handles objects in table cells and text boxes', async () => {
+    const cell = `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc><w:p>${picture()}</w:p></w:tc></w:tr></w:tbl>`;
+    const box = `<w:p>${textBoxRunHolding(`<w:p><w:r>${oval()}</w:r></w:p>`)}</w:p>`;
+    const { doc, editor } = await open(p('Intro') + cell + box + p('Outro'));
+    const objects = editor.objects();
+    expect(objects.map((o) => [o.n, o.kind])).toEqual([
+      [1, 'picture'],
+      [2, 'shape'],
+      [3, 'shape'],
+    ]);
+    // In paragraph order: the cell, the paragraph holding the box, the box's own paragraph.
+    expect(where(editor)).toEqual([1, 2, 3]);
+    const [pic, , inner] = objects;
+    editor.resizeObject(pic!, { width: 100 });
+    editor.resizeObject(inner!, { width: 25 });
+    expect(extentOf(pic!)).toEqual([String(100 * EMU), String(50 * EMU)]);
+    expect(extentOf(inner!)).toEqual([String(25 * EMU), String(25 * EMU)]);
+    const ext = childPath(frameOf(inner!), 'a:graphic', 'a:graphicData', 'wps:wsp', 'wps:spPr', 'a:xfrm', 'a:ext')!;
+    expect(ext.attrs).toEqual({ cx: String(25 * EMU), cy: String(25 * EMU) });
+    // A change inside the box makes Word's old copy of it stale.
+    expect(findAll(doc.documentXml.root, 'mc:Fallback')).toEqual([]);
+    const ed = new DocxEditor(await reopen(doc));
+    expect(ed.objects().map((o) => [o.width, o.height])).toEqual([
+      [100, 50],
+      [200, 80],
+      [25, 25],
+    ]);
+
+    // A picture may move into the box; a shape may not (Word doesn't nest them).
+    const inBox = () => ({ node: ed.paragraphs()[3]!.el, offset: 0 });
+    const boxed = ed.objects()[0]!;
+    await ed.moveObject(boxed, inBox());
+    expect(where(ed)).toEqual([2, 3, 3]);
+    await ed.insertShape(ed.find('Outro')[0]!.end, { shape: 'rect' });
+    const rect = ed.objects().at(-1)!;
+    await expect(ed.moveObject(rect, inBox())).rejects.toThrow(new EditError("Shapes and text boxes can't go inside a text box"));
+    expect(where(ed)).toEqual([2, 3, 3, 4]);
+    // In a box an object can only be inline: it can't float there, nor can a floating one move in.
+    const inlineOnly = new EditError('An object inside a text box can only be inline');
+    await expect(ed.placeObject(boxed, { x: 0, y: 0 })).rejects.toThrow(inlineOnly);
+    await ed.moveObject(boxed, ed.find('Outro')[0]!.end);
+    await ed.placeObject(boxed, { x: 0, y: 0 });
+    await expect(ed.moveObject(boxed, inBox())).rejects.toThrow(inlineOnly);
+    expect(ed.objects().map((o) => [o.kind, o.floating])).toEqual([
+      ['shape', false],
+      ['shape', false],
+      ['picture', true],
+      ['shape', true],
+    ]);
+  });
+
+  it('refuses to move or resize an old VML object but deletes it', async () => {
+    const { editor } = await open(p('Before') + `<w:p>${vmlTextBoxRun('Old box')}</w:p>`);
+    const [old] = editor.objects();
+    expect(old!.vml).toBe(true);
+    const refusal = new EditError('This is an old-style (VML) object: it can only be deleted');
+    expect(() => editor.resizeObject(old!, { width: 10 })).toThrow(refusal);
+    expect(() => editor.setObjectAlt(old!, 'Old')).toThrow(refusal);
+    await expect(editor.moveObject(old!, endOf(editor, 0))).rejects.toThrow(refusal);
+    await expect(editor.placeObject(old!, { x: 0, y: 0 })).rejects.toThrow(refusal);
+    await expect(editor.placeObject(old!, { inline: true })).rejects.toThrow(refusal);
+    expect(editor.objects()).toHaveLength(1);
+    editor.deleteObject(old!);
+    expect(editor.objects()).toEqual([]);
+    expect(texts(editor)).toEqual(['Before', '']);
+    // A stale object is refused rather than changed.
+    expect(() => editor.deleteObject(old!)).toThrow(EditError);
   });
 });
