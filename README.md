@@ -195,7 +195,7 @@ await editor.resolveComment(id);
 const bytes = await viewer.document!.save();
 ```
 
-Also available: `insertText`, `appendText`, `replaceRange` (text, or pieces each formatted like a given run: `[{ text, like: boldRun }, { text, like: plainRun }]`), `replaceAll`, `deleteRange` (across paragraphs), `insertParagraph`, `deleteParagraph`, `setParagraphStyle`, `formatParagraph` (alignment, right-to-left, indents, spacing, keep rules), `insertImage`, `addFootnote`, `setHeader` / `setFooter` / `removeHeader` / `removeFooter` / `headersAndFooters()`, `await removeHyperlink` (async since it also drops the link's relationship when unused), `setHyperlinkTarget`, `setImageAlt`, `clearFormatting`, `hyperlinks()`, `bookmarks()`, `removeBookmark`, `editComment`, `deleteComment`, `addEditableRange`, `removeEditableRange`.
+Also available: `insertText`, `appendText`, `replaceRange` (text, or pieces each formatted like a given run: `[{ text, like: boldRun }, { text, like: plainRun }]`; with `{ keepObjects: true }` pictures, charts and text boxes in the range stay, after the new text), `replaceAll`, `deleteRange` (across paragraphs), `insertParagraph`, `deleteParagraph`, `setParagraphStyle`, `formatParagraph` (alignment, right-to-left, indents, spacing, keep rules), `insertImage`, `addFootnote`, `setHeader` / `setFooter` / `removeHeader` / `removeFooter` / `headersAndFooters()`, `await removeHyperlink` (async since it also drops the link's relationship when unused), `setHyperlinkTarget`, `setImageAlt`, `clearFormatting`, `hyperlinks()`, `bookmarks()`, `removeBookmark`, `editComment`, `deleteComment`, `addEditableRange`, `removeEditableRange`.
 
 ```ts
 // Tracked changes: record edits as Word revisions, then review them.
@@ -249,7 +249,7 @@ editor.insertTableRows(table, 2, [['2', 'Admin fee', 'Rp 500.000']]);  // copies
 editor.deleteTableRows(table, 2);                                  // 0-based; deleting every row deletes the table
 ```
 
-Charts, shapes and objects: `insertChart` writes a chart with its data in an embedded workbook (Word's "Edit Data" opens it), `updateChart` changes it, and `insertShape` adds a text box or shape. `objects()` lists pictures, charts, shapes and text boxes in document order. A text box's paragraphs appear in `paragraphs()` right after the paragraph holding it, so `find` and `replaceAll` reach them too.
+Charts, shapes and objects: `insertChart` writes a chart with its data in an embedded workbook (Word's "Edit Data" opens it), `updateChart` changes it, and `insertShape` adds a text box or shape. `objects()` lists pictures, charts, shapes and text boxes in document order. A text box's paragraphs appear in `paragraphs()` right after the paragraph holding it, so `find` and `replaceAll` reach them too. As in Word, only pictures go inside a text box. Number formats (`formatCode` on a series, `categoryFormat` for numbers or dates) go into the chart and its workbook and survive updates. `placeObject` on an object that already floats keeps what you leave out, so `{ wrap: 'behind' }` alone re-wraps it.
 
 ```ts
 const at = editor.find('Quarterly sales')[0]!.end;
