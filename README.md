@@ -406,7 +406,7 @@ Known limits:
 - **Pictures:** only the first frame of a GIF and the first page of a TIFF; JPEG-compressed and CMYK TIFFs are not decoded. EMF+-only pictures (some Office 2007+ charts pasted as pictures) and clipping inside metafiles are not supported.
 - **Equations:** no line breaks inside an equation and no equation numbers. Math symbols missing from your fonts fall back to other fonts (the bundled fonts have no math font such as Cambria Math).
 - **Right-to-left and complex scripts:** the bundled fonts have no Arabic or Indic letters; register a font that has them (for example Arial, Times New Roman or Noto) for PDF export. The viewer leaves shaping these scripts to the browser.
-- **Editing:** creating or changing shapes, charts and equations, moving or resizing pictures, and changing a table's columns or merged cells are not supported. Rows can be added and deleted from code, not yet on the page. A keystroke still paginates the whole document, re-using the measured lines of unchanged paragraphs.
+- **Editing:** creating or changing equations and SmartArt, and changing a table's columns or merged cells, are not supported. Charts, shapes, text boxes and pictures can be inserted, changed, resized and moved from code (`DocxEditor`), but not yet on the page. Rows can be added and deleted from code, not yet on the page. A keystroke still paginates the whole document, re-using the measured lines of unchanged paragraphs.
 
 ## Development
 
