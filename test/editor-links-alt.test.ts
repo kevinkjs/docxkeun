@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DocxEditor } from '../src/api/index.js';
+import { DocxEditor, LockedRegionError } from '../src/api/index.js';
 import { DocxDocument } from '../src/model/index.js';
+import { AccessPolicy } from '../src/security/index.js';
 import { findAll } from '../src/xml/index.js';
 import { buildDocx, p } from './helpers/docx.js';
 
@@ -24,11 +25,33 @@ describe('setImageAlt', () => {
   it('is refused by the guard', async () => {
     const doc = await DocxDocument.open(await buildDocx({ body: pic }));
     const editor = new DocxEditor(doc, {
-      assert(action) {
-        if (action === 'edit') throw new Error('Read only');
+      assert() {
+        throw new Error('Read only');
       },
     });
     expect(() => editor.setImageAlt(findAll(doc.documentXml.root, 'w:drawing')[0]!, 'x')).toThrow(/Read only/);
+  });
+
+  it('is not tracked: applied directly with Track Changes on, refused where only tracked changes are allowed', async () => {
+    const doc = await DocxDocument.open(await buildDocx({ body: pic }));
+    const tracking = new DocxEditor(doc, undefined, { trackChanges: true });
+    const descr = () => findAll(doc.documentXml.root, 'wp:docPr')[0]!.attrs['descr'];
+    tracking.setImageAlt(findAll(doc.documentXml.root, 'w:drawing')[0]!, 'Tracked on');
+    expect(descr()).toBe('Tracked on');
+    expect(tracking.revisions()).toEqual([]);
+
+    const protectedDoc = await DocxDocument.open(await buildDocx({ body: pic, settings: '<w:documentProtection w:edit="trackedChanges" w:enforcement="1"/>' }));
+    const editor = new DocxEditor(protectedDoc, new AccessPolicy(protectedDoc, { user: { id: 'u1', name: 'Sari' }, role: 'editor' }));
+    expect(editor.trackChanges).toBe(true);
+    expect(() => editor.setImageAlt(findAll(protectedDoc.documentXml.root, 'w:drawing')[0]!, 'x')).toThrow(/only allows changes that are tracked/);
+    expect(findAll(protectedDoc.documentXml.root, 'wp:docPr')[0]!.attrs['descr']).toBe('old');
+  });
+
+  it('is refused in a locked region', async () => {
+    const { doc, editor } = await open(pic + p('After'));
+    editor.lockParagraphs(editor.paragraphs()[0]!.el, undefined, { title: 'Logo' });
+    expect(() => editor.setImageAlt(findAll(doc.documentXml.root, 'wp:docPr')[0]!, 'x')).toThrow(LockedRegionError);
+    expect(findAll(doc.documentXml.root, 'wp:docPr')[0]!.attrs['descr']).toBe('old');
   });
 });
 

@@ -853,7 +853,11 @@ export class DocxEditor {
   private objectNodeOf(obj: DocObject, idx = this.index()): XmlElement {
     if (!idx.contains(obj.drawing)) throw new EditError(`Object ${obj.n} is no longer in the document (list the objects again)`);
     if (idx.ancestor(obj.drawing, 'w:del') || idx.ancestor(obj.drawing, 'w:moveFrom')) throw new EditError(`Object ${obj.n} is deleted (a tracked change; list the objects again)`);
-    let node = obj.drawing;
+    return this.runChildHolding(obj.drawing, idx);
+  }
+
+  /** The child of the nearest run that holds `node` (or is it). */
+  private runChildHolding(node: XmlElement, idx: TreeIndex): XmlElement {
     for (let parent = idx.parentOf(node); parent.name !== 'w:r'; parent = idx.parentOf(parent)) node = parent;
     return node;
   }
@@ -2210,13 +2214,14 @@ export class DocxEditor {
     await this.doc.refreshRels(this.part);
   }
 
-  /** Set the alt text (wp:docPr/@descr) of a picture or drawing. */
+  /** Set the alt text (wp:docPr/@descr) of a picture or drawing. Not tracked, as in Word (see `setObjectAlt`). */
   setImageAlt(drawing: XmlElement, text: string): void {
-    this.check('edit');
     const props = drawing.name === 'wp:docPr' ? drawing : findAll(drawing, 'wp:docPr')[0];
     if (!props) throw new EditError('This object has no description to edit');
-    this.dropStaleFallbacks([props]);
+    const node = this.runChildHolding(props, this.index());
+    this.checkUntracked({ start: { node, offset: 0 }, end: { node, offset: 1 } });
     props.attrs['descr'] = text;
+    dropFallback(node);
     this.changed();
   }
 
