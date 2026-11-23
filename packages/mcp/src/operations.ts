@@ -1578,7 +1578,7 @@ const insertShapeOp = define({
   description:
     'Insert a text box or a shape (rectangle, oval, arrow, star, callout, line…) into a paragraph, at its end or after some text. It floats by default, at the top left of the paragraph with text flowing around it; ' +
     'give x and y to put it elsewhere, or placement "inline" to put it in the line of text. `text` goes inside (each line becomes a paragraph, <b> and the other tags format it); ' +
-    'a text box’s paragraphs are numbered right after the paragraph holding it, so every text tool works on them. Colours are hex RGB or "none". It cannot go inside another text box.',
+    'a text box’s paragraphs are numbered right after the paragraph holding it, so every text tool works on them. Colours are hex RGB or "none". It cannot go inside another text box. Paragraph numbers after a box with `text` shift.',
   role: 'editor',
   kind: 'add',
   schema: z.object({
@@ -1648,7 +1648,7 @@ const editObjectOp = define({
   description:
     'Change a picture, chart, shape or text box (object numbers from read_document or list_objects): its size (width and/or height in points; one alone keeps the proportions), ' +
     'its place (`paragraph` moves it to another paragraph, after some text if you give `after`; `placement` makes it floating or inline; x, y, from and wrap position a floating one) and its alt text. ' +
-    'Word does not track size, floating position, wrap or alt text, so with Track Changes on those apply directly (and are refused where only tracked changes are allowed); moving and switching inline/floating are tracked.',
+    'Word does not track size, floating position, wrap or alt text, so with Track Changes on those apply directly (and are refused where only tracked changes are allowed); moving and switching inline/floating are tracked. Moving a text box carries its paragraphs. Paragraph numbers between the old and new place shift.',
   role: 'editor',
   kind: 'change',
   schema: z.object({
@@ -1715,15 +1715,17 @@ const editObjectOp = define({
 const deleteObjectOp = define({
   name: 'delete_object',
   title: 'Delete an object',
-  description: 'Delete a picture, chart, shape or text box (object number from read_document or list_objects). With Track Changes on the deletion is tracked.',
+  description: 'Delete a picture, chart, shape or text box (object number from read_document or list_objects). With Track Changes on the deletion is tracked. Deleting a text box removes its paragraphs. Paragraph numbers after it shift (and object numbers after the object).',
   role: 'editor',
   kind: 'change',
   schema: z.object({ object: z.number().int().min(1).describe('Object number') }),
   run(ctx, args) {
     const o = objectNumbered(ctx, args.object);
     const name = objectName(ctx, o);
+    const inside = newNumbers(ctx, findAll(o.object.drawing, 'w:p'));
     ctx.editor.deleteObject(o.object);
-    return `Deleted the ${name} (object ${o.n}) from paragraph ${o.paragraph}${ctx.editor.trackChanges ? ' (tracked)' : ''}.`;
+    const gone = inside ? ` Its ${inside} ${ctx.editor.trackChanges ? 'are marked deleted' : 'are gone'}, so paragraph and object numbers after it shift; read the document again.` : '';
+    return `Deleted the ${name} (object ${o.n}) from paragraph ${o.paragraph}${ctx.editor.trackChanges ? ' (tracked)' : ''}.${gone}`;
   },
 });
 

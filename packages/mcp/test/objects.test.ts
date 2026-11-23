@@ -525,6 +525,18 @@ describe('shape and object tools', () => {
     expect((await call(client, 'add_footnote', { path: NAME, paragraph: 3, text: 'Note' })).text).toContain("Footnotes can't go in a text box");
   });
 
+  it('warns that paragraph and object numbers shift after the tools that add or remove them', async () => {
+    const client = await connect();
+    expect(client.getInstructions()).toMatch(/Numbers shift after [^\n]*insert_shape[^\n]*delete_object[^\n]*edit_object/);
+    const tools = (await client.listTools()).tools;
+    for (const n of ['insert_shape', 'delete_object', 'edit_object']) expect(tools.find((t) => t.name === n)!.description, n).toContain('Paragraph numbers');
+    await write(p('Intro') + p('Here'), NAME);
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'text box', text: 'One\nTwo' });
+    const text = await ok(client, 'delete_object', { path: NAME, object: 1 });
+    expect(text).toContain('Deleted the text box (object 1) from paragraph 2');
+    expect(text).toContain('Its paragraphs 3\u20134 are gone, so paragraph and object numbers after it shift');
+  });
+
   it('tells the AI about charts, shapes and objects in its instructions', async () => {
     const instructions = (await connect()).getInstructions()!;
     for (const word of ['insert_chart', 'read_chart', 'update_chart', 'insert_shape', 'edit_object', 'delete_object', 'list_objects']) expect(instructions).toContain(word);
