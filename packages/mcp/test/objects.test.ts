@@ -109,6 +109,27 @@ describe('text box paragraphs', () => {
     expect(entries.map((e) => e.view)).toEqual([1, 2, 2, 3, 3, 4, 4, 4, 4, 5, 5, 5, 6, 6, 7]);
   });
 
+  it('numbers a text box nested in a text box, also in a table cell, as DocxEditor.paragraphs() lists them', async () => {
+    const table = (inner: string) =>
+      `<w:tbl><w:tblPr><w:tblW w:w="4000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr>${inner}</w:tc></w:tr></w:tbl>`;
+    const nested = (inner: string, after: string) => `<w:p>${textBoxRunHolding(`<w:p>${textBoxRun(inner)}</w:p>` + p(after))}</w:p>`;
+    const body = p('Before') + nested('Nested', 'Outer') + table(nested('Deep', 'Cell box')) + p('After');
+    const doc = await reopen(await write(body));
+    const entries = listParagraphs(doc);
+    const paras = new DocxEditor(doc).paragraphs();
+    expect(entries).toHaveLength(paras.length);
+    entries.forEach((e, i) => expect(e.para.el).toBe(paras[i]!.el));
+    expect(entries.map((e) => e.text)).toEqual(['Before', '', '', 'Nested', 'Outer', '', '', 'Deep', 'Cell box', 'After']);
+    // A nested box is numbered after the box holding it, and its host is the outer box's paragraph.
+    expect(entries.map((e) => (e.box ? `${e.box.index}@${e.box.host}` : ''))).toEqual(['', '', '1@2', '2@3', '1@2', '', '3@6', '4@7', '3@6', '']);
+    expect(entries.map((e) => e.view)).toEqual([1, 2, 2, 2, 2, 3, 3, 3, 3, 4]);
+    // read_document shows them in that order.
+    const read = paragraphLines(await ok(await connect(), 'read_document', { path: 'boxes.docx' }));
+    expect(read.map((l) => /^\[(\d+)\]/.exec(l)![1])).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
+    expect(read[3]).toBe('[4] (text box 2) Nested');
+    expect(read[7]).toBe('[8] (text box 4) Deep');
+  });
+
   it('edits a text box paragraph with formatting tags, and drops the old copy of the box', async () => {
     const file = await write(BOX);
     const client = await connect();
@@ -629,6 +650,12 @@ describe('shape and object tools', () => {
     const text = await ok(client, 'delete_object', { path: NAME, object: 1 });
     expect(text).toContain('Deleted the text box (object 1) from paragraph 2');
     expect(text).toContain('Its paragraphs 3\u20134 are gone, so paragraph and object numbers after it shift');
+    // One paragraph, and with Track Changes on.
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'text box', text: 'Single' });
+    expect(await ok(client, 'delete_object', { path: NAME, object: 1 })).toContain('Its paragraph 3 is gone, so paragraph and object numbers after it shift');
+    await ok(client, 'insert_shape', { path: NAME, paragraph: 2, shape: 'text box', text: 'Single' });
+    await ok(client, 'set_track_changes', { path: NAME, on: true });
+    expect(await ok(client, 'delete_object', { path: NAME, object: 1 })).toContain('Its paragraph 3 is marked deleted, so paragraph and object numbers after it shift');
   });
 
   it('tells the AI about charts, shapes and objects in its instructions', async () => {

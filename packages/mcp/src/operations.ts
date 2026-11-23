@@ -1784,7 +1784,8 @@ const deleteObjectOp = define({
     const name = objectName(ctx, o);
     const inside = newNumbers(ctx, findAll(o.object.drawing, 'w:p'));
     ctx.editor.deleteObject(o.object);
-    const gone = inside ? ` Its ${inside} ${ctx.editor.trackChanges ? 'are marked deleted' : 'are gone'}, so paragraph and object numbers after it shift; read the document again.` : '';
+    const verb = inside.startsWith('paragraphs') ? 'are' : 'is';
+    const gone = inside ? ` Its ${inside} ${verb} ${ctx.editor.trackChanges ? 'marked deleted' : 'gone'}, so paragraph and object numbers after it shift; read the document again.` : '';
     return `Deleted the ${name} (object ${o.n}) from paragraph ${o.paragraph}${ctx.editor.trackChanges ? ' (tracked)' : ''}.${gone}`;
   },
 });
