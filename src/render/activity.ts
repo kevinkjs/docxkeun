@@ -10,8 +10,9 @@
  */
 import { paragraphsOf, paragraphText } from '../api/editor.js';
 import type { Page, Rect, TextItem } from '../layout/types.js';
-import type { DocParagraph } from '../model/content.js';
-import type { XmlElement } from '../xml/index.js';
+import type { DocParagraph, ImageInline } from '../model/content.js';
+import type { DocxDocument } from '../model/index.js';
+import { serializeXml, type XmlElement } from '../xml/index.js';
 import type { DocxViewer } from './viewer.js';
 
 // ---- diff ------------------------------------------------------------------------------------------
@@ -172,9 +173,24 @@ export function diffParagraphs(before: string[], after: string[]): ParagraphDiff
   return { changes, deleted, same };
 }
 
-/** A paragraph's formatting as a string: style, alignment, list, and each run's properties. */
-function formatSignature(p: DocParagraph): string {
-  const runs = p.inlines.map((i) => (i.kind === 'text' ? JSON.stringify(i.props) : i.kind));
+/** A short checksum of a string (FNV-1a), enough to tell a chart's XML before from after. */
+function checksum(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(36);
+}
+
+/** An object's size, place, wrap and alt text, and a checksum of a chart's XML. */
+function imageSignature(i: ImageInline, doc: DocxDocument | undefined): string {
+  const chartPart = i.content?.type === 'chart' ? i.content.part : undefined;
+  const xml = chartPart && doc ? doc.xmlSync(chartPart) : undefined;
+  const chart = xml ? checksum(serializeXml(xml)) : '';
+  return `image:${i.width},${i.height},${i.float ? JSON.stringify(i.float) : ''},${i.alt ?? ''},${chart}`;
+}
+
+/** A paragraph's formatting as a string: style, alignment, list, each run's properties, and its objects. */
+function formatSignature(p: DocParagraph, doc?: DocxDocument): string {
+  const runs = p.inlines.map((i) => (i.kind === 'text' ? JSON.stringify(i.props) : i.kind === 'image' ? imageSignature(i, doc) : i.kind));
   return `${p.styleId ?? ''}|${p.props.jc ?? ''}|${p.props.bidi ? 'rtl' : ''}|${p.numbering ? `${p.numbering.numId}.${p.numbering.ilvl}` : ''}|${runs.join(';')}`;
 }
 
@@ -974,7 +990,7 @@ export class AiActivity {
   /** The body's paragraphs now (text and formatting): pass to `reveal()` after the document changed. */
   snapshot(): ParagraphSnapshot {
     const paras = this.paragraphs();
-    return { texts: paras.map((p) => paragraphText(p, { objects: true }).text), formats: paras.map(formatSignature) };
+    return { texts: paras.map((p) => paragraphText(p, { objects: true }).text), formats: paras.map((p) => formatSignature(p, this.viewer.document)) };
   }
 
   /**
@@ -990,7 +1006,7 @@ export class AiActivity {
     // Same text, other formatting (bold, a style, alignment, a list): the whole paragraph glows.
     if (old.formats.length) {
       for (const [o, n] of diff.same) {
-        if (old.formats[o] !== undefined && old.formats[o] !== formatSignature(paras[n]!)) diff.changes.push({ para: n, kind: 'changed', ranges: [], cuts: [], formatting: true, before: old.texts[o]!, from: o });
+        if (old.formats[o] !== undefined && old.formats[o] !== formatSignature(paras[n]!, this.viewer.document)) diff.changes.push({ para: n, kind: 'changed', ranges: [], cuts: [], formatting: true, before: old.texts[o]!, from: o });
       }
       diff.changes.sort((x, y) => x.para - y.para);
     }

@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { DocxEditor, paragraphsOf, paragraphText } from '../src/api/index.js';
 import type { Page } from '../src/layout/index.js';
 import { DocxDocument } from '../src/model/index.js';
+import { findAll, textContent } from '../src/xml/index.js';
 import { ACTIVITY_STYLES, AiActivity, type ActivityStyle } from '../src/render/activity.js';
 import type { DocxViewer } from '../src/render/viewer.js';
 import { buildDocx, p } from './helpers/docx.js';
+import { inline } from './helpers/drawings.js';
 
 /** Just what AiActivity touches when no document is loaded. */
 function host(): { viewer: DocxViewer; root: HTMLDivElement } {
@@ -95,8 +97,9 @@ describe('AI activity: name and colours', () => {
  * A real document with a hand-made layout (the font files can't be read here): one line per
  * paragraph, 10 points apart, and a text item per line so word-level marks have positions.
  */
-async function laidOut(texts: string[]) {
-  const doc = await DocxDocument.open(await buildDocx({ body: texts.map((t) => p(t)).join('') }));
+async function laidOut(texts: string[], setup?: (editor: DocxEditor) => Promise<void>, body = texts.map((t) => p(t)).join('')) {
+  const doc = await DocxDocument.open(await buildDocx({ body }));
+  if (setup) await setup(new DocxEditor(doc));
   const root = document.createElement('div');
   root.className = 'docxkeun-viewer';
   document.body.appendChild(root);
@@ -363,5 +366,45 @@ describe('AI activity: marks over a run of changes', () => {
     activity.clearMarks();
     await change(t, activity, (e) => e.replaceAll('Two', 'Second'));
     expect([...t.root.querySelectorAll<HTMLElement>('.docxkeun-ai-bar')].map(lineOf)).toEqual([1]);
+  });
+});
+
+describe('AI activity: changed objects', () => {
+  const endOfText = (editor: DocxEditor) => {
+    const t = findAll(editor.paragraphs()[0]!.el, 'w:t').at(-1)!;
+    return { node: t, offset: textContent(t).length };
+  };
+  const PICTURE = 'http://schemas.openxmlformats.org/drawingml/2006/picture';
+  const withPicture = `<w:p><w:r><w:t>Logo</w:t></w:r><w:r>${inline('', 100, 50, PICTURE)}</w:r></w:p>${p('Unchanged.')}`;
+
+  it('marks a paragraph whose chart changed', async () => {
+    const t = await laidOut(['Sales by quarter', 'Unchanged.'], async (e) => {
+      await e.insertChart(endOfText(e), { type: 'column', categories: ['Q1', 'Q2'], series: [{ name: 'Sales', values: [1, 2] }] });
+    });
+    const activity = new AiActivity(t.viewer, { style: 'highlight', animate: false });
+    const before = activity.snapshot();
+    const editor = new DocxEditor(t.doc);
+    await editor.updateChart(editor.objects()[0]!, { series: [{ name: 'Sales', values: [5, 9] }] });
+    t.relayout();
+    const diff = await activity.reveal(before, { scroll: false });
+    expect(diff.changes).toMatchObject([{ para: 0, kind: 'changed', formatting: true }]);
+    expect(count(t.root, 'docxkeun-ai-mark-tint')).toBe(1);
+    expect(t.root.querySelectorAll('.docxkeun-ai-map i')).toHaveLength(1);
+  });
+
+  it('marks a paragraph whose picture changed in size or alt text, and none when nothing changed', async () => {
+    const t = await laidOut(['Logo', 'Unchanged.'], undefined, withPicture);
+    const activity = new AiActivity(t.viewer, { style: 'highlight', animate: false });
+    const editor = new DocxEditor(t.doc);
+    let before = activity.snapshot();
+    t.relayout();
+    expect((await activity.reveal(before, { scroll: false })).changes).toEqual([]);
+    editor.resizeObject(editor.objects()[0]!, { width: 200 });
+    t.relayout();
+    expect((await activity.reveal(before, { scroll: false })).changes).toMatchObject([{ para: 0, formatting: true }]);
+    before = activity.snapshot();
+    editor.setObjectAlt(editor.objects()[0]!, 'A logo');
+    t.relayout();
+    expect((await activity.reveal(before, { scroll: false })).changes).toMatchObject([{ para: 0, formatting: true }]);
   });
 });
