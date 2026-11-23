@@ -102,6 +102,9 @@ Each role gets only the tools it may use.
 | `edit_paragraph`, `insert_paragraphs`, `delete_paragraphs` | Paragraph text and styles | editor |
 | `copy_paragraphs` | Copy paragraphs and tables with their formatting and lists, optionally onto a new page (for example to translate a document); lists in the copy start again | editor |
 | `insert_table`, `edit_table` | Make a table (header row, column widths, borders, alignment); add or delete rows, or delete a table. Cells are paragraphs, so the text tools edit them | editor |
+| `insert_chart`, `update_chart`, `read_chart` | Make a chart (column, bar, line, area, pie, doughnut, scatter; stacked) with its data in an embedded workbook, change its title, legend or data, or read its data as a table | editor (`read_chart`: viewer) |
+| `insert_shape` | A text box or a shape (rectangle, oval, arrow, star, callout, line…), inline or floating, with text, fill and outline | editor |
+| `edit_object`, `delete_object` | Resize, move, re-place or describe (alt text) a picture, chart, shape or text box, or delete it | editor |
 | `format_text` | Bold, italic, underline, colour, highlight, size, font | editor |
 | `format_paragraph` | Alignment, right-to-left direction, indents, spacing, line spacing, keep and page-break rules | editor |
 | `replace_story_text` | Edit text in a header, footer, footnote, endnote or text box | editor |
@@ -118,6 +121,8 @@ Each role gets only the tools it may use.
 
 `read_document` shows text formatting as tags: text formatted differently from the rest of its paragraph is wrapped in `<b>`, `<i>`, `<u>`, `<s>`, `<sup>` or `<sub>`, and a paragraph's alignment and whole-paragraph formatting are in its description (`[1] (centered; bold, underlined) AGREEMENT`). `edit_paragraph`, `insert_paragraphs`, `create_document` and `replace_text` take the same tags, so an AI that rewrites or translates a paragraph keeps its bold, underlined and other formatted words; each tagged part copies the font, size and colour of the matching phrase. Searches ignore the tags.
 
+Objects (pictures, charts, shapes, text boxes) have numbers in `read_document` and `list_objects`, which the object tools take. The paragraphs of a text box are numbered in line, right after the paragraph holding the box, so the paragraph tools edit them; numbers after a box shift when one with text is added, moved or deleted, so read the document again.
+
 Editing tools save to the file straight away; every one of them takes `output` to write a copy instead. Encrypted documents take `password`, and stay encrypted when they are changed.
 
 ## Safety
@@ -130,7 +135,7 @@ Editing tools save to the file straight away; every one of them takes `output` t
 
 ## Limitations
 
-The tools edit the body (including tables), headers, footers, footnotes, endnotes and text boxes, insert pictures and footnotes, and record and review tracked changes. A document protected for tracked changes can be edited (every edit is recorded) but not reviewed; only its owner can accept or reject changes after removing the protection. Shapes, charts, SmartArt and equations can be read but not created or changed, and pictures can be inserted but not moved or resized. Page counts and PDFs come from docxkeun's own layout and may differ slightly from Word's. See [docxkeun's limitations](https://github.com/kevinkjs/docxkeun#status-and-limitations).
+The tools edit the body (including tables), headers, footers, footnotes, endnotes and text boxes, insert pictures and footnotes, and record and review tracked changes. A document protected for tracked changes can be edited (every edit is recorded) but not reviewed; only its owner can accept or reject changes after removing the protection. Charts, shapes and text boxes can be made and changed, and pictures resized and moved; SmartArt and equations can be read but not created or changed. Page counts and PDFs come from docxkeun's own layout and may differ slightly from Word's. See [docxkeun's limitations](https://github.com/kevinkjs/docxkeun#status-and-limitations).
 
 ## Use from code
 

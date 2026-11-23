@@ -8,6 +8,22 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 
 - The `words` effect style now colours only the letters. Its shimmer and the marks it leaves are drawn on the text itself, so shaded table cells, highlighted text and pictures in the paragraph keep their own colours, and the changed words no longer sit in a tinted glow. Before, the shimmer was a coloured band blended over the line, which tinted anything that was not white, and the marks added a blurred box behind the words. With `marks: false`, the changed letters now light up for a moment instead of a tinted band passing over them.
 
+- **Charts:** `DocxEditor.insertChart()` adds a column, bar, line, area, pie, doughnut or scatter chart (stacked and 100% stacked for column, bar and area), with a title, axis titles and legend. Its numbers are written into an embedded workbook, so "Edit Data" in Word shows them. `chartInfo()` reads a chart's data back as a table, and `updateChart()` changes its title, legend or data while keeping its look, and rewrites the workbook. A chart linked to an outside file only has its cached numbers changed. Word does not track chart changes, so neither does this. The chart types and `ChartDataError` are exported from `docxkeun/editor`.
+- **Objects:** `objects()` lists pictures, charts, diagrams, shapes, text boxes and groups with numbers. `resizeObject()`, `setObjectAlt()`, `deleteObject()`, `moveObject()` and `placeObject()` change them; resizing, alt text and floating position are applied directly, since Word does not track them, while creating, deleting, moving and switching between inline and floating are tracked. Before, only pictures could be inserted and given alt text.
+- **Shapes and text boxes:** `insertShape()` adds a text box or a shape (rectangle, rounded rectangle, oval, triangle, diamond, arrows, chevron, pentagon, star, callouts, line), inline or floating (square wrap, above and below, in front of or behind the text), with text, fill and outline colours.
+- **Breaking:** `paragraphs()` now also lists the paragraphs inside text boxes, right after the paragraph that holds the box. `find()`, `replaceAll()` and `fillTemplate()` reach text in boxes too. Code that indexes `paragraphs()` by position will see its numbers shift in documents with text boxes. Before, text in boxes could only be changed through `storyParts()`.
+- Copied content (`copyBlocks()`) now gives a copied chart its own chart part and workbook, so changing one copy no longer changes the other.
+- The AI's marks (`aiActivity`) also notice changed charts and objects, not only text.
+
+### docxkeun chat
+
+- Claude can now insert charts (column, bar, line, area, pie, doughnut, scatter), read and update their data, insert shapes and text boxes, and resize, move, describe or delete pictures, charts, shapes and text boxes. Text box paragraphs are numbered in line, so Claude edits them like any other paragraph. Before, it could only read these.
+
+### docxkeun-mcp
+
+- New tools: `insert_chart`, `read_chart`, `update_chart`, `insert_shape`, `edit_object` and `delete_object`. `read_document` and `list_objects` give every picture, chart, shape and text box an object number that these tools use.
+- Text box paragraphs are now numbered in line, right after the paragraph holding the box, so `edit_paragraph`, `replace_text`, `format_text` and the other paragraph tools work on them. Paragraph numbers after a text box shift when a box with text is added, moved or deleted; read the document again after those tools. `replace_story_text` still works.
+
 ## 0.3.0 (2026-11-23)
 
 ### docxkeun

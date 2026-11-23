@@ -3,6 +3,7 @@ export { listRevisions, acceptRevisions, rejectRevisions, type Revision, type Re
 export { LIST_FORMATS, type ListFormat, type ListItem } from './lists.js';
 export { EditError, TreeIndex, type DocPosition, type DocRange } from './positions.js';
 export { ensurePart, randomHexId } from './parts.js';
+export { ChartDataError, type NewChart, type NewChartType, type LegendPosition, type ChartChanges, type ChartTable, type ChartSeriesData } from '../charts/write.js';
 export type { DocObject, ChartInfo, ChartUpdate, ShapeKind, ObjectPlacement, NewShape } from './objects.js';
 export { selectionInfoFor, describeSelection, type SelectionInfo, type SelectedParagraph, type TextSpot } from './selection.js';
 export type { HeaderFooterInfo, HeaderFooterKind, HeaderFooterOptions, HeaderFooterType } from './headers.js';

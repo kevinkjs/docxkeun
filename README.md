@@ -249,6 +249,23 @@ editor.insertTableRows(table, 2, [['2', 'Admin fee', 'Rp 500.000']]);  // copies
 editor.deleteTableRows(table, 2);                                  // 0-based; deleting every row deletes the table
 ```
 
+Charts, shapes and objects: `insertChart` writes a chart with its data in an embedded workbook (Word's "Edit Data" opens it), `updateChart` changes it, and `insertShape` adds a text box or shape. `objects()` lists pictures, charts, shapes and text boxes in document order. A text box's paragraphs appear in `paragraphs()` right after the paragraph holding it, so `find` and `replaceAll` reach them too.
+
+```ts
+const at = editor.find('Quarterly sales')[0]!.end;
+await editor.insertChart(at, {
+  type: 'column', title: 'Sales by quarter',
+  categories: ['Q1', 'Q2', 'Q3'],
+  series: [{ name: '2026', values: [120, 150, 170] }],
+});
+await editor.insertShape(at, { shape: 'textBox', text: 'Draft\nfigures', width: 150, place: { x: 300, y: 0, from: 'paragraph', wrap: 'square' } });
+
+const chart = editor.objects().find((o) => o.kind === 'chart')!;      // pictures, charts, diagrams, shapes, text boxes, groups
+const table = editor.chartInfo(chart);                                  // { kind, title, categories, series, legend, … }
+await editor.updateChart(chart, { series: [...table.series, { name: '2027', values: [130, 160, 190] }] });  // replaces the whole table
+editor.resizeObject(chart, { width: 400 });                             // points; the height keeps the proportions
+```
+
 ### PDF
 
 ```ts
