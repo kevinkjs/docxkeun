@@ -4,6 +4,8 @@
  * notifies listeners such as the viewer.
  */
 import { CONTENT_TYPE, IMAGE_CONTENT_TYPES, REL } from '../opc/index.js';
+import { newChartSpace, patchChartSpace, readChartTable, validateChartData, type ChartChanges, type NewChart } from '../charts/write.js';
+import { workbookFor, workbookHasMore } from '../charts/workbook.js';
 import { imageInfo } from '../images/size.js';
 import { hasEvenPages, hasFirstPage, headerParagraphs, headerText, referencesOf, sectionProperties, SECTPR_ORDER, textWidth, type HeaderFooterInfo, type HeaderFooterKind, type HeaderFooterOptions, type HeaderFooterType } from './headers.js';
 import type { DocParagraph, Block, Inline } from '../model/content.js';
@@ -32,6 +34,7 @@ import {
 } from './revisions.js';
 import { SETTINGS_ORDER } from '../security/protection.js';
 import { ensureNamespaces, ensurePart, randomHexId, ROOT_NAMESPACES } from './parts.js';
+import { addWorkbook, chartData, chartGraphic, chartKind, chartOf, chartSize, copyPart, freePartName, inlineFrame, listObjects, replaceWorkbook, sectionAt, type ChartInfo, type ChartUpdate, type DocObject } from './objects.js';
 import {
   between,
   EditError,
@@ -699,15 +702,10 @@ export class DocxEditor {
     this.doc.pkg.setBytes(part, bytes, IMAGE_CONTENT_TYPES[ext]);
     const rId = await this.doc.pkg.addRelationship(this.part, REL.image, part);
     await this.doc.refreshRels(this.part);
-    // Drawing ids must be unique in the document.
-    let id = 0;
-    for (const root of [this.doc.documentXml.root, this.root]) for (const d of findAll(root, 'wp:docPr')) id = Math.max(id, Number(attr(d, 'id') ?? 0));
-    id++;
+    const id = this.newDrawingId();
     const name = options.name ?? `Picture ${id}`;
     const cx = String(Math.round(width! * 12700));
     const cy = String(Math.round(height! * 12700));
-    if (this.root.attrs['xmlns:wp'] === undefined) this.root.attrs['xmlns:wp'] = NS.wp;
-    if (this.root.attrs['xmlns:r'] === undefined) this.root.attrs['xmlns:r'] = NS.r;
     const docPr: Record<string, string> = { id: String(id), name };
     if (options.alt) docPr.descr = options.alt;
     const drawing = el('w:drawing', {}, [
@@ -729,6 +727,109 @@ export class DocxEditor {
     ]);
     this.insertRunContent(at, [drawing]);
     return drawing;
+  }
+
+  /** An id for a new drawing (wp:docPr ids must be unique in the document); the root gets the prefixes drawings use. */
+  private newDrawingId(): number {
+    let id = 0;
+    for (const root of [this.doc.documentXml.root, this.root]) for (const d of findAll(root, 'wp:docPr')) id = Math.max(id, Number(attr(d, 'id')) || 0);
+    if (this.root.attrs['xmlns:wp'] === undefined) this.root.attrs['xmlns:wp'] = NS.wp;
+    if (this.root.attrs['xmlns:r'] === undefined) this.root.attrs['xmlns:r'] = NS.r;
+    return id + 1;
+  }
+
+  // ---- objects and charts ---------------------------------------------------------------------
+
+  /** Pictures, charts, SmartArt, shapes, text boxes and groups, numbered from 1 in document order. */
+  objects(): DocObject[] {
+    return listObjects(this.paragraphs());
+  }
+
+  /** The range of an object, for access and lock checks. */
+  private objectRange(obj: DocObject): DocRange {
+    const node = objectNode(obj) ?? obj.drawing;
+    return { start: { node, offset: 0 }, end: { node, offset: 1 } };
+  }
+
+  /**
+   * Insert a chart inline at a position, with its data in an embedded workbook (so Word's "Edit
+   * Data" shows it). Without a size it gets Word's 432 × 252 pt, shrunk to the section's text width;
+   * with one side, the other keeps those proportions. Returns the w:drawing.
+   */
+  async insertChart(at: DocPosition, chart: NewChart & { width?: number; height?: number; alt?: string }): Promise<XmlElement> {
+    this.check('edit', { start: at, end: at });
+    validateChartData(chart.type, chart.stacked, chart.categories, chart.series);
+    const idx = this.index();
+    if (!idx.contains(at.node)) throw new EditError('That position is not in the document (stale position?)');
+    const size = chartSize(chart, textWidth(sectionAt(this.body, idx, at.node)) / 20);
+    const { pkg } = this.doc;
+    const part = freePartName(pkg, 'word/charts/chart', '.xml');
+    const workbook = await addWorkbook(pkg, part, await workbookFor(chart));
+    pkg.setXml(part, { declaration: null, prolog: [], root: newChartSpace(chart, workbook), epilog: [] }, CONTENT_TYPE.chart);
+    await this.doc.refreshRels(part);
+    const rId = await pkg.addRelationship(this.part, REL.chart, part);
+    await this.doc.refreshRels(this.part);
+    const id = this.newDrawingId();
+    const drawing = inlineFrame(id, `Chart ${id}`, size.width, size.height, chartGraphic(rId), chart.alt);
+    this.insertRunContent(at, [drawing]);
+    return drawing;
+  }
+
+  /** A chart's data (type, titles, legend, categories, series) and where it comes from. */
+  chartInfo(obj: DocObject): ChartInfo {
+    const { part, chartSpace } = chartOf(this.doc, obj);
+    return { ...readChartTable(chartSpace), source: chartData(this.doc, part, chartSpace).source };
+  }
+
+  /**
+   * Change a chart's titles, legend or data, keeping its formatting (see `patchChartSpace`). New
+   * data must suit the chart's type, and rewrites the embedded workbook; a chart with an old embedded
+   * object or no workbook gets a new one. A chart linked to an outside file only has its cached data
+   * changed: the file is not, and Word's refresh brings its numbers back. Word does not track chart
+   * changes, so neither does this.
+   */
+  async updateChart(obj: DocObject, changes: ChartChanges): Promise<ChartUpdate> {
+    const { part, chartSpace } = chartOf(this.doc, obj);
+    this.check('edit', this.objectRange(obj));
+    const { pkg } = this.doc;
+    const data = chartData(this.doc, part, chartSpace);
+    const result: ChartUpdate = { source: data.source, workbookRewritten: false, workbookHadMore: false };
+    let workbook: Uint8Array | undefined;
+    if (changes.categories !== undefined || changes.series !== undefined) {
+      const current = readChartTable(chartSpace);
+      const categories = changes.categories ?? current.categories;
+      const series = changes.series ?? current.series;
+      const { type, stacked } = chartKind(chartSpace);
+      validateChartData(type, stacked, categories, series);
+      if (data.source !== 'linked') {
+        if (data.workbook) result.workbookHadMore = await workbookHasMore(await pkg.getBytes(data.workbook), current.categories.length, current.series.length);
+        workbook = await workbookFor({ categories, series });
+      }
+    }
+    patchChartSpace(chartSpace, changes, { keepFormulas: data.source === 'linked' });
+    if (workbook) {
+      if (data.workbook) pkg.setBytes(data.workbook, workbook);
+      else await replaceWorkbook(this.doc, part, chartSpace, data.relId, workbook);
+      result.source = 'embedded';
+      result.workbookRewritten = true;
+    }
+    this.changed(part);
+    return result;
+  }
+
+  /** Give every chart under `nodes` its own copy of its chart part (and workbook), so copies change independently. */
+  private async copyChartParts(nodes: XmlElement[]): Promise<void> {
+    const { pkg } = this.doc;
+    let copied = false;
+    for (const chart of nodes.flatMap((n) => findAll(n, 'c:chart'))) {
+      const rel = await pkg.relationshipById(this.part, attr(chart, 'r:id') ?? '');
+      if (!rel || rel.external || !pkg.has(pkg.resolve(this.part, rel))) continue;
+      const copy = await copyPart(pkg, pkg.resolve(this.part, rel));
+      await this.doc.refreshRels(copy);
+      chart.attrs['r:id'] = await pkg.addRelationship(this.part, rel.type, copy);
+      copied = true;
+    }
+    if (copied) await this.doc.refreshRels(this.part);
   }
 
   /** Add a footnote whose reference mark goes at a position. Returns the note's id. */
@@ -1446,6 +1547,7 @@ export class DocxEditor {
         insertOrdered(pPr, el('w:pageBreakBefore'), PPR_ORDER);
       } else blocks.unshift(el('w:p', {}, [el('w:pPr', {}, [el('w:pageBreakBefore')])]));
     }
+    await this.copyChartParts(copies);
     const track = this.tracking();
     if (track) for (const b of blocks) markInserted(b, track.nextId, track.who, (p) => markParagraph(p, 'ins', track.nextId(), track.who));
     this.placeBlocks(blocks, where);
