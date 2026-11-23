@@ -6,18 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { layoutDocument, type DisplayItem, type ImageItem, type PathItem, type TextItem } from '../src/layout/index.js';
 import { DocxDocument, type ImageInline } from '../src/model/index.js';
 import { buildDocx, p } from './helpers/docx.js';
+import { EMU, inline, textBoxRun, textBoxShape, vmlTextBoxRun } from './helpers/drawings.js';
 import { testRegistry } from './helpers/fonts.js';
-
-const EMU = 12700;
-const NS = 'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"';
-
-function inline(graphic: string, w: number, h: number, uri = 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape'): string {
-  return `<w:drawing><wp:inline ${NS}><wp:extent cx="${w * EMU}" cy="${h * EMU}"/><wp:docPr id="5" name="Shape"/><a:graphic><a:graphicData uri="${uri}">${graphic}</a:graphicData></a:graphic></wp:inline></w:drawing>`;
-}
-
-const textBoxShape = (text: string, prst = 'roundRect') =>
-  `<wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${200 * EMU}" cy="${80 * EMU}"/></a:xfrm><a:prstGeom prst="${prst}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="DDEEFF"/></a:solidFill><a:ln w="${2 * EMU}"><a:solidFill><a:srgbClr val="2E74B5"/></a:solidFill><a:tailEnd type="triangle"/></a:ln></wps:spPr>` +
-  `<wps:txbx><w:txbxContent><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr anchor="ctr"/></wps:wsp>`;
 
 async function layout(body: string, extra: Parameters<typeof buildDocx>[0] = { body }) {
   const doc = await DocxDocument.open(await buildDocx({ ...extra, body }));
@@ -30,8 +20,7 @@ const texts = (items: DisplayItem[]) => items.filter((i): i is TextItem => i.typ
 
 describe('shapes and text boxes', () => {
   it('draws a text box shape from mc:Choice, with its text and an arrowhead, and records it for editing', async () => {
-    const run = `<w:r><mc:AlternateContent><mc:Choice Requires="wps">${inline(textBoxShape('Inside the box'), 200, 80)}</mc:Choice><mc:Fallback><w:pict><v:rect style="width:200pt;height:80pt"><v:textbox><w:txbxContent><w:p><w:r><w:t>Old copy</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></mc:Fallback></mc:AlternateContent></w:r>`;
-    const { items, page } = await layout(`<w:p>${run}</w:p>`);
+    const { items, page } = await layout(`<w:p>${textBoxRun('Inside the box')}</w:p>`);
     const shape = paths(items).find((x) => x.fill === 'DDEEFF')!;
     expect(shape).toBeDefined();
     expect(shape.stroke).toBe('2E74B5');
@@ -49,8 +38,7 @@ describe('shapes and text boxes', () => {
   });
 
   it('reads an old VML text box', async () => {
-    const run = '<w:r><w:pict><v:rect style="width:150pt;height:60pt" fillcolor="#FFF2CC" strokecolor="#BF9000"><v:textbox><w:txbxContent><w:p><w:r><w:t>VML text</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect></w:pict></w:r>';
-    const { items } = await layout(`<w:p>${run}</w:p>`);
+    const { items } = await layout(`<w:p>${vmlTextBoxRun('VML text')}</w:p>`);
     expect(paths(items).find((x) => x.fill === 'FFF2CC')?.stroke).toBe('BF9000');
     expect(texts(items).map((t) => t.text).join(' ')).toContain('VML');
   });

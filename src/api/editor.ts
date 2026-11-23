@@ -8,7 +8,7 @@ import { newChartSpace, patchChartSpace, readChartTable, validateChartData, type
 import { isWorkbook, workbookFor, workbookHasMore } from '../charts/workbook.js';
 import { imageInfo } from '../images/size.js';
 import { hasEvenPages, hasFirstPage, headerParagraphs, headerText, referencesOf, sectionProperties, SECTPR_ORDER, textWidth, type HeaderFooterInfo, type HeaderFooterKind, type HeaderFooterOptions, type HeaderFooterType } from './headers.js';
-import type { DocParagraph, Block, Inline } from '../model/content.js';
+import type { DocParagraph, Block, DrawingContent, Inline } from '../model/content.js';
 import type { DocxDocument } from '../model/document.js';
 import { attr, el, elements, ensureChild, findAll, firstChild, insertOrdered, NS, removeChildren, textContent, type XmlElement, type XmlNode } from '../xml/index.js';
 import { createList, listItems, type ListFormat, type ListItem } from './lists.js';
@@ -209,13 +209,23 @@ export interface ParagraphText {
   segments: TextSegment[];
 }
 
-/** Every paragraph of a block list (including table cells), in document order. */
-export function paragraphsOf(blocks: Block[], out: DocParagraph[] = []): DocParagraph[] {
+/**
+ * Every paragraph of a block list (including table cells), in document order. With `textBoxes`,
+ * the paragraphs of the text boxes in a paragraph follow it (a group's boxes depth first).
+ */
+export function paragraphsOf(blocks: Block[], out: DocParagraph[] = [], options: { textBoxes?: boolean } = {}): DocParagraph[] {
   for (const b of blocks) {
-    if (b.kind === 'paragraph') out.push(b);
-    else for (const row of b.rows) for (const cell of row.cells) paragraphsOf(cell.blocks, out);
+    if (b.kind === 'paragraph') {
+      out.push(b);
+      if (options.textBoxes) for (const inline of b.inlines) if (inline.kind === 'image' && inline.content) boxParagraphs(inline.content, out, options);
+    } else for (const row of b.rows) for (const cell of row.cells) paragraphsOf(cell.blocks, out, options);
   }
   return out;
+}
+
+function boxParagraphs(content: DrawingContent, out: DocParagraph[], options: { textBoxes?: boolean }): void {
+  if (content.type === 'shape' && content.shape.text) paragraphsOf(content.shape.text.blocks, out, options);
+  else if (content.type === 'group') for (const child of content.children) boxParagraphs(child.content, out, options);
 }
 
 export function paragraphText(para: DocParagraph, options: { objects?: boolean } = {}): ParagraphText {
@@ -491,7 +501,27 @@ export class DocxEditor {
   private check(action: EditAction, range?: DocRange, detail?: { commentAuthor?: string }): void {
     const tracked = this.trackChanges && (action === 'edit' || action === 'format' || action === 'fillForm');
     this.guard?.assert(action, range, tracked ? { ...detail, tracked: true } : detail);
-    if (range && (action === 'edit' || action === 'format' || action === 'link')) this.assertUnlocked(range);
+    if (!range) return;
+    const idx = this.index();
+    if (action === 'edit' || action === 'format' || action === 'link') this.assertUnlocked(range, idx);
+    this.dropStaleFallbacks(range, idx);
+  }
+
+  /**
+   * Word stores a text box twice: DrawingML in mc:Choice and an old VML copy in mc:Fallback. A
+   * change inside the box leaves the copy stale, so it goes.
+   */
+  private dropStaleFallbacks(range: DocRange, idx: TreeIndex): void {
+    for (const { node } of [range.start, range.end]) {
+      let inBox = false;
+      for (let cur: XmlElement | undefined = node; cur; cur = idx.parent.get(cur)) {
+        if (cur.name === 'w:txbxContent') inBox = true;
+        else if (cur.name === 'mc:Choice' && inBox) {
+          const alternate = idx.parent.get(cur);
+          if (alternate) alternate.children = alternate.children.filter((c) => !(c.type === 'element' && c.name === 'mc:Fallback'));
+        }
+      }
+    }
   }
 
   /** The locked content control around a node, if any. */
@@ -503,9 +533,8 @@ export class DocxEditor {
   }
 
   /** Throw LockedRegionError when a range touches a locked region (or would delete one). */
-  private assertUnlocked(range: DocRange): void {
+  private assertUnlocked(range: DocRange, idx = this.index()): void {
     if (this.bypassLocks) return;
-    const idx = this.index();
     for (const pos of [range.start, range.end]) {
       if (!idx.contains(pos.node)) continue;
       const lock = this.lockAround(idx, pos.node);
@@ -542,9 +571,12 @@ export class DocxEditor {
     return { start: { node: sel.start.inline.node, offset: sel.start.offset }, end: { node: sel.end.inline.node, offset: sel.end.offset } };
   }
 
-  /** Every paragraph of the story (the body by default), including those in tables, in document order. */
+  /**
+   * Every paragraph of the story (the body by default), including those in tables, in document
+   * order. In the body, a text box's paragraphs come right after the paragraph holding the box.
+   */
   paragraphs(): DocParagraph[] {
-    if (!this.isStory) return paragraphsOf(this.doc.body().blocks);
+    if (!this.isStory) return paragraphsOf(this.doc.body().blocks, [], { textBoxes: true });
     const root = this.root;
     if (root.name === 'w:footnotes' || root.name === 'w:endnotes') {
       // Separator notes (w:type) are not content.
@@ -1431,8 +1463,8 @@ export class DocxEditor {
     }
     const idx = this.index();
     const parent = idx.parentOf(paragraph);
-    // A table cell must keep at least one paragraph.
-    if (parent.name === 'w:tc' && elements(parent, 'w:p').length === 1) {
+    // A table cell, and a text box, must keep at least one paragraph.
+    if ((parent.name === 'w:tc' || parent.name === 'w:txbxContent') && elements(parent, 'w:p').length === 1) {
       paragraph.children = paragraph.children.filter((c) => c.type === 'element' && c.name === 'w:pPr');
     } else parent.children.splice(indexOfChild(parent, paragraph), 1);
     this.changed();

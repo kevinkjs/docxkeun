@@ -94,7 +94,9 @@ describe('objects in the editor', () => {
       [6, 'textBox', true, false, 150, 60, 'w:pict'],
     ]);
     const paras = editor.paragraphs();
-    expect(objects.map((o) => paras.indexOf(o.paragraph))).toEqual([0, 0, 2, 2, 3, 3]);
+    // The text box's paragraph comes right after the first paragraph.
+    expect(textContent(paras[1]!.el)).toBe('Inside');
+    expect(objects.map((o) => paras.indexOf(o.paragraph))).toEqual([0, 0, 3, 3, 4, 4]);
     expect(objects[0]!.alt).toBe('Logo');
     expect(objects[4]!.chartPart).toBe(CHART1);
     // The real run, not a stand-in, and the w:drawing inside mc:Choice.
