@@ -249,7 +249,8 @@ describe('charts in the editor', () => {
 
     const series = [{ name: 'Revenue', values: [5, 6, 7, 8] }];
     expect(await editor.updateChart(none!, { series })).toEqual({ source: 'embedded', workbookRewritten: true, workbookHadMore: false });
-    expect(await editor.updateChart(ole!, { series })).toEqual({ source: 'embedded', workbookRewritten: true, workbookHadMore: false });
+    // What the old object held can't be read, so the caller is told it may have held more.
+    expect(await editor.updateChart(ole!, { series })).toEqual({ source: 'embedded', workbookRewritten: true, workbookHadMore: true });
 
     const again = await reopen(doc);
     const ed = new DocxEditor(again);

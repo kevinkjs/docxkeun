@@ -40,7 +40,10 @@ export interface ChartUpdate {
   source: 'embedded' | 'linked' | 'none';
   /** The embedded workbook was rewritten with the chart's new data. */
   workbookRewritten: boolean;
-  /** The old workbook held more than the chart's table (other sheets or cells), which is gone now. */
+  /**
+   * The old workbook held more than the chart's table (other sheets or cells), which is gone now;
+   * also true when an old embedded object that can't be read (an .xls) was replaced.
+   */
   workbookHadMore: boolean;
 }
 

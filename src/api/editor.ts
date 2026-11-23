@@ -803,6 +803,8 @@ export class DocxEditor {
       validateChartData(type, stacked, categories, series);
       if (data.source !== 'linked') {
         if (data.workbook) result.workbookHadMore = await workbookHasMore(await pkg.getBytes(data.workbook), current.categories.length, current.series.length);
+        // An old embedded object (an .xls) can't be read: it may have held more, so say so.
+        else if (data.source === 'embedded') result.workbookHadMore = true;
         workbook = await workbookFor({ categories, series });
       }
     }
