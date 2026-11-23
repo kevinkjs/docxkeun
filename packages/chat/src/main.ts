@@ -11,7 +11,7 @@ import { PasswordRequiredError, WrongPasswordError } from 'docxkeun/security';
 import { ACTIVITY_STYLES, DocxViewer, type ActivityStyle } from 'docxkeun/viewer';
 import { sampleDocx } from '../../../playground/sample.js';
 import { activityLabel, numberedObjects, targetParagraphs } from '../../mcp/src/operations.js';
-import { listParagraphs, renumberSelection, viewerParagraphs } from '../../mcp/src/outline.js';
+import { listParagraphs, readNumbersByView, renumberSelection, viewerParagraphs } from '../../mcp/src/outline.js';
 import { anthropicStream, MODELS, runTurn, type ModelChoice, type StreamFactory } from './agent.js';
 import { apiMessage, forgetKey, giveKey, keyProblem, NoRelayError, relayClient, relayStatus, START_THE_SERVER } from './auth.js';
 import { renderMarkdown } from './markdown.js';
@@ -391,7 +391,7 @@ viewer.on('selectioninfo', ({ selection: info }) => {
 function showSelection(info: SelectionInfo): void {
   if (!viewer.document) return;
   // Claude's tools number paragraphs as read_document does, text boxes included; the viewer doesn't.
-  if (current) info = renumberSelection(info, listParagraphs(current.doc));
+  if (current) info = renumberSelection(info, readNumbersByView(listParagraphs(current.doc)));
   selection = info;
   const box = $('selection');
   box.hidden = false;

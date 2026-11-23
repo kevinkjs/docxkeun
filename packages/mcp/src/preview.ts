@@ -12,7 +12,7 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { DocxDocument } from 'docxkeun';
 import { isEncryptedPackage } from 'docxkeun/security';
 import { fontUrls } from 'docxkeun-fonts';
-import { listParagraphs } from './outline.js';
+import { listParagraphs, readNumbersByView, readNumbersWithChanges } from './outline.js';
 import { PREVIEW_HTML, PREVIEW_SCRIPT } from './preview-page.js';
 import { DOCUMENT_EXTENSIONS, Workspace } from './workspace.js';
 
@@ -30,6 +30,11 @@ export interface ActivityEvent {
   path: string;
   /** Paragraph numbers as the viewer counts them: body and table cells, not text boxes (viewerParagraphs); none: the whole document. */
   paragraphs: number[];
+  /**
+   * The same paragraphs as read_document numbers them, a text box's as the paragraph holding it
+   * (readParagraphs): pages showing tracked changes count paragraphs differently and map from these.
+   */
+  read?: number[];
   mode: 'read' | 'edit';
   /** A verb for the caret label: "editing", "reading", "commenting"… */
   label?: string;
@@ -43,6 +48,8 @@ export interface PreviewSelection {
   part?: string;
   start: { paragraph: number; offset: number };
   end: { paragraph: number; offset: number };
+  /** The page shows tracked changes: positions count deleted text, and deleted paragraphs as paragraphs. */
+  changes?: boolean;
   /** When it was selected (ms since the epoch). */
   at: number;
 }
@@ -210,9 +217,11 @@ export async function startPreview(folders: string[], options: PreviewOptions = 
         json(res, 200, []);
         return;
       }
-      const byView: number[] = [];
-      for (const e of listParagraphs(await DocxDocument.open(bytes))) if (!e.box) byView[e.view - 1] = e.n;
-      json(res, 200, byView);
+      const doc = await DocxDocument.open(bytes);
+      const entries = listParagraphs(doc);
+      // changes=1: the page shows tracked changes, where deleted paragraphs count too.
+      const shown = url.searchParams.get('changes') === '1' ? await DocxDocument.open(bytes, { showDeletions: true }) : undefined;
+      json(res, 200, shown ? readNumbersWithChanges(entries, doc, shown) : readNumbersByView(entries));
       return;
     }
     if (path === '/api/events') {
@@ -302,7 +311,7 @@ export async function startPreview(folders: string[], options: PreviewOptions = 
       return;
     }
     const part = typeof input.part === 'string' && /^[\w/.-]{1,200}$/.test(input.part) ? input.part : undefined;
-    selection = { path: real, story, ...(part ? { part } : {}), start, end, at: Date.now() };
+    selection = { path: real, story, ...(part ? { part } : {}), start, end, ...(input.changes === true ? { changes: true } : {}), at: Date.now() };
     res.writeHead(204).end();
   };
 
@@ -381,7 +390,14 @@ export async function startPreview(folders: string[], options: PreviewOptions = 
     url: base,
     link: (real) => `${base}/?doc=${encodeURIComponent(ws.display(real))}`,
     activity(event) {
-      send({ type: 'activity', path: ws.display(event.path), paragraphs: event.paragraphs.slice(0, 500), mode: event.mode, ...(event.label ? { label: event.label } : {}) });
+      send({
+        type: 'activity',
+        path: ws.display(event.path),
+        paragraphs: event.paragraphs.slice(0, 500),
+        ...(event.read ? { read: event.read.slice(0, 500) } : {}),
+        mode: event.mode,
+        ...(event.label ? { label: event.label } : {}),
+      });
     },
     selection: () => selection,
     notify(event) {

@@ -3,7 +3,7 @@
  * boxes) numbered from 1, with their style, table or text box, locks and comments.
  */
 import { readComments, type Block, type CommentInfo, type DocParagraph, type DocxDocument, type DrawingContent } from 'docxkeun';
-import type { ListItem, LockedRegion, SelectionInfo } from 'docxkeun/editor';
+import { paragraphsOf, type ListItem, type LockedRegion, type SelectionInfo } from 'docxkeun/editor';
 import { markupOf, wholeFormatting } from './markup.js';
 
 type XmlElement = DocParagraph['el'];
@@ -80,12 +80,68 @@ export function viewerParagraphs(entries: ReadonlyArray<ParagraphEntry>, numbers
   return [...out].sort((a, b) => a - b);
 }
 
-/** A selection in a live viewer's body (paragraphs numbered as the viewer numbers them), with read_document's paragraph numbers. */
-export function renumberSelection(info: SelectionInfo, entries: ReadonlyArray<ParagraphEntry>): SelectionInfo {
+/**
+ * read_document's numbers of the paragraphs the live viewer counts (unique, sorted): a text box's
+ * paragraph is the paragraph holding it. Pages that number paragraphs their own way map from these.
+ */
+export function readParagraphs(entries: ReadonlyArray<ParagraphEntry>, numbers: number[]): number[] {
+  const out = new Set<number>();
+  for (const n of numbers) {
+    const e = entries[n - 1];
+    if (e) out.add(e.box ? e.box.host : e.n);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+/** For each paragraph a live viewer counts (body and table cells), read_document's number: index = the viewer's number − 1. */
+export function readNumbersByView(entries: ReadonlyArray<ParagraphEntry>): number[] {
+  const out: number[] = [];
+  for (const e of entries) if (!e.box) out[e.view - 1] = e.n;
+  return out;
+}
+
+/**
+ * readNumbersByView for a viewer that shows tracked changes (`shown`, the same file opened with
+ * showDeletions). There a paragraph deleted as a tracked change is a paragraph of its own; it gets the
+ * number of the paragraph its text joins once the changes are accepted (the next one, or else the last).
+ * `entries` are listParagraphs(accepted).
+ */
+export function readNumbersWithChanges(entries: ReadonlyArray<ParagraphEntry>, accepted: DocxDocument, shown: DocxDocument): number[] {
+  // Both opened the same file: the k-th w:p is the same paragraph in each.
+  const order = (doc: DocxDocument) => {
+    const at = new Map<DocParagraph['el'], number>();
+    const walk = (el: DocParagraph['el']): void => {
+      for (const c of el.children) {
+        if (c.type !== 'element') continue;
+        if (c.name === 'w:p') at.set(c, at.size);
+        walk(c);
+      }
+    };
+    walk(doc.documentXml.root);
+    return at;
+  };
+  const acceptedOrder = order(accepted);
+  const shownOrder = order(shown);
+  const byOrder = new Map<number, number>();
+  for (const e of entries) {
+    const k = e.box ? undefined : acceptedOrder.get(e.para.el);
+    if (k !== undefined) byOrder.set(k, e.n);
+  }
+  const known = [...byOrder.keys()].sort((a, b) => a - b);
+  return paragraphsOf(shown.body().blocks).map((para) => {
+    const k = shownOrder.get(para.el) ?? -1;
+    const near = byOrder.has(k) ? k : (known.find((x) => x > k) ?? known.at(-1));
+    return near === undefined ? 1 : byOrder.get(near)!;
+  });
+}
+
+/**
+ * A selection in a live viewer's body (paragraphs numbered as the viewer numbers them), with
+ * read_document's paragraph numbers; `byView` from readNumbersByView or readNumbersWithChanges.
+ */
+export function renumberSelection(info: SelectionInfo, byView: ReadonlyArray<number | undefined>): SelectionInfo {
   if (info.story !== 'body') return info;
-  const byView = new Map<number, number>();
-  for (const e of entries) if (!e.box) byView.set(e.view, e.n);
-  const n = (view: number) => byView.get(view) ?? view;
+  const n = (view: number) => byView[view - 1] ?? view;
   return {
     ...info,
     start: { ...info.start, paragraph: n(info.start.paragraph) },

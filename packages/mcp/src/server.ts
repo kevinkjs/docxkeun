@@ -23,7 +23,7 @@ import {
 import { fontsFor } from './fonts.js';
 import { activityLabel, describeOperation, newParagraph, numberedObjects, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext } from './operations.js';
 import { parseMarkup } from './markup.js';
-import { commentThreads, listParagraphs, locksByParagraph, paragraphStyles, quote, renumberSelection, resolveStyle, tableCount, viewerParagraphs, wordCount } from './outline.js';
+import { commentThreads, listParagraphs, locksByParagraph, paragraphStyles, quote, readNumbersByView, readNumbersWithChanges, readParagraphs, renumberSelection, resolveStyle, tableCount, viewerParagraphs, wordCount } from './outline.js';
 import type { Preview } from './preview.js';
 import { Queue, Workspace, WorkspaceError } from './workspace.js';
 
@@ -299,15 +299,17 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       if (!sel) return `Nothing is selected in the live preview. The user can select text (or click in a paragraph) at ${preview.url}.`;
       await queue.idle();
       const s = await open(sel.path, undefined);
+      // A page showing tracked changes counts deleted text and paragraphs: read its positions in the same view.
+      const doc = sel.changes ? await DocxDocument.open(await ws.read(s.path), { showDeletions: true }) : s.doc;
       // The page numbers body paragraphs as its viewer does (paragraphsOf); the AI gets read_document's numbers.
-      const paras = sel.story === 'body' ? paragraphsOf(s.doc.body().blocks) : sel.part && s.doc.xmlSync(sel.part) ? new DocxEditor(s.doc, undefined, { part: sel.part }).paragraphs() : [];
+      const paras = sel.story === 'body' ? paragraphsOf(doc.body().blocks) : sel.part && doc.xmlSync(sel.part) ? new DocxEditor(doc, undefined, { part: sel.part }).paragraphs() : [];
       let layout;
       try {
-        layout = layoutDocument(s.doc, { fonts: await fontsFor(s.doc, fontFolders) });
+        layout = layoutDocument(doc, { fonts: await fontsFor(doc, fontFolders) });
       } catch {
         layout = undefined;
       }
-      const info = selectionInfoFor(s.doc, paras, { para: sel.start.paragraph - 1, char: sel.start.offset }, { para: sel.end.paragraph - 1, char: sel.end.offset }, {
+      const info = selectionInfoFor(doc, paras, { para: sel.start.paragraph - 1, char: sel.start.offset }, { para: sel.end.paragraph - 1, char: sel.end.offset }, {
         story: sel.story,
         ...(sel.part ? { part: sel.part } : {}),
         ...(layout ? { layout } : {}),
@@ -315,7 +317,11 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       if (!info) return `The selection in ${s.name} is no longer there (the document changed). Ask the user to select again.`;
       const age = Math.round((Date.now() - sel.at) / 1000);
       const when = age < 5 ? 'just now' : age < 120 ? `${age} seconds ago` : `${Math.round(age / 60)} minutes ago`;
-      return `${describeSelection(renumberSelection(info, s.entries), { document: s.name })}\n(Selected ${when}. Paragraph numbers are read_document's; offsets count characters in the paragraph.)`;
+      const byView = sel.changes ? readNumbersWithChanges(s.entries, s.doc, doc) : readNumbersByView(s.entries);
+      const shownChanges = sel.changes && s.editor.revisions().length > 0
+        ? ' The preview shows tracked changes, so the text includes deleted words and offsets count them; read_document shows the changes accepted.'
+        : '';
+      return `${describeSelection(renumberSelection(info, byView), { document: s.name })}\n(Selected ${when}. Paragraph numbers are read_document's; offsets count characters in the paragraph.${shownChanges})`;
     };
 
     tool(
@@ -395,8 +401,14 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       // The live preview shimmers the paragraphs the AI works on before the result comes in.
       if (preview) {
         const objects = args.object !== undefined ? numberedObjects(s.editor, s.entries) : undefined;
-        const paragraphs = viewerParagraphs(s.entries, targetParagraphs(s.entries, op.name, args, objects));
-        preview.activity({ path: s.path, paragraphs, mode: op.kind === 'read' ? 'read' : 'edit', label: activityLabel(op.name) });
+        const targets = targetParagraphs(s.entries, op.name, args, objects);
+        preview.activity({
+          path: s.path,
+          paragraphs: viewerParagraphs(s.entries, targets),
+          read: readParagraphs(s.entries, targets),
+          mode: op.kind === 'read' ? 'read' : 'edit',
+          label: activityLabel(op.name),
+        });
       }
       return op.run(s, args as never);
     };

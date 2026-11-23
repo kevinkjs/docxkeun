@@ -274,8 +274,8 @@ describe('live preview server', () => {
         (s) => s.filter((e) => e.type === 'activity').length >= 2,
       );
       const activity = seen.filter((e) => e.type === 'activity');
-      expect(activity[0]).toEqual({ type: 'activity', path: 'letter.docx', paragraphs: [2], mode: 'edit', label: 'editing' });
-      expect(activity[1]).toEqual({ type: 'activity', path: 'letter.docx', paragraphs: [], mode: 'read', label: 'reading' });
+      expect(activity[0]).toEqual({ type: 'activity', path: 'letter.docx', paragraphs: [2], read: [2], mode: 'edit', label: 'editing' });
+      expect(activity[1]).toEqual({ type: 'activity', path: 'letter.docx', paragraphs: [], read: [], mode: 'read', label: 'reading' });
     });
 
     // read_document numbers a text box's paragraphs after the paragraph holding it; the viewer does not.
@@ -295,6 +295,41 @@ describe('live preview server', () => {
       );
       // Paragraph 3 is in the box the viewer's paragraph 2 holds; paragraph 4 is the viewer's 3.
       expect(seen.filter((e) => e.type === 'activity').map((e) => e.paragraphs)).toEqual([[2], [3]]);
+      // For pages that number paragraphs their own way: read_document's numbers, a box's paragraph as the one holding it.
+      expect(seen.filter((e) => e.type === 'activity').map((e) => e.read)).toEqual([[2], [4]]);
+    });
+
+    // A paragraph deleted as a tracked change: hidden when changes are shown accepted, its own paragraph when they are shown.
+    const WITH_DELETED = p('One') +
+      '<w:p><w:pPr><w:rPr><w:del w:id="1" w:author="Rina" w:date="2026-11-01T00:00:00Z"/></w:rPr></w:pPr>' +
+      '<w:del w:id="2" w:author="Rina" w:date="2026-11-01T00:00:00Z"><w:r><w:delText>Gone</w:delText></w:r></w:del></w:p>' +
+      p('Three');
+
+    it('numbers paragraphs for pages that show tracked changes', async () => {
+      await writeFile(join(dir, 'letter.docx'), await buildDocx({ body: WITH_DELETED }));
+      const pv = await start({ port: 0, watch: false });
+      expect(await (await fetch(`${pv.url}/api/numbering?path=letter.docx`)).json()).toEqual([1, 2]);
+      // The deleted paragraph is read_document's 2, where its text would join "Three".
+      expect(await (await fetch(`${pv.url}/api/numbering?path=letter.docx&changes=1`)).json()).toEqual([1, 2, 2]);
+      expect(PREVIEW_SCRIPT).toContain('showDeletions');
+      expect(PREVIEW_SCRIPT).toContain('&changes=1');
+    });
+
+    it('reads a selection made where the page shows tracked changes', async () => {
+      await writeFile(join(dir, 'letter.docx'), await buildDocx({ body: WITH_DELETED }));
+      const pv = await start({ port: 0, watch: false });
+      const client = await connectTo(pv);
+      const token = await tokenOf(pv.url);
+      const said = async (start: number, end: number, offset: number) => {
+        await post(pv.url, { path: 'letter.docx', story: 'body', changes: true, start: { paragraph: start, offset: 0 }, end: { paragraph: end, offset } }, { 'x-docxkeun-token': token, origin: pv.url });
+        return ((await client.callTool({ name: 'get_selection', arguments: {} })).content as Array<{ text: string }>)[0]!.text;
+      };
+      // The page's paragraph 3 is "Three", read_document's 2.
+      const three = await said(3, 3, 5);
+      expect(three).toContain('[2] «Three»');
+      expect(three).toContain('tracked changes');
+      // The deleted words can be selected too.
+      expect(await said(2, 2, 4)).toContain('[2] «Gone»');
     });
 
     it("gives the page read_document's number for each paragraph it counts, for its selection chip", async () => {

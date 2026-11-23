@@ -48,6 +48,7 @@ export const PREVIEW_HTML: string = `<!doctype html>
   <label title="How the AI's work shows: shimmer, caret and change marks">AI effects <select id="effects"><option value="animated">Animated</option><option value="still">Still</option><option value="off">Off</option></select></label>
   <label title="How the paragraph the AI is changing looks">Style <select id="aiStyle"></select></label>
   <label title="Keep a mark on what the AI changed until its next change"><input type="checkbox" id="aiMarks" checked> Marks</label>
+  <label title="Show tracked changes as Word's All Markup does: insertions underlined, deletions struck through. Off: as if accepted"><input type="checkbox" id="changes" checked> Tracked changes</label>
   <span class="zoom"><button id="zoomOut" aria-label="Zoom out">−</button><span id="zoom">100%</span><button id="zoomIn" aria-label="Zoom in">+</button><button id="fit" aria-pressed="true">Fit width</button></span>
   <span id="sel" hidden title="The AI can read this selection with get_selection"><span></span></span>
   <span id="pages"></span>
@@ -75,6 +76,8 @@ const token = document.querySelector('meta[name="docxkeun-token"]').content;
 let loaded;
 // read_document's number for each paragraph the viewer counts (text boxes are numbered there, not here).
 let numbering = [];
+// Whether the document on show has its tracked changes shown (deleted text and paragraphs count then).
+let shownWithChanges = false;
 let workingSince = 0;
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
@@ -137,6 +140,20 @@ aiMarks.addEventListener('change', () => {
   try {
     localStorage.setItem('docxkeun-ai-marks', aiMarks.checked ? 'on' : 'off');
   } catch {}
+});
+
+// Tracked changes: shown as in Word's All Markup, or as if accepted; remembered in this browser.
+const changes = $('changes');
+try {
+  changes.checked = localStorage.getItem('docxkeun-tracked-changes') !== 'off';
+} catch {}
+changes.addEventListener('change', () => {
+  try {
+    localStorage.setItem('docxkeun-tracked-changes', changes.checked ? 'on' : 'off');
+  } catch {}
+  // The two views count paragraphs differently: the AI's marks start again.
+  viewer.activity.clearMarks();
+  if (current) show(current);
 });
 
 // The AI's name and colours on the pages, from the server's --author and --ai-color.
@@ -234,13 +251,15 @@ async function load(path, focus) {
     return;
   }
   message.hidden = true;
-  numbering = await fetch('./api/numbering?path=' + encodeURIComponent(path)).then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  const withChanges = changes.checked;
+  numbering = await fetch('./api/numbering?path=' + encodeURIComponent(path) + (withChanges ? '&changes=1' : '')).then((r) => (r.ok ? r.json() : [])).catch(() => []);
   const bytes = new Uint8Array(await res.arrayBuffer());
   // Let the "working" shimmer show for a moment before the result appears.
   if (before) await sleep(Math.max(0, workingSince + 700 - Date.now()));
   // The AI's marks build up while it works on a document; another document starts clean.
   if (loaded !== path) viewer.activity.clearMarks();
-  await viewer.load(bytes);
+  await viewer.load(bytes, withChanges ? { showDeletions: true } : undefined);
+  shownWithChanges = withChanges;
   loaded = path;
   document.title = path + ' · docxkeun live preview';
   applyFit();
@@ -252,6 +271,19 @@ async function load(path, focus) {
     viewer.scrollToComment(focus.comment);
     viewer.flash({ page: anchor.page, rects: [anchor.rect] });
   }
+}
+
+// The paragraphs an activity event is about, as this page counts them. With tracked changes shown,
+// deleted paragraphs count too: find the ones whose read_document number the event names.
+function paragraphsOf(event) {
+  if (!shownWithChanges || !event.read) return event.paragraphs;
+  if (!event.read.length) return [];
+  const wanted = new Set(event.read);
+  const out = [];
+  numbering.forEach((n, i) => {
+    if (wanted.has(n)) out.push(i + 1);
+  });
+  return out.length ? out : event.paragraphs;
 }
 
 // Changes can arrive faster than a document lays out: keep only the newest request.
@@ -297,7 +329,7 @@ events.onmessage = (e) => {
   if (event.type === 'activity') {
     if (event.path !== current) return;
     workingSince = Date.now();
-    viewer.activity.work(event.paragraphs, { mode: event.mode, label: event.label, scroll: follow.checked });
+    viewer.activity.work(paragraphsOf(event), { mode: event.mode, label: event.label, scroll: follow.checked });
     // Reads change nothing: the shimmer ends by itself.
     if (event.mode === 'read') setTimeout(() => viewer.activity.idle(), 1600);
     return;
@@ -330,7 +362,8 @@ function shareSelection(sel) {
     const text = sel.text.replace(/\\s+/g, ' ').trim();
     chip.firstElementChild.textContent = sel.collapsed || !text ? 'Cursor at ' + where : where + ': “' + (text.length > 48 ? text.slice(0, 47) + '…' : text) + '”';
   }
-  const body = sel ? { path: current, story: sel.story, part: sel.part, start: sel.start, end: sel.end } : { path: current, clear: true };
+  // changes: positions count the deleted text and paragraphs this page shows.
+  const body = sel ? { path: current, story: sel.story, part: sel.part, start: sel.start, end: sel.end, changes: shownWithChanges } : { path: current, clear: true };
   fetch('./api/selection', { method: 'POST', headers: { 'content-type': 'application/json', 'x-docxkeun-token': token }, body: JSON.stringify(body) }).catch(() => {});
 }
 
