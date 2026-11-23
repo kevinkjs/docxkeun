@@ -23,6 +23,8 @@ const COLUMNS: NewChart = { type: 'column', title: 'Sales', categories: QUARTERS
 const CHART1 = 'word/charts/chart1.xml';
 const WORKBOOK1 = 'word/embeddings/Microsoft_Excel_Worksheet1.xlsx';
 const OLE_OBJECT = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject';
+/** A 2 × 1 PNG at 96 dpi. */
+const PNG = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8DwnwGIGQAd8AP9Fr8f4QAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
 
 async function open(body = p('Sales by quarter'), extra: Partial<Parameters<typeof buildDocx>[0]> = {}) {
   const doc = await DocxDocument.open(await buildDocx({ body, ...extra }));
@@ -537,19 +539,22 @@ describe('shapes and text boxes', () => {
     expect(editor.objects()).toEqual([]);
   });
 
-  it('refuses a shape or text box inside a text box, but takes a chart there', async () => {
+  it('refuses a shape, text box or chart inside a text box, but takes a picture there', async () => {
     const { doc, editor } = await open(`<w:p>${textBoxRun('Inside the box')}</w:p>`);
     const inBox = () => editor.find('Inside the box')[0]!.end;
     for (const shape of ['textBox', 'rect'] as const) {
       await expect(editor.insertShape(inBox(), { shape, place: { inline: true } })).rejects.toThrow(new EditError("Shapes and text boxes can't go inside a text box"));
     }
+    // Word puts only pictures in a text box.
+    await expect(editor.insertChart(inBox(), COLUMNS)).rejects.toThrow(new EditError('Only pictures can go inside a text box'));
+    expect(doc.pkg.has(CHART1)).toBe(false);
     // (The fixture's box is a shape holding text: its cNvSpPr has no txBox flag.)
     expect(editor.objects().map((o) => o.kind)).toEqual(['shape']);
     // Nothing changed, so the box keeps its old copy.
     expect(findAll(doc.documentXml.root, 'mc:Fallback')).toHaveLength(1);
 
-    await editor.insertChart(inBox(), COLUMNS);
-    expect(editor.objects().map((o) => o.kind)).toEqual(['shape', 'chart']);
+    await editor.insertImage(inBox(), PNG);
+    expect(editor.objects().map((o) => o.kind)).toEqual(['shape', 'picture']);
   });
 });
 
@@ -998,6 +1003,23 @@ describe('changing objects', () => {
       ['picture', true],
       ['shape', true],
     ]);
+  });
+
+  it('moves only pictures into a text box', async () => {
+    const DIAGRAM = 'http://schemas.openxmlformats.org/drawingml/2006/diagram';
+    const smartArt = `<w:r>${inline('<dgm:relIds r:dm="rIdNone" r:lo="rIdNone" r:qs="rIdNone" r:cs="rIdNone"/>', 100, 50, DIAGRAM)}</w:r>`;
+    // A graphic docxkeun doesn't know (it lists it as a picture) and one that only wraps a picture.
+    const unknown = `<w:r>${inline('<x:thing xmlns:x="urn:example:graphic"/>', 30, 30, 'urn:example:graphic')}</w:r>`;
+    const wrapped = `<w:r>${inline('<x:frame xmlns:x="urn:example:graphic"><a:blip r:embed="rIdNone"/></x:frame>', 30, 30, 'urn:example:graphic')}</w:r>`;
+    const { editor } = await open(p('Chart: ') + `<w:p>${smartArt}${unknown}${wrapped}${picture(2)}</w:p>` + `<w:p>${textBoxRun('Inside the box')}</w:p>`);
+    await editor.insertChart(endOf(editor, 0), COLUMNS);
+    const inBox = () => editor.find('Inside the box')[0]!.end;
+    const [chart, diagram, other, frame, pic] = editor.objects();
+    expect(editor.objects().map((o) => o.kind)).toEqual(['chart', 'diagram', 'picture', 'picture', 'picture', 'shape']);
+    for (const o of [chart, diagram, other, frame]) await expect(editor.moveObject(o!, inBox())).rejects.toThrow(new EditError('Only pictures can go inside a text box'));
+    expect(where(editor)).toEqual([0, 1, 1, 1, 1, 2]);
+    await editor.moveObject(pic!, inBox());
+    expect(where(editor)).toEqual([0, 1, 1, 1, 2, 3]);
   });
 
   it('refuses to move or resize an old VML object but deletes it', async () => {

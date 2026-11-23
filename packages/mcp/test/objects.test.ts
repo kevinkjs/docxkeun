@@ -441,6 +441,9 @@ describe('shape and object tools', () => {
     const client = await connect();
     expect((await call(client, 'insert_shape', { path: NAME, paragraph: 1, shape: 'rectangle', placement: 'inline', x: 5, y: 5 })).text).toContain('x, y, from and wrap only apply to floating shapes');
     expect((await call(client, 'insert_shape', { path: NAME, paragraph: 3, shape: 'rectangle' })).text).toContain("Shapes and text boxes can't go inside a text box");
+    const chart = await call(client, 'insert_chart', { path: NAME, paragraph: 3, type: 'column', categories: ['A'], series: [{ name: 'S', values: [1] }] });
+    expect(chart).toMatchObject({ isError: true, text: expect.stringContaining('Only pictures can go inside a text box') });
+    expect((await open()).objects().map((o) => o.kind)).toEqual(['shape']);
   });
 
   it('rejects wrong types and sizes from JSON callers', async () => {

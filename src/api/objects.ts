@@ -438,6 +438,12 @@ export const SHAPE_NAMES: Record<ShapeKind, string> = {
   line: 'Straight Connector',
 };
 
+/** Whether an object's w:drawing holds a picture (pic:pic), not a chart, diagram, canvas or a graphic docxkeun doesn't know. */
+export function isPicture(drawing: XmlElement): boolean {
+  const frame = elements(drawing).find((e) => e.name === 'wp:inline' || e.name === 'wp:anchor');
+  return childPath(frame, 'a:graphic', 'a:graphicData', 'pic:pic') !== undefined;
+}
+
 /** Whether a node sits inside a text box (DrawingML or VML: both keep their text in w:txbxContent). */
 export function inTextBox(idx: TreeIndex, node: XmlElement): boolean {
   return idx.ancestor(node, 'w:txbxContent') !== undefined;

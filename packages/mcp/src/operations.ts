@@ -1447,7 +1447,8 @@ const insertChartOp = define({
   title: 'Insert a chart',
   description:
     'Insert a chart into a paragraph, at its end or after some text. Give the categories (the labels along the bottom, or the slices of a pie) and one series per line or set of bars, each with a value for every category (null leaves a gap). ' +
-    'The data sits in an embedded workbook, so "Edit Data" in Word shows it. For a scatter chart the categories are the x values (numbers). Without a size it is 6 × 3.5 inches, shrunk to the page width.',
+    'The data sits in an embedded workbook, so "Edit Data" in Word shows it. For a scatter chart the categories are the x values (numbers). Without a size it is 6 × 3.5 inches, shrunk to the page width. ' +
+    'It cannot go inside a text box (only pictures can).',
   role: 'editor',
   kind: 'add',
   schema: z.object({
@@ -1607,7 +1608,7 @@ const insertShapeOp = define({
   description:
     'Insert a text box or a shape (rectangle, oval, arrow, star, callout, line…) into a paragraph, at its end or after some text. It floats by default, at the top left of the paragraph with text flowing around it; ' +
     'give x and y to put it elsewhere, or placement "inline" to put it in the line of text. `text` goes inside (each line becomes a paragraph, <b> and the other tags format it); ' +
-    'a text box’s paragraphs are numbered right after the paragraph holding it, so every text tool works on them. Colours are hex RGB or "none". It cannot go inside another text box. Paragraph numbers after a box with `text` shift.',
+    'a text box’s paragraphs are numbered right after the paragraph holding it, so every text tool works on them. Colours are hex RGB or "none". It cannot go inside a text box (only pictures can). Paragraph numbers after a box with `text` shift.',
   role: 'editor',
   kind: 'add',
   schema: z.object({
@@ -1677,7 +1678,7 @@ const editObjectOp = define({
   description:
     'Change a picture, chart, shape or text box (object numbers from read_document or list_objects): its size (width and/or height in points; one alone keeps the proportions), ' +
     'its place (`paragraph` moves it to another paragraph, after some text if you give `after`; `placement` makes it floating or inline; x, y, from and wrap position a floating one, and one that already floats keeps what you leave out, so `wrap` alone changes only the wrap) and its alt text. ' +
-    'Word does not track size, floating position, wrap or alt text, so with Track Changes on those apply directly (and are refused where only tracked changes are allowed); moving and switching inline/floating are tracked. Moving a text box carries its paragraphs. Paragraph numbers between the old and new place shift.',
+    'Word does not track size, floating position, wrap or alt text, so with Track Changes on those apply directly (and are refused where only tracked changes are allowed); moving and switching inline/floating are tracked. Moving a text box carries its paragraphs; only pictures can move into a text box. Paragraph numbers between the old and new place shift.',
   role: 'editor',
   kind: 'change',
   schema: z.object({

@@ -51,6 +51,7 @@ import {
   freePartName,
   inlineFrame,
   inTextBox,
+  isPicture,
   listObjects,
   nextRelativeHeight,
   placeFrame,
@@ -396,8 +397,9 @@ interface KeptObjects {
 }
 
 const OLD_VML = 'This is an old-style (VML) object: it can only be deleted';
-// Word doesn't put shapes or text boxes in a text box, nor floating objects.
+// Word puts only pictures in a text box (no shapes, text boxes, charts or SmartArt), and only inline.
 const SHAPE_IN_BOX = "Shapes and text boxes can't go inside a text box";
+const PICTURES_IN_BOX = 'Only pictures can go inside a text box';
 const INLINE_IN_BOX = 'An object inside a text box can only be inline';
 
 export class DocxEditor {
@@ -889,9 +891,11 @@ export class DocxEditor {
   /**
    * Insert a chart inline at a position, with its data in an embedded workbook (so Word's "Edit
    * Data" shows it). Without a size it gets Word's 432 × 252 pt, shrunk to the section's text width;
-   * with one side, the other keeps those proportions. Returns the w:drawing.
+   * with one side, the other keeps those proportions. Not inside a text box (Word puts only pictures
+   * there). Returns the w:drawing.
    */
   async insertChart(at: DocPosition, chart: NewChart & { width?: number; height?: number; alt?: string }): Promise<XmlElement> {
+    if (inTextBox(this.index(), at.node)) throw new EditError(PICTURES_IN_BOX);
     this.check('edit', { start: at, end: at });
     validateChartData(chart.type, chart.stacked, chart.categories, chart.series);
     const idx = this.index();
@@ -1034,8 +1038,8 @@ export class DocxEditor {
   /**
    * Move an object to `at`, keeping its size and placement (a floating object is anchored there
    * instead). With Track Changes on this is tracked as Word tracks a cut and paste: the original is
-   * marked deleted and a copy inserted (a chart's copy gets its own chart part and workbook). Shapes,
-   * text boxes and groups can't go inside a text box, and an object there can only be inline.
+   * marked deleted and a copy inserted (a chart's copy gets its own chart part and workbook). Only
+   * pictures can go inside a text box, and an object there can only be inline.
    */
   async moveObject(obj: DocObject, at: DocPosition): Promise<void> {
     if (obj.vml) throw new EditError(OLD_VML);
@@ -1048,6 +1052,7 @@ export class DocxEditor {
     for (let cur = idx.parent.get(at.node); cur; cur = idx.parent.get(cur)) if (cur === node) throw new EditError("An object can't move inside itself");
     if (inTextBox(idx, at.node)) {
       if (obj.kind === 'shape' || obj.kind === 'textBox' || obj.kind === 'group') throw new EditError(SHAPE_IN_BOX);
+      if (!isPicture(obj.drawing)) throw new EditError(PICTURES_IN_BOX);
       if (frameOf(obj.drawing).name === 'wp:anchor') throw new EditError(INLINE_IN_BOX);
     }
     this.check('edit', range);
