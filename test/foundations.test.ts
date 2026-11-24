@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { crc32 } from '../src/util/crc32.js';
-import { base64Decode, base64Encode, utf8Encode, utf16leDecode, utf16leEncode } from '../src/util/text.js';
+import { base64Decode, base64Encode, utf8Decode, utf8Encode, utf16leDecode, utf16leEncode } from '../src/util/text.js';
 import { readZip, writeZip } from '../src/zip/zip.js';
 import { parseXml, serializeXml, textContent, firstChild, XmlParseError } from '../src/xml/index.js';
 import { OpcPackage, REL, resolveTarget, relativeTarget, relsPartFor } from '../src/opc/index.js';
@@ -135,5 +135,30 @@ describe('opc', () => {
     expect(rel).toMatchObject({ target: 'https://example.com/a?b=1&c=2', external: true });
     expect(reopened.contentType('word/media/pic.png')).toBe('image/png');
     expect([...(await reopened.getBytes('word/media/pic.png'))]).toEqual([1, 2, 3]);
+  });
+
+  it('opens a zip that repeats a part name and saves the part once, keeping the last copy', async () => {
+    // Some tools append parts to a zip instead of replacing them, so the same name appears more than once.
+    const isApp = (name: string) => name.toLowerCase() === 'docprops/app.xml';
+    const base = readZip(await buildDocx({ body: p('Hello') })).map((e) => ({ name: e.name, raw: e.raw }));
+    const written = await writeZip([
+      ...base,
+      { name: 'docProps/app.xml', data: utf8Encode('<first/>') },
+      { name: 'docProps/APP.xml', data: utf8Encode('<middle/>') },
+      { name: 'docProps/ap_.xml', data: utf8Encode('<last/>') },
+    ]);
+    // The writer refuses repeated names, so rename the third entry in place (same length, names are not checksummed).
+    const zip = Buffer.from(written);
+    for (let at = zip.indexOf('docProps/ap_.xml'); at >= 0; at = zip.indexOf('docProps/ap_.xml', at)) zip.write('docProps/app.xml', at);
+    expect(readZip(zip).filter((e) => isApp(e.name))).toHaveLength(3);
+
+    const pkg = await OpcPackage.open(zip);
+    expect(pkg.partNames().filter(isApp)).toHaveLength(1);
+    expect(utf8Decode(await pkg.getBytes('docProps/app.xml'))).toBe('<last/>');
+    const saved = readZip(await pkg.save());
+    expect(saved.filter((e) => isApp(e.name)).map((e) => e.name)).toEqual(['docProps/app.xml']);
+
+    pkg.removePart('docProps/app.xml');
+    expect(readZip(await pkg.save()).filter((e) => isApp(e.name))).toHaveLength(0);
   });
 });

@@ -66,8 +66,10 @@ export class OpcPackage {
         continue;
       }
       const name = normalizePartName(entry.name);
+      // A zip can repeat a name (some tools append parts instead of replacing them). Keep the
+      // last copy, as unzip tools do, in the first copy's place, so the part is saved once.
+      if (!pkg.parts.has(partKey(name))) pkg.order.push(partKey(name));
       pkg.parts.set(partKey(name), { name, raw: entry.raw, dirty: false, rev: 0 });
-      pkg.order.push(partKey(name));
       // Keep a reader so bytes are inflated lazily.
       pkg.readers.set(partKey(name), entry.read);
     }
