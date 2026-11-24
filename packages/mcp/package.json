@@ -1,6 +1,6 @@
 {
   "name": "docxkeun-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server for Word .docx files: lets Claude and other AI assistants read, edit, comment on, track changes in, protect and convert .docx files to PDF, with a live preview that shows the AI at work. Built on docxkeun.",
   "license": "MIT",
   "author": "Kevin Jeremia (https://github.com/kevinkjs)",
@@ -53,7 +53,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",
-    "docxkeun": "^0.3.0",
+    "docxkeun": "^0.4.0",
     "docxkeun-fonts": "^0.1.1",
     "zod": "^4.2.0"
   },

@@ -2,7 +2,7 @@
 
 All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic versioning](https://semver.org); while the version is 0.x, minor versions may contain breaking changes.
 
-## Unreleased
+## 0.4.0 (2026-11-24)
 
 ### docxkeun
 
@@ -20,7 +20,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 
 - Claude can now insert charts (column, bar, line, area, pie, doughnut, scatter), read and update their data, insert shapes and text boxes, and resize, move, describe or delete pictures, charts, shapes and text boxes. Text box paragraphs are numbered in line, so Claude edits them like any other paragraph. Before, it could only read these.
 
-### docxkeun-mcp
+### docxkeun-mcp 0.3.0
 
 - New tools: `insert_chart`, `read_chart`, `update_chart`, `insert_shape`, `edit_object` and `delete_object`. `read_document` and `list_objects` give every picture, chart, shape and text box an object number that these tools use. `read_chart` names number formats other than General (and says when the categories are dates), and `update_chart` keeps them.
 - Text box paragraphs are now numbered in line, right after the paragraph holding the box, so `edit_paragraph`, `replace_text`, `format_text` and the other paragraph tools work on them. Paragraph numbers after a text box shift when a box with text is added, moved or deleted; read the document again after those tools. `replace_story_text` still works.
