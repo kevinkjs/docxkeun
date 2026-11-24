@@ -4,6 +4,10 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 
 ## Unreleased
 
+### docxkeun chat
+
+- **Instructions:** a new button opens a box for your own instructions to Claude (up to 4000 characters, for example "You are a legal assistant that helps me check documents for my clients."). They are added after the built-in instructions for every message, apply from your next message, and are remembered in the browser; opening another document keeps them. Locked regions and the document's protection still apply.
+
 ### docxkeun-mcp
 
 - `--instructions <file>` gives the AI your own instructions, from a text or Markdown file of up to 4000 characters. They are added after the server's own instructions, and the AI app decides how to use them (Claude Code adds them to its system prompt). A file that is missing, unreadable or too long stops the server with one line saying why; edits to the file apply after the app reconnects.

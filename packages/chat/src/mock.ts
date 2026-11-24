@@ -50,6 +50,11 @@ function script(messages: BetaMessageParam[]): Block[] {
 
 export const mockStream: StreamFactory = (params, options): MessageStream => {
   const blocks = script(params.messages);
+  // Makes the Instructions dialog's wiring visible: the final reply says it saw the user's instructions.
+  const last = blocks[blocks.length - 1];
+  if (typeof params.system === 'string' && params.system.includes('<user_instructions>') && last?.type === 'text' && !blocks.some((b) => b.type === 'tool_use')) {
+    last.text = `Following your instructions. ${last.text}`;
+  }
   const listeners: Array<(delta: string) => void> = [];
   const rawListeners: Array<(event: BetaRawMessageStreamEvent, snapshot: BetaMessage) => void> = [];
   const wait = (ms: number) => {

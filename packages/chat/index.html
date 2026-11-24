@@ -26,6 +26,7 @@
         <option value="off">Effects: off</option>
       </select>
       <button type="button" id="look" title="The name and colours of Claude's caret, shimmer and change marks">Appearance</button>
+      <button type="button" id="instructions" title="Your own instructions for Claude, added to its built-in ones">Instructions</button>
       <button type="button" id="key" title="Change or forget your API key">API key</button>
     </header>
     <main class="layout">
@@ -89,6 +90,20 @@
         <p id="lookMarksNote" class="small look-note"></p>
         <div class="dialog-actions">
           <button type="button" id="lookReset">Reset</button>
+          <button type="submit" class="primary">Done</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="instructionsDialog" class="key-dialog" aria-labelledby="instructionsTitle">
+      <form method="dialog">
+        <h2 id="instructionsTitle">Your instructions for Claude</h2>
+        <p>Added to Claude's built-in instructions for every message, until you change or clear them. They apply from your next message and are remembered in this browser. Locked regions and the document's protection still apply.</p>
+        <label for="instructionsText" class="visually-hidden">Instructions</label>
+        <textarea id="instructionsText" rows="8" placeholder="You are a legal assistant that helps me check documents for my clients."></textarea>
+        <p id="instructionsCount" class="small"></p>
+        <div class="dialog-actions">
+          <button type="button" id="instructionsClear">Clear</button>
           <button type="submit" class="primary">Done</button>
         </div>
       </form>

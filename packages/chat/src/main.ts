@@ -10,6 +10,7 @@ import { exportPdf } from 'docxkeun/pdf';
 import { PasswordRequiredError, WrongPasswordError } from 'docxkeun/security';
 import { ACTIVITY_STYLES, DocxViewer, type ActivityStyle } from 'docxkeun/viewer';
 import { sampleDocx } from '../../../playground/sample.js';
+import { MAX_INSTRUCTIONS } from '../../mcp/src/instructions.js';
 import { activityLabel, numberedObjects, targetParagraphs } from '../../mcp/src/operations.js';
 import { listParagraphs, readNumbersByView, renumberSelection, viewerParagraphs } from '../../mcp/src/outline.js';
 import { anthropicStream, MODELS, runTurn, type ModelChoice, type StreamFactory } from './agent.js';
@@ -54,6 +55,8 @@ let conversation: BetaMessageParam[] = [];
 let busy: AbortController | undefined;
 let selection: SelectionInfo | undefined;
 const notes: string[] = [];
+/** The user's own instructions for Claude (Instructions dialog); sent with every turn. */
+let instructions = '';
 
 const fonts = new FontRegistry();
 const fontsReady = loadBundledFonts(fonts, { baseUrl: new URL(import.meta.env.BASE_URL, location.href) }).catch((e: unknown) => {
@@ -182,6 +185,56 @@ const toolbox = createToolbox(() => current);
     dialog.showModal();
     name.focus();
   });
+}
+
+// The user's own instructions for Claude; remembered in this browser, and kept when another document opens.
+{
+  const KEY = 'docxkeun-ai-instructions';
+  const dialog = $('instructionsDialog') as HTMLDialogElement;
+  const text = $('instructionsText') as HTMLTextAreaElement;
+  const button = $('instructions');
+  text.maxLength = MAX_INSTRUCTIONS;
+  try {
+    instructions = (localStorage.getItem(KEY) ?? '').slice(0, MAX_INSTRUCTIONS);
+  } catch {
+    // Storage blocked: none until typed.
+  }
+  const apply = () => {
+    const shown = instructions.trim();
+    button.textContent = shown ? 'Instructions ●' : 'Instructions';
+    button.title = shown
+      ? `Your instructions for Claude (on): ${shown.slice(0, 300)}${shown.length > 300 ? '…' : ''}`
+      : 'Your own instructions for Claude, added to its built-in ones';
+    $('instructionsCount').textContent = `${text.value.length} / ${MAX_INSTRUCTIONS}`;
+  };
+  text.addEventListener('input', () => {
+    instructions = text.value;
+    apply();
+    try {
+      localStorage.setItem(KEY, instructions);
+    } catch {
+      // Not remembered, still applied.
+    }
+  });
+  $('instructionsClear').addEventListener('click', () => {
+    instructions = '';
+    text.value = '';
+    apply();
+    try {
+      localStorage.removeItem(KEY);
+    } catch {
+      // Nothing to forget.
+    }
+    text.focus();
+  });
+  button.addEventListener('click', () => {
+    text.value = instructions;
+    apply();
+    dialog.showModal();
+    text.focus();
+  });
+  text.value = instructions;
+  apply();
 }
 
 /** Keep the page, and its comment column when there are comments, inside the document panel. */
@@ -565,6 +618,7 @@ async function send(text: string): Promise<void> {
       model,
       tools: toolbox,
       messages: conversation,
+      instructions,
       signal: controller.signal,
       events: {
         step() {
