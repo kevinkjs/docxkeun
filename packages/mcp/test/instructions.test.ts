@@ -11,6 +11,11 @@ describe('instructionsSection', () => {
     expect(s.startsWith("The user's own instructions for this work follow.")).toBe(true);
     expect(s.endsWith('<user_instructions>\nYou are a legal assistant.\n</user_instructions>')).toBe(true);
   });
+  it('has the exact wording', () => {
+    expect(instructionsSection('Act as a proofreader.')).toBe(
+      "The user's own instructions for this work follow. Where they differ from the guidance above about how to work or reply, follow them. Keep following the guidance above about using the tools, such as reading again after paragraph numbers shift and keeping formatting tags, and never work around locked regions or the document's protection; the tools enforce them.\n\n<user_instructions>\nAct as a proofreader.\n</user_instructions>",
+    );
+  });
   it('is empty for no text or only whitespace', () => {
     for (const t of [undefined, '', '   ', '\n\t\n']) expect(instructionsSection(t)).toBe('');
   });
@@ -28,6 +33,14 @@ describe('readInstructionsFile', () => {
     const file = join(dir, 'a.md');
     await writeFile(file, '\uFEFF\n  Act as a proofreader.\r\n\n');
     expect(await readInstructionsFile(file)).toBe('Act as a proofreader.');
+  });
+  it('turns Windows line endings into newlines', async () => {
+    await writeFile(join(dir, 'w.md'), 'Line one.\r\nLine two.\r\n');
+    expect(await readInstructionsFile(join(dir, 'w.md'))).toBe('Line one.\nLine two.');
+  });
+  it('refuses a file that is not text', async () => {
+    await writeFile(join(dir, 'x.docx'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]));
+    await expect(readInstructionsFile(join(dir, 'x.docx'))).rejects.toThrow(/is not a text file; save it as \.txt or \.md\./);
   });
   it('resolves a relative path against the working directory', async () => {
     await writeFile(join(dir, 'notes.md'), 'Be brief.');

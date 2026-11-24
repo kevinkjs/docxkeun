@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { Role } from 'docxkeun/security';
 import { parseColors, startPreview, type PreviewOptions } from './preview.js';
+import { MAX_INSTRUCTIONS } from './instructions.js';
 import { readInstructionsFile } from './instructions-file.js';
 import { createServer, ROLES, VERSION } from './server.js';
 
@@ -30,7 +31,7 @@ Options:
                      or two separated by a comma for a gradient ("#0b57d0" or "#0b57d0,#34a853")
   --fonts <folder>   Extra .ttf/.otf fonts for page counts and PDF export (repeatable)
   --instructions <file>
-                     Your own instructions for the AI (a text or Markdown file, up to 4000
+                     Your own instructions for the AI (a text or Markdown file, up to ${MAX_INSTRUCTIONS}
                      characters), added to the ones this server gives it. Your AI app decides how
                      to use them (Claude Code adds them to its system prompt); edits to the file
                      apply after the app reconnects
@@ -109,7 +110,7 @@ async function main(): Promise<void> {
     process.stdin.once('end', stop);
     process.stdin.once('close', stop);
   }
-  process.stderr.write(`docxkeun-mcp ${VERSION} running (role: ${role}; folders: ${folders.join(', ')}${preview ? `; preview: ${preview.url}` : ''}${values.instructions !== undefined ? `; instructions: ${values.instructions}` : ''})\n`);
+  process.stderr.write(`docxkeun-mcp ${VERSION} running (role: ${role}; folders: ${folders.join(', ')}${preview ? `; preview: ${preview.url}` : ''}${instructions ? `; instructions: ${values.instructions}` : ''})\n`);
 }
 
 main().catch((e: unknown) => {

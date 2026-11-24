@@ -165,6 +165,8 @@ const server = await createServer({ folders: ['/srv/documents'], role: 'commente
 await server.connect(new StdioServerTransport());
 ```
 
+Pass `instructions` (the text, up to 4000 characters) to add your own instructions: `createServer({ folders, instructions })`.
+
 `createServer` returns an `McpServer` from the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk), so it works with any of its transports.
 
 ## License

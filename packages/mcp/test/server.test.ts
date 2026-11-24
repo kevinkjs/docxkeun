@@ -124,7 +124,7 @@ describe('tools and roles', () => {
     const text = 'You are a document translator for students.';
     const instructions = (await connect({ instructions: text })).getInstructions() ?? '';
     expect(instructions).toContain(instructionsSection(text));
-    expect(instructions.indexOf('<user_instructions>')).toBeGreaterThan(instructions.indexOf('Locked regions and the document'));
+    expect(instructions.endsWith(instructionsSection(text))).toBe(true);
   });
   it('sends no user section without instructions or with only whitespace', async () => {
     for (const options of [{}, { instructions: ' \n ' }]) expect((await connect(options)).getInstructions()).not.toContain('<user_instructions>');

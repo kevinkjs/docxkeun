@@ -21,7 +21,7 @@ import { createToolbox, type OpenDocument, type ToolOutcome } from './tools.js';
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---- storage (every access guarded: storage can be blocked or unavailable) ------------------------
-// Only the model choice is stored. The API key lives in the local relay's memory, never in the browser.
+// The model choice, effects, appearance and instructions are remembered in this browser; the API key is not (it lives in the local relay's memory).
 
 const MODEL = 'docxkeun-chat.model';
 
@@ -202,6 +202,8 @@ const toolbox = createToolbox(() => current);
   const apply = () => {
     const shown = instructions.trim();
     button.textContent = shown ? 'Instructions ●' : 'Instructions';
+    if (shown) button.setAttribute('aria-label', 'Instructions (on)');
+    else button.removeAttribute('aria-label');
     button.title = shown
       ? `Your instructions for Claude (on): ${shown.slice(0, 300)}${shown.length > 300 ? '…' : ''}`
       : 'Your own instructions for Claude, added to its built-in ones';
