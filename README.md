@@ -372,6 +372,8 @@ const DocxView = createDocxViewerComponent(React);  // no React dependency in do
 
 [`docxkeun-mcp`](packages/mcp#readme) is an [MCP](https://modelcontextprotocol.io) server built on docxkeun. It gives Claude Code, Claude Desktop and other MCP clients tools to read documents (including pictures, charts, equations, headers, footers and notes), find and replace text, fill templates, format paragraphs, insert pictures and footnotes, comment, record and review tracked changes, lock regions, set protection and passwords, and export PDFs, limited to the folders you choose and to a role (viewer, commenter, editor or owner).
 
+https://github.com/user-attachments/assets/22feb021-8290-4024-ae5d-2ae4b8d345eb
+
 ```bash
 claude mcp add docxkeun -- npx -y docxkeun-mcp ~/Documents/contracts
 ```
@@ -441,7 +443,7 @@ pnpm dev         # playground at http://localhost:5199
 pnpm build       # dist/
 ```
 
-Tests and the playground use the fonts in `packages/fonts`. Two optional checks compare them with Arial and Times New Roman when those are installed. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and release, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+Tests and the playground use the fonts in `packages/fonts`. Two optional checks compare them with Arial and Times New Roman when those are installed. After `pnpm build` and `pnpm build:mcp`, `node packages/mcp/demo/record.mjs` records the docxkeun-mcp demo video again (it needs Google Chrome and writes `packages/mcp/demo/out/docxkeun-mcp-demo.mp4`). See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute and release, and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## License
 
