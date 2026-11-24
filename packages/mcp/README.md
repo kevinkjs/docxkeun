@@ -40,6 +40,12 @@ claude mcp add docxkeun -- npx -y docxkeun-mcp ~/Documents/contracts
 
 Claude Desktop starts servers without your shell's `PATH`; if it cannot find `npx`, use its full path (`which npx`).
 
+To give the AI your own instructions, add `--instructions` with a file (use an absolute path, because the AI app picks the working directory):
+
+```json
+"args": ["-y", "docxkeun-mcp", "--instructions", "/Users/you/Documents/legal-assistant.md", "/Users/you/Documents"]
+```
+
 **Other clients**: any MCP client that starts stdio servers can run `npx -y docxkeun-mcp <folder>`.
 
 Then ask things like:
@@ -63,6 +69,7 @@ docxkeun-mcp [options] [folder ...]
 | `--author <name>` | The name on comments the AI adds, and on its caret in the live preview (default "AI assistant"). |
 | `--ai-color <color>` | The colour of the AI's caret, shimmer and change marks in the live preview: a CSS colour, or two separated by a comma for a gradient (`"#0b57d0"` or `"#0b57d0,#1e8e3e"`). |
 | `--fonts <folder>` | Extra `.ttf`/`.otf` fonts for page counts and PDF export, e.g. Microsoft Office's fonts for exact Calibri layout. Repeatable. |
+| `--instructions <file>` | Your own instructions for the AI, from a text or Markdown file of up to 4000 characters. They are added after the ones the server gives, and your AI app decides how to use them (Claude Code adds them to its system prompt). Edits to the file apply after the app reconnects. |
 | `--preview` | Also run the [live preview](#live-preview) at `http://127.0.0.1:5230` (or the next free port). |
 | `--preview-port <n>` | The first port to try for the preview. |
 | `--preview-only` | Run only the live preview, without the MCP server, until you stop it: for watching a folder while you edit in Word. |

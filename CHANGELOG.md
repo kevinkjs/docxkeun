@@ -2,6 +2,12 @@
 
 All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic versioning](https://semver.org); while the version is 0.x, minor versions may contain breaking changes.
 
+## Unreleased
+
+### docxkeun-mcp
+
+- `--instructions <file>` gives the AI your own instructions, from a text or Markdown file of up to 4000 characters. They are added after the server's own instructions, and the AI app decides how to use them (Claude Code adds them to its system prompt). A file that is missing, unreadable or too long stops the server with one line saying why; edits to the file apply after the app reconnects.
+
 ## 0.4.0 (2026-11-24)
 
 ### docxkeun

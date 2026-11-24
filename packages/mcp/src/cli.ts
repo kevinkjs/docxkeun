@@ -2,12 +2,13 @@
 /**
  * docxkeun-mcp: an MCP server (stdio) for Word documents.
  *
- *   docxkeun-mcp [--role editor] [--author "AI assistant"] [--fonts DIR] [--preview] [FOLDER ...]
+ *   docxkeun-mcp [--role editor] [--author "AI assistant"] [--fonts DIR] [--instructions FILE] [--preview] [FOLDER ...]
  */
 import { parseArgs } from 'node:util';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { Role } from 'docxkeun/security';
 import { parseColors, startPreview, type PreviewOptions } from './preview.js';
+import { readInstructionsFile } from './instructions-file.js';
 import { createServer, ROLES, VERSION } from './server.js';
 
 const HELP = `docxkeun-mcp ${VERSION}: an MCP server that lets AI assistants read, edit, comment on,
@@ -28,6 +29,11 @@ Options:
   --ai-color <color> Colour of the AI's caret and highlights in the live preview: a CSS colour,
                      or two separated by a comma for a gradient ("#0b57d0" or "#0b57d0,#34a853")
   --fonts <folder>   Extra .ttf/.otf fonts for page counts and PDF export (repeatable)
+  --instructions <file>
+                     Your own instructions for the AI (a text or Markdown file, up to 4000
+                     characters), added to the ones this server gives it. Your AI app decides how
+                     to use them (Claude Code adds them to its system prompt); edits to the file
+                     apply after the app reconnects
   --preview          Also serve a live preview at http://127.0.0.1:5230 (or the next free port)
                      that redraws documents whenever they change
   --preview-port <n> First port to try for the preview (default 5230)
@@ -48,6 +54,7 @@ async function main(): Promise<void> {
       author: { type: 'string' },
       'ai-color': { type: 'string' },
       fonts: { type: 'string', multiple: true },
+      instructions: { type: 'string' },
       preview: { type: 'boolean' },
       'preview-port': { type: 'string' },
       'preview-only': { type: 'boolean' },
@@ -85,12 +92,14 @@ async function main(): Promise<void> {
     process.once('SIGTERM', stop);
     return;
   }
+  const instructions = values.instructions === undefined ? '' : await readInstructionsFile(values.instructions);
   const preview = values.preview || previewPort !== undefined ? await startPreview(folders, previewOptions) : undefined;
   const server = await createServer({
     folders,
     role,
     ...(values.author ? { author: values.author } : {}),
     ...(values.fonts ? { fontFolders: values.fonts } : {}),
+    ...(instructions ? { instructions } : {}),
     ...(preview ? { preview } : {}),
   });
   await server.connect(new StdioServerTransport());
@@ -100,7 +109,7 @@ async function main(): Promise<void> {
     process.stdin.once('end', stop);
     process.stdin.once('close', stop);
   }
-  process.stderr.write(`docxkeun-mcp ${VERSION} running (role: ${role}; folders: ${folders.join(', ')}${preview ? `; preview: ${preview.url}` : ''})\n`);
+  process.stderr.write(`docxkeun-mcp ${VERSION} running (role: ${role}; folders: ${folders.join(', ')}${preview ? `; preview: ${preview.url}` : ''}${values.instructions !== undefined ? `; instructions: ${values.instructions}` : ''})\n`);
 }
 
 main().catch((e: unknown) => {

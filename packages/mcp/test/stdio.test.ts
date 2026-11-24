@@ -62,6 +62,38 @@ describe.skipIf(!built)('stdio', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('passes --instructions to the AI app', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'docxkeun-mcp-instructions-'));
+    try {
+      const file = join(dir, 'instructions.md');
+      await writeFile(file, 'You are a legal assistant.\n');
+      const transport = new StdioClientTransport({ command: process.execPath, args: [cli, '--instructions', file, dir], stderr: 'pipe' });
+      const client = new Client({ name: 'stdio-test', version: '1.0.0' });
+      await client.connect(transport);
+      try {
+        expect(client.getInstructions()).toContain('<user_instructions>\nYou are a legal assistant.\n</user_instructions>');
+      } finally {
+        await client.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops with one line when the instructions file is missing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'docxkeun-mcp-instructions-'));
+    try {
+      const child = spawn(process.execPath, [cli, '--instructions', join(dir, 'missing.md'), dir], { stdio: ['ignore', 'ignore', 'pipe'] });
+      let err = '';
+      child.stderr.on('data', (d: Buffer) => (err += d.toString()));
+      const code = await new Promise<number | null>((ok) => child.once('exit', ok));
+      expect(code).toBe(1);
+      expect(err).toMatch(/^docxkeun-mcp: Cannot read the instructions file .*missing\.md/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe.skipIf(!built)('preview only', () => {
