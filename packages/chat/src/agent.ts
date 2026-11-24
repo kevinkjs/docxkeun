@@ -14,6 +14,7 @@ import type {
   BetaToolUseBlock,
   MessageCreateParamsNonStreaming,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages';
+import { instructionsSection } from '../../mcp/src/instructions.js';
 import type { Toolbox, ToolOutcome } from './tools.js';
 
 export interface ModelChoice {
@@ -84,6 +85,8 @@ export interface TurnOptions {
   events: TurnEvents;
   signal?: AbortSignal;
   maxSteps?: number;
+  /** The user's own instructions from the Instructions dialog; added after the built-in prompt for every step of this turn. */
+  instructions?: string;
 }
 
 /** Block types that must not be echoed from before a mid-output fallback (the docs' echo rule). */
@@ -104,11 +107,17 @@ export function afterFallback(content: BetaContentBlock[]): { echo: BetaContentB
   return { echo, toolUses };
 }
 
+/** The built-in prompt, followed by the user's instructions when they wrote any. */
+export function systemPrompt(instructions?: string): string {
+  const section = instructionsSection(instructions);
+  return section ? `${SYSTEM_PROMPT}\n\n${section}` : SYSTEM_PROMPT;
+}
+
 function requestFor(options: TurnOptions): MessageCreateParamsNonStreaming {
   return {
     model: options.model.id,
     max_tokens: 64000,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt(options.instructions),
     tools: options.tools.definitions,
     messages: options.messages,
     // Cache the system prompt, tools and conversation so far: each step of a turn re-sends them.

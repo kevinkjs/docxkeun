@@ -4,8 +4,9 @@ import type { BetaMessage, BetaMessageParam, MessageCreateParamsNonStreaming } f
 import { describe, expect, it } from 'vitest';
 import { DocxDocument } from 'docxkeun';
 import { buildDocx, p } from '../../../test/helpers/docx.js';
-import { afterFallback, MODELS, runTurn, type MessageStream, type StreamFactory } from '../src/agent.js';
+import { afterFallback, MODELS, runTurn, SYSTEM_PROMPT, systemPrompt, type MessageStream, type StreamFactory } from '../src/agent.js';
 import { createToolbox, type OpenDocument } from '../src/tools.js';
+import { instructionsSection } from '../../mcp/src/instructions.js';
 import { listParagraphs } from '../../mcp/src/outline.js';
 
 type Block = Record<string, unknown> & { type: string };
@@ -211,5 +212,36 @@ describe('afterFallback', () => {
     const { echo, toolUses } = afterFallback(content);
     expect((echo as Block[]).map((b) => b.type)).toEqual(['text', 'fallback', 'thinking', 'tool_use']);
     expect(toolUses.map((t) => t.id)).toEqual(['t2']);
+  });
+});
+
+describe('user instructions', () => {
+  const run = async (s: Awaited<ReturnType<typeof setup>>, factory: StreamFactory, instructions?: string) =>
+    runTurn({ stream: factory, model: MODELS[0]!, tools: s.toolbox, messages: s.messages, events: s.events, ...(instructions === undefined ? {} : { instructions }) });
+
+  it('adds the user instructions after the built-in prompt', async () => {
+    const s = await setup();
+    const { factory, requests } = scripted(message([text('Done.')], 'end_turn'));
+    await run(s, factory, 'You are a legal assistant.');
+    expect(requests[0]!.system).toBe(`${SYSTEM_PROMPT}\n\n${instructionsSection('You are a legal assistant.')}`);
+  });
+
+  it('sends the built-in prompt alone without instructions', async () => {
+    for (const instructions of [undefined, ' \n ']) {
+      const s = await setup();
+      const { factory, requests } = scripted(message([text('Done.')], 'end_turn'));
+      await run(s, factory, instructions);
+      expect(requests[0]!.system).toBe(SYSTEM_PROMPT);
+    }
+    expect(systemPrompt()).toBe(SYSTEM_PROMPT);
+  });
+
+  it('keeps the same instructions for every step of a turn', async () => {
+    const s = await setup();
+    const { factory, requests } = scripted(message([tool('t1', 'read_document', {})], 'tool_use'), message([text('Done.')], 'end_turn'));
+    await run(s, factory, 'Act as a proofreader.');
+    expect(requests).toHaveLength(2);
+    expect(requests[1]!.system).toBe(requests[0]!.system);
+    expect(requests[0]!.system).toContain('Act as a proofreader.');
   });
 });
