@@ -22,6 +22,7 @@ import {
 } from 'docxkeun/security';
 import { fontsFor } from './fonts.js';
 import { activityLabel, describeOperation, newParagraph, numberedObjects, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext } from './operations.js';
+import { MAX_INSTRUCTIONS, instructionsSection } from './instructions.js';
 import { parseMarkup } from './markup.js';
 import { commentThreads, listParagraphs, locksByParagraph, paragraphStyles, quote, readNumbersByView, readNumbersWithChanges, readParagraphs, renumberSelection, resolveStyle, tableCount, viewerParagraphs, wordCount } from './outline.js';
 import type { Preview } from './preview.js';
@@ -43,6 +44,8 @@ export interface DocxMcpOptions {
   fontFolders?: string[];
   /** A running live preview (see startPreview) to tell about every change. */
   preview?: Preview;
+  /** The user's own instructions, as text (not a path), added after the built-in ones. At most MAX_INSTRUCTIONS characters once trimmed. */
+  instructions?: string;
 }
 
 const ROLE_SUMMARY: Record<Role, string> = {
@@ -83,6 +86,9 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
   const role = options.role ?? 'editor';
   if (!ROLES.includes(role)) throw new Error(`Unknown role "${role}" (use ${ROLES.join(', ')})`);
   const author = options.author?.trim() || 'AI assistant';
+  const userInstructions = instructionsSection(options.instructions);
+  const instructionsLength = options.instructions?.trim().length ?? 0;
+  if (instructionsLength > MAX_INSTRUCTIONS) throw new Error(`Instructions have ${instructionsLength} characters; the limit is ${MAX_INSTRUCTIONS}.`);
   const fontFolders = options.fontFolders ?? [];
   const ws = await Workspace.create(options.folders);
   const queue = new Queue();
@@ -114,6 +120,7 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
               'When the user says "this", "here" or "the selected text" without saying which, call get_selection: it tells you what they selected in the live preview.',
             ]
           : []),
+        ...(userInstructions ? [userInstructions] : []),
       ].join('\n'),
     },
   );

@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DocxDocument } from 'docxkeun';
 import { isEncryptedPackage } from 'docxkeun/security';
 import { buildDocx, p } from '../../../test/helpers/docx.js';
-import { createServer, type DocxMcpOptions } from '../src/index.js';
+import { createServer, instructionsSection, type DocxMcpOptions } from '../src/index.js';
 
 const STYLES = `
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
@@ -119,6 +119,19 @@ describe('tools and roles', () => {
     expect(instructions).toContain(dir.split('/').pop());
     expect(instructions).toContain('commenter');
     expect(instructions).toContain('"Review Bot"');
+  });
+  it('adds the user instructions after its own', async () => {
+    const text = 'You are a document translator for students.';
+    const instructions = (await connect({ instructions: text })).getInstructions() ?? '';
+    expect(instructions).toContain(instructionsSection(text));
+    expect(instructions.indexOf('<user_instructions>')).toBeGreaterThan(instructions.indexOf('Locked regions and the document'));
+  });
+  it('sends no user section without instructions or with only whitespace', async () => {
+    for (const options of [{}, { instructions: ' \n ' }]) expect((await connect(options)).getInstructions()).not.toContain('<user_instructions>');
+  });
+  it('accepts 4000 characters and refuses 4001', async () => {
+    await expect(connect({ instructions: 'a'.repeat(4000) })).resolves.toBeDefined();
+    await expect(connect({ instructions: 'a'.repeat(4001) })).rejects.toThrow('Instructions have 4001 characters; the limit is 4000.');
   });
 });
 
