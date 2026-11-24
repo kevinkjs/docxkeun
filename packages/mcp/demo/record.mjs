@@ -1,6 +1,7 @@
 /**
  * Records the docxkeun-mcp demo video: a scripted session that makes real tool calls to the built
- * server (../dist/cli.js) while its live preview redraws, filmed in headless Chrome.
+ * server (../dist/cli.js) while its live preview redraws, filmed in headless Chrome. Writes an MP4
+ * (1920 × 1080) and a GIF (960 × 540, 10 fps) of the same recording next to it.
  *
  *   node demo/record.mjs [output.mp4]      (after `pnpm build` and `pnpm -C packages/mcp build`)
  *
@@ -20,6 +21,7 @@ import { sampleDocument } from './sample.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const output = resolve(process.argv[2] ?? join(here, 'out', 'docxkeun-mcp-demo.mp4'));
+const gifOutput = output.replace(/\.mp4$/i, '') + '.gif';
 const cli = join(here, '..', 'dist', 'cli.js');
 const DOC = 'Q3 sales update.docx';
 const WIDTH = 1280;
@@ -51,12 +53,14 @@ let clockStart = 0;
 let duration = 0;
 let videoDone;
 const videoWritten = new Promise((r) => (videoDone = r));
-const files = { '/stage.html': 'stage.html', '/encoder.html': 'encoder.html' };
+let gifDone;
+const gifWritten = new Promise((r) => (gifDone = r));
+const files = { '/stage.html': 'stage.html', '/encoder.html': 'encoder.html', '/gif.mjs': 'gif.mjs' };
 const http = createServer(async (req, res) => {
   try {
     const path = new URL(req.url, 'http://x').pathname;
     if (files[path]) {
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Type', path.endsWith('.mjs') ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8');
       res.end(await readFile(join(here, files[path])));
     } else if (path === '/frames.json') {
       res.setHeader('Content-Type', 'application/json');
@@ -64,6 +68,12 @@ const http = createServer(async (req, res) => {
     } else if (path.startsWith('/frames/')) {
       res.setHeader('Content-Type', 'image/jpeg');
       res.end(await readFile(join(framesDir, path.slice('/frames/'.length))));
+    } else if (path === '/gif' && req.method === 'POST') {
+      const body = Buffer.concat(await Array.fromAsync(req));
+      await mkdir(dirname(gifOutput), { recursive: true });
+      await writeFile(gifOutput, body);
+      res.end('ok');
+      gifDone(body.length);
     } else if (path === '/video' && req.method === 'POST') {
       const body = Buffer.concat(await Array.fromAsync(req));
       const headerLength = body.readUInt32LE(0);
@@ -203,13 +213,16 @@ try {
   await Promise.all(writes);
   console.log(`${frames.length} frames over ${duration.toFixed(1)} s`);
 
-  // Encode in the browser, write the MP4 here.
+  // Encode in the browser, write the MP4 and the GIF here.
   const encoderLoaded = new Promise((r) => page.on('Page.loadEventFired', r));
   await page.send('Page.navigate', { url: `${base}/encoder.html` });
   await encoderLoaded;
   console.log(await page.evaluate('encode()'));
   const bytes = await videoWritten;
   console.log(`Wrote ${output} (${(bytes / 1e6).toFixed(1)} MB)`);
+  console.log(await page.evaluate('encodeGif()'));
+  const gifBytes = await gifWritten;
+  console.log(`Wrote ${gifOutput} (${(gifBytes / 1e6).toFixed(1)} MB)`);
 } finally {
   // Each step runs even when one before it fails.
   const steps = [() => chrome.close(), () => client.close(), () => http.close(), () => rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })];

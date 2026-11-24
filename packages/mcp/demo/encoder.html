@@ -1,6 +1,47 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>encoder</title>
+<script type="module">
+import { buildPalette, countColors, GifWriter } from './gif.mjs';
+
+/** The same recording as an animated GIF, smaller and slower, for READMEs. */
+window.encodeGif = async ({ width = 960, height = 540, fps = 10 } = {}) => {
+  const { frames, duration } = await (await fetch('/frames.json')).json();
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingQuality = 'high';
+  const pixelsOf = async (index) => {
+    const bitmap = await createImageBitmap(await (await fetch(`/frames/${frames[index].file}`)).blob());
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    return ctx.getImageData(0, 0, width, height).data;
+  };
+  const frameAt = (t) => {
+    let i = 0;
+    while (i + 1 < frames.length && frames[i + 1].t <= t) i++;
+    return i;
+  };
+  // One palette from a frame every half second.
+  const counts = new Uint32Array(32768);
+  for (let t = 0; t < duration; t += 0.5) countColors(await pixelsOf(frameAt(t)), counts);
+  const { palette, lookup } = buildPalette(counts);
+  const gif = new GifWriter({ width, height, palette, lookup });
+  const total = Math.round(duration * fps);
+  let shown = -1;
+  let pixels;
+  for (let k = 0; k < total; k++) {
+    const index = frameAt(k / fps);
+    if (index !== shown) {
+      pixels = await pixelsOf(index);
+      shown = index;
+    }
+    gif.add(pixels, 100 / fps);
+  }
+  const bytes = gif.finish();
+  const res = await fetch('/gif', { method: 'POST', body: bytes });
+  return { status: res.status, frames: total, bytes: bytes.length };
+};
+</script>
 <script>
 /**
  * Turns the captured frames into H.264 with WebCodecs, at a constant frame rate:
