@@ -4,9 +4,16 @@ An [MCP](https://modelcontextprotocol.io) server for Word documents. It lets Cla
 
 It is built on [docxkeun](https://github.com/kevinkjs/docxkeun), so it needs no Word, no LibreOffice and no cloud service: the documents are opened, changed and converted on your machine. It only touches files in the folders you give it, and the AI's role (viewer, commenter, editor or owner) is enforced along with the document's own protection and locked regions.
 
-https://github.com/user-attachments/assets/22feb021-8290-4024-ae5d-2ae4b8d345eb
+![An AI assistant edits a Word document through docxkeun-mcp while the live preview shows each change: it rewrites a summary, adds a column chart from a table, makes tracked edits, comments on a table cell and exports a PDF](https://raw.githubusercontent.com/kevinkjs/docxkeun/main/.github/assets/docxkeun-mcp-demo.gif)
 
 An AI assistant tidies a summary, adds a chart, makes tracked edits, leaves a comment and exports a PDF while the [live preview](#live-preview) shows each change. The requests are scripted; the tool calls and the preview are real.
+
+<details>
+<summary>The same demo as a 1080p video</summary>
+
+https://github.com/user-attachments/assets/22feb021-8290-4024-ae5d-2ae4b8d345eb
+
+</details>
 
 ## Set up
 
