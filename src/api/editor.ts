@@ -1787,7 +1787,9 @@ export class DocxEditor {
     this.check('edit', this.paragraphRange(paragraph) ?? { start: { node: paragraph, offset: 0 }, end: { node: paragraph, offset: 0 } });
     const track = this.tracking();
     const mark = paragraphMarkRevision(paragraph);
-    const ownNew = mark?.kind === 'ins' && attr(mark.el, 'w:author') === this.author;
+    // A paragraph this author inserted may simply go, but only while all its text is this author's own insertion
+    // too: text someone else typed into it must be deleted as a tracked change.
+    const ownNew = mark?.kind === 'ins' && attr(mark.el, 'w:author') === this.author && this.onlyOwnInsertedText(paragraph);
     if (track && !ownNew) {
       // The text is marked deleted and so is the paragraph mark; Word joins them away on accept.
       const tidx = this.index();
@@ -1803,6 +1805,17 @@ export class DocxEditor {
       paragraph.children = paragraph.children.filter((c) => c.type === 'element' && c.name === 'w:pPr');
     } else parent.children.splice(indexOfChild(parent, paragraph), 1);
     this.changed();
+  }
+
+  /** Whether every run of `paragraph` sits inside a tracked insertion by this editor's author. */
+  private onlyOwnInsertedText(paragraph: XmlElement): boolean {
+    const idx = this.index();
+    return findAll(paragraph, 'w:r').every((run) => {
+      for (let n = idx.parent.get(run); n && n !== paragraph; n = idx.parent.get(n)) {
+        if (n.name === 'w:ins') return attr(n, 'w:author') === this.author;
+      }
+      return false;
+    });
   }
 
   // ---- copies and tables -----------------------------------------------------------------------

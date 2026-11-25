@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { McpServer, type CallToolResult, type ToolAnnotations } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { DocxDocument, layoutDocument } from 'docxkeun';
+import { DocxDocument, layoutDocument, type DocParagraph } from 'docxkeun';
 import { describeSelection, DocxEditor, LockedRegionError, paragraphsOf, selectionInfoFor } from 'docxkeun/editor';
 import { exportPdf } from 'docxkeun/pdf';
 import {
@@ -21,7 +21,7 @@ import {
   type Role,
 } from 'docxkeun/security';
 import { fontsFor } from './fonts.js';
-import { activityLabel, describeOperation, newParagraph, numberedObjects, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext } from './operations.js';
+import { activityLabel, describeOperation, newParagraph, numberedObjects, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext, type McpRole } from './operations.js';
 import { MAX_INSTRUCTIONS, instructionsSection } from './instructions.js';
 import { parseMarkup } from './markup.js';
 import { commentThreads, listParagraphs, locksByParagraph, paragraphStyles, quote, readNumbersByView, readNumbersWithChanges, readParagraphs, renumberSelection, resolveStyle, tableCount, viewerParagraphs, wordCount } from './outline.js';
@@ -31,13 +31,14 @@ import { Queue, Workspace, WorkspaceError } from './workspace.js';
 /** This package's version, read from its package.json (one level above src/ and dist/). */
 export const VERSION: string = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
-export const ROLES: Role[] = ['viewer', 'commenter', 'editor', 'owner'];
+/** Ranked: each role may use what the roles before it may, except that suggester sees only its own list. */
+export const ROLES: McpRole[] = ['viewer', 'commenter', 'suggester', 'editor', 'owner'];
 
 export interface DocxMcpOptions {
   /** Folders the server may read and write. */
   folders: string[];
   /** What the AI may do (default 'editor'). Document protection and locked regions apply on top. */
-  role?: Role;
+  role?: McpRole;
   /** Author name on comments the AI adds (default "AI assistant"). */
   author?: string;
   /** Extra font folders (.ttf/.otf) for page counts and PDF export, e.g. Microsoft Office's fonts. */
@@ -48,12 +49,17 @@ export interface DocxMcpOptions {
   instructions?: string;
 }
 
-const ROLE_SUMMARY: Record<Role, string> = {
+const ROLE_SUMMARY: Record<McpRole, string> = {
   viewer: 'read documents and export PDFs',
   commenter: 'read documents, export PDFs, and add, reply to and resolve comments',
+  suggester: 'read documents, add, reply to and resolve comments, and change text, lists and tables as tracked changes that a person accepts or rejects',
   editor: 'read, edit, comment on and export documents',
   owner: 'do everything an editor can, and also lock regions, change document protection and set passwords',
 };
+
+/** For every role that rewrites paragraphs: keep inline formatting through edit_paragraph. */
+const FORMATTING_TAGS =
+  'read_document shows text formatted differently from the rest of its paragraph with <b>, <i>, <u>, <s>, <sup> and <sub> tags, and formatting of the whole paragraph in its description. Keep those tags when you rewrite or translate a paragraph with edit_paragraph, so the bold, underlined and other text stays where it was; the paragraph’s own formatting stays by itself.';
 
 const READ: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
 const ADD: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
@@ -94,7 +100,10 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
   const queue = new Queue();
   const user = { id: 'docxkeun-mcp', name: author };
   const rank = ROLES.indexOf(role);
-  const allows = (minimum: Role): boolean => rank >= ROLES.indexOf(minimum);
+  const allows = (minimum: McpRole): boolean => rank >= ROLES.indexOf(minimum);
+  // docxkeun's own policy knows four roles: a suggester edits as an editor whose every change is tracked.
+  const policyRole: Role = role === 'suggester' ? 'editor' : role;
+  const editorOptions = role === 'suggester' ? { author, trackChanges: true } : { author };
   const preview = options.preview;
 
   const server = new McpServer(
@@ -106,12 +115,18 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
         'Numbers shift after insert_paragraphs, delete_paragraphs, copy_paragraphs, table changes, insert_shape with text, delete_object of a text box and edit_object moving a text box, so read the document again before reusing numbers from earlier.',
         ...(role === 'editor' || role === 'owner'
           ? ['Tables: insert_table makes one and edit_table adds or deletes rows; cells are paragraphs, so edit their text like any paragraph. To duplicate content with its formatting, lists and tables (for example to translate a document onto a new page), use copy_paragraphs and then change the copies\u2019 text, rather than retyping it with insert_paragraphs. For a copy or new version of a whole document in another file (for example a translation), use copy_document and then change the copy; create_document makes a blank document without the original\u2019s formatting.',
-             'read_document shows text formatted differently from the rest of its paragraph with <b>, <i>, <u>, <s>, <sup> and <sub> tags, and formatting of the whole paragraph in its description. Keep those tags when you rewrite or translate a paragraph with edit_paragraph, so the bold, underlined and other text stays where it was; the paragraph\u2019s own formatting stays by itself.',
+             FORMATTING_TAGS,
              'Charts: insert_chart adds one; read_chart shows its data as a table, and update_chart changes it (give the full new table of categories and series).',
              'Shapes and text boxes: insert_shape adds one; the text inside a box is numbered right after the paragraph holding it, and every text tool works there (edit_paragraph, replace_text, format_text, comments).',
              'Objects (pictures, charts, shapes, text boxes): list_objects numbers them (\"object 2\", also shown in read_document); edit_object resizes, moves, repositions or describes one, and delete_object removes it.']
           : []),
-        'Changes are saved to the file straight away; pass `output` to write a copy instead.',
+        ...(role === 'suggester'
+          ? ['Tables: insert_table makes one and edit_table adds or deletes rows; cells are paragraphs, so edit their text like any paragraph.',
+             FORMATTING_TAGS,
+             'Every change you make is recorded as a tracked change signed with your name, for a person to accept or reject. You cannot accept or reject changes or switch tracking off; explain each change with a comment.']
+          : []),
+        // A suggester's tools take no `output`: it only changes the document it was asked about.
+        role === 'suggester' ? 'Changes are saved to the file straight away.' : 'Changes are saved to the file straight away; pass `output` to write a copy instead.',
         `Your role is ${role}: you may ${ROLE_SUMMARY[role]}. Comments you add are signed "${author}".`,
         "Locked regions and the document's own protection are enforced. If an edit is refused, tell the user rather than working around it.",
         ...(preview
@@ -154,10 +169,10 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
   async function open(file: string, pass: string | undefined): Promise<Session> {
     const real = await ws.resolve(file, 'document', true);
     const doc = await DocxDocument.open(await ws.read(real), pass ? { password: pass } : {});
-    const policy = new AccessPolicy(doc, { user, role });
+    const policy = new AccessPolicy(doc, { user, role: policyRole });
     return {
       doc,
-      editor: new DocxEditor(doc, policy, { author }),
+      editor: new DocxEditor(doc, policy, editorOptions),
       policy,
       path: real,
       name: ws.display(real),
@@ -398,13 +413,33 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       }),
   );
 
+  /**
+   * docxkeun records a formatting change once, keeping the oldest state, so formatting text that already carries
+   * someone else's pending formatting change would be signed with their name. A suggester refuses that instead.
+   */
+  function refuseFoldedFormatting(s: Session, name: string, args: Record<string, unknown>): void {
+    const formats = name === 'format_text' || name === 'format_paragraph' || name === 'set_list' || (name === 'edit_paragraph' && args.style !== undefined);
+    if (!formats) return;
+    for (const n of targetParagraphs(s.entries, name, args)) {
+      const el = s.entries.find((e) => e.n === n)?.para.el;
+      const other = el && otherAuthorsFormattingChange(el, author);
+      if (other) {
+        throw new Error(
+          `Paragraph ${n} carries ${other}'s pending formatting change, and formatting it now would be signed with their name. Leave its formatting and explain the change in a comment instead.`,
+        );
+      }
+    }
+  }
+
   // ==== the shared document operations (operations.ts), as far as the role allows ===================
 
   for (const op of operationsFor(role)) {
-    const inputSchema = z.object({ path, password, ...op.schema.shape, ...(op.kind === 'read' ? {} : saveFields) });
+    // A suggester only changes the document it was asked about: writing a copy elsewhere is not a tracked change.
+    const inputSchema = z.object({ path, password, ...op.schema.shape, ...(op.kind === 'read' || role === 'suggester' ? {} : saveFields) });
     const annotations = op.kind === 'read' ? READ : op.kind === 'add' ? ADD : CHANGE;
     type Args = Record<string, unknown> & { path: string; password?: string; output?: string; overwrite?: boolean };
     const run = async (s: Session, args: Args): Promise<string> => {
+      if (role === 'suggester') refuseFoldedFormatting(s, op.name, args);
       // The live preview shimmers the paragraphs the AI works on before the result comes in.
       if (preview) {
         const objects = args.object !== undefined ? numberedObjects(s.editor, s.entries) : undefined;
@@ -447,7 +482,7 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
           const dest = await ws.resolve(args.path, 'document', false);
           if (!args.overwrite && (await ws.exists(dest))) throw new Error(`${ws.display(dest)} already exists; pass overwrite: true to replace it`);
           const doc = await DocxDocument.create();
-          const editor = new DocxEditor(doc, new AccessPolicy(doc, { user, role }));
+          const editor = new DocxEditor(doc, new AccessPolicy(doc, { user, role: policyRole }));
           const styles = args.paragraphs.map((p) => (p.style ? resolveStyle(doc, p.style) : undefined));
           const first = listParagraphs(doc)[0]!.para.el;
           let prev = first;
@@ -562,4 +597,15 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
   }
 
   return server;
+}
+
+/** The author of the first pending formatting change (run or paragraph) in `el` not made by `author`. */
+function otherAuthorsFormattingChange(el: DocParagraph['el'], author: string): string | undefined {
+  for (const c of el.children) {
+    if (c.type !== 'element') continue;
+    if ((c.name === 'w:rPrChange' || c.name === 'w:pPrChange') && c.attrs['w:author'] !== author) return c.attrs['w:author'] ?? 'another author';
+    const inner = otherAuthorsFormattingChange(c, author);
+    if (inner) return inner;
+  }
+  return undefined;
 }

@@ -9,9 +9,11 @@ import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DocxDocument } from 'docxkeun';
+import { DocxEditor } from 'docxkeun/editor';
 import { isEncryptedPackage } from 'docxkeun/security';
 import { buildDocx, p } from '../../../test/helpers/docx.js';
 import { createServer, instructionsSection, type DocxMcpOptions } from '../src/index.js';
+import { SUGGESTER_OPERATIONS } from '../src/operations.js';
 
 const STYLES = `
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
@@ -711,6 +713,149 @@ describe('tracked changes', () => {
     const r = await call(editor, 'accept_revisions', { path: 'contract.docx', all: true });
     expect(r.isError).toBe(true);
     expect(r.text).toContain('cannot be accepted or rejected');
+  });
+});
+
+describe('suggester role', () => {
+  const toolNames = async (role: DocxMcpOptions['role']) => (await (await connect({ role })).listTools()).tools.map((t) => t.name).sort();
+  /** The refusal text, whether the server answers with an error result or a protocol error; undefined when it ran. */
+  const refusal = async (client: Client, name: string, args: Record<string, unknown>): Promise<string | undefined> => {
+    try {
+      const r = await call(client, name, args);
+      return r.isError ? r.text : undefined;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  /** contract.docx with a custom body. */
+  const fixtureWith = async (body: string) => {
+    const file = join(dir, 'contract.docx');
+    await writeFile(file, await buildDocx({ body, styles: STYLES, settings: '' }));
+    return file;
+  };
+  const DATE = 'w:date="2026-11-25T00:00:00Z"';
+
+  it('lists exactly the suggester tools', async () => {
+    const viewer = await toolNames('viewer');
+    expect(await toolNames('suggester')).toEqual([...viewer, ...SUGGESTER_OPERATIONS].sort());
+    expect([...SUGGESTER_OPERATIONS].sort()).toEqual(
+      ['add_comment', 'delete_paragraphs', 'edit_paragraph', 'edit_table', 'format_paragraph', 'format_text', 'insert_paragraphs', 'insert_table', 'replace_text', 'reply_to_comment', 'resolve_comment', 'set_list'],
+    );
+  });
+
+  it('does not tell the suggester about an output option its tools lack', async () => {
+    const instructions = (await connect({ role: 'suggester' })).getInstructions() ?? '';
+    expect(instructions).toContain('Changes are saved to the file straight away.');
+    expect(instructions).not.toContain('`output`');
+  });
+
+  it('still tells an editor it can write a copy with output', async () => {
+    expect((await connect({ role: 'editor' })).getInstructions()).toContain('Changes are saved to the file straight away; pass `output` to write a copy instead.');
+  });
+
+  it('tells the suggester to keep formatting tags and how its table tools work', async () => {
+    const instructions = (await connect({ role: 'suggester' })).getInstructions() ?? '';
+    expect(instructions).toContain('Keep those tags when you rewrite or translate a paragraph with edit_paragraph');
+    expect(instructions).toContain('insert_table makes one and edit_table adds or deletes rows');
+    // Tools a suggester does not have stay out of its instructions.
+    expect(instructions).not.toContain('copy_document');
+    expect(instructions).not.toContain('insert_chart');
+  });
+
+  it('records edits as tracked changes when the file has tracking off', async () => {
+    const file = await fixture();
+    const suggester = await connect({ role: 'suggester', author: 'Legal AI' });
+    await ok(suggester, 'replace_text', { path: 'contract.docx', find: '30 days', replace: '45 days' });
+    const listed = await ok(suggester, 'list_revisions', { path: 'contract.docx' });
+    expect(listed).toMatch(/Change \d+ \(deleted\) by Legal AI, .*paragraph 4: "30 days"/);
+    expect(listed).toMatch(/Change \d+ \(inserted\) by Legal AI, .*paragraph 4: "45 days"/);
+    const saved = await DocxDocument.open(new Uint8Array(await readFile(file)));
+    expect(new DocxEditor(saved).trackChanges).toBe(false);
+  });
+
+  it('refuses tools outside the suggester set, with a change and a comment there to protect', async () => {
+    const file = await fixture();
+    const suggester = await connect({ role: 'suggester', author: 'Legal AI' });
+    await ok(suggester, 'replace_text', { path: 'contract.docx', find: '30 days', replace: '45 days' });
+    const added = await ok(suggester, 'add_comment', { path: 'contract.docx', paragraph: 4, comment: '[LOW][F-1] Term — reason' });
+    const commentId = /comment (\d+)/i.exec(added)![1]!;
+    const before = await readFile(file);
+    const revisions = await ok(suggester, 'list_revisions', { path: 'contract.docx' });
+    const comments = await ok(suggester, 'list_comments', { path: 'contract.docx' });
+    for (const [name, args] of [
+      ['accept_revisions', { all: true }],
+      ['reject_revisions', { all: true }],
+      ['set_track_changes', { on: false }],
+      ['delete_comment', { commentId }],
+    ] as const) {
+      expect(await refusal(suggester, name, { path: 'contract.docx', ...args })).toMatch(/not found/i);
+    }
+    expect(Buffer.compare(await readFile(file), before)).toBe(0);
+    expect(await ok(suggester, 'list_revisions', { path: 'contract.docx' })).toBe(revisions);
+    expect(await ok(suggester, 'list_comments', { path: 'contract.docx' })).toBe(comments);
+  });
+
+  it('cannot write to another file', async () => {
+    await fixture();
+    const other = join(dir, 'other.docx');
+    await writeFile(other, await buildDocx({ body: p('Completely different document.'), styles: STYLES, settings: '' }));
+    const before = await readFile(other);
+    const suggester = await connect({ role: 'suggester', author: 'Legal AI' });
+    // export_pdf keeps its `output` (where the PDF goes), as for a viewer; no document tool may write elsewhere.
+    for (const t of (await suggester.listTools()).tools.filter((x) => x.name !== 'export_pdf')) {
+      expect(Object.keys(t.inputSchema.properties ?? {})).not.toContain('output');
+      expect(Object.keys(t.inputSchema.properties ?? {})).not.toContain('overwrite');
+    }
+    await call(suggester, 'add_comment', { path: 'contract.docx', paragraph: 4, comment: 'x', output: 'other.docx', overwrite: true });
+    expect(Buffer.compare(await readFile(other), before)).toBe(0);
+  });
+
+  it.each([
+    ['replace_text', { find: '30 days', replace: '45 days' }],
+    ['edit_paragraph', { paragraph: 4, text: 'Payment is due within 60 days.' }],
+    ['edit_paragraph', { paragraph: 4, style: 'Heading1' }],
+    ['insert_paragraphs', { after: 3, paragraphs: [{ text: 'A new clause.' }] }],
+    ['delete_paragraphs', { from: 4 }],
+    ['format_text', { text: 'ACME Ltd.', all: true, format: { bold: true } }],
+    ['format_paragraph', { from: 4, align: 'center' }],
+    ['set_list', { from: 3, to: 4, format: 'decimal' }],
+    ['insert_table', { after: 4, rows: [['a', 'b']] }],
+    ['edit_table', { table: 1, action: 'add_rows', rows: [['x', 'y']] }],
+    ['edit_table', { table: 1, action: 'delete_rows', fromRow: 2 }],
+    ['edit_table', { table: 1, action: 'delete_table' }],
+  ] as const)('%s %j is tracked: rejecting every change restores the document', async (name, args) => {
+    await fixture();
+    const reader = await connect({ role: 'viewer' });
+    const original = await ok(reader, 'read_document', { path: 'contract.docx' });
+    await ok(await connect({ role: 'suggester', author: 'Legal AI' }), name, { path: 'contract.docx', ...args });
+    await ok(await connect({ role: 'editor', author: 'Reviewer' }), 'reject_revisions', { path: 'contract.docx', all: true });
+    expect(await ok(reader, 'read_document', { path: 'contract.docx' })).toBe(original);
+  });
+
+  it('tracks deleting a paragraph it inserted once a person has typed in it', async () => {
+    await fixtureWith(p('Title') + p('Typed by a person.', `<w:rPr><w:ins w:id="90" w:author="Legal AI" ${DATE}/></w:rPr>`) + p('Last paragraph.'));
+    const suggester = await connect({ role: 'suggester', author: 'Legal AI' });
+    await ok(suggester, 'delete_paragraphs', { path: 'contract.docx', from: 2 });
+    expect(await ok(suggester, 'list_revisions', { path: 'contract.docx' })).toMatch(/\(deleted\) by Legal AI, .*"Typed by a person\."/);
+    await ok(await connect({ role: 'editor', author: 'Reviewer' }), 'reject_revisions', { path: 'contract.docx', all: true });
+    expect(await ok(suggester, 'read_document', { path: 'contract.docx' })).toContain('Typed by a person.');
+  });
+
+  it("refuses to format text that carries another author's pending formatting change", async () => {
+    const person = `<w:r><w:rPr><w:i/><w:rPrChange w:id="91" w:author="Reviewer One" ${DATE}><w:rPr/></w:rPrChange></w:rPr><w:t>Formatted by a person.</w:t></w:r>`;
+    const file = await fixtureWith(p('Title') + `<w:p>${person}</w:p>` + `<w:p><w:pPr><w:jc w:val="right"/><w:pPrChange w:id="92" w:author="Reviewer One" ${DATE}><w:pPr/></w:pPrChange></w:pPr><w:r><w:t>Aligned by a person.</w:t></w:r></w:p>`);
+    const suggester = await connect({ role: 'suggester', author: 'Legal AI' });
+    const before = await readFile(file);
+    expect(await refusal(suggester, 'format_text', { path: 'contract.docx', paragraph: 2, format: { bold: true } })).toMatch(/Reviewer One/);
+    expect(await refusal(suggester, 'format_paragraph', { path: 'contract.docx', from: 3, align: 'center' })).toMatch(/Reviewer One/);
+    expect(await refusal(suggester, 'set_list', { path: 'contract.docx', from: 2, to: 3, format: 'decimal' })).toMatch(/Reviewer One/);
+    expect(Buffer.compare(await readFile(file), before)).toBe(0);
+    // Formatting elsewhere still works.
+    await ok(suggester, 'format_text', { path: 'contract.docx', paragraph: 1, format: { bold: true } });
+  });
+
+  it('names suggester in the unknown-role error', async () => {
+    await expect(connect({ role: 'nope' as DocxMcpOptions['role'] })).rejects.toThrow('suggester');
   });
 });
 

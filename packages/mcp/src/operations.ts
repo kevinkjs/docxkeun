@@ -42,9 +42,12 @@ export interface DocContext {
 
 export type OperationKind = 'read' | 'add' | 'change';
 
+/** The roles this server offers: docxkeun's own four, plus suggester (comments and tracked edits only). */
+export type McpRole = Role | 'suggester';
+
 export interface OperationEnv {
   author: string;
-  role: Role;
+  role: McpRole;
 }
 
 export interface Operation<S extends z.ZodObject = z.ZodObject> {
@@ -1899,8 +1902,29 @@ export const OPERATIONS: readonly Operation[] = [
 
 const ROLE_ORDER: Role[] = ['viewer', 'commenter', 'editor', 'owner'];
 
+/**
+ * What a suggester may use beyond the viewer's tools: comments, and edits docxkeun records as tracked
+ * changes. Not here: deleting comments, reviewing or switching off tracked changes, and edits docxkeun
+ * applies untracked (pictures, charts, shapes, objects, footnotes, links, bookmarks, headers and footers).
+ */
+export const SUGGESTER_OPERATIONS: readonly string[] = [
+  'add_comment',
+  'reply_to_comment',
+  'resolve_comment',
+  'replace_text',
+  'edit_paragraph',
+  'insert_paragraphs',
+  'delete_paragraphs',
+  'format_text',
+  'format_paragraph',
+  'set_list',
+  'insert_table',
+  'edit_table',
+];
+
 /** The operations a role may use. */
-export function operationsFor(role: Role): Operation[] {
+export function operationsFor(role: McpRole): Operation[] {
+  if (role === 'suggester') return OPERATIONS.filter((op) => op.role === 'viewer' || SUGGESTER_OPERATIONS.includes(op.name));
   const rank = ROLE_ORDER.indexOf(role);
   return OPERATIONS.filter((op) => ROLE_ORDER.indexOf(op.role) <= rank);
 }
