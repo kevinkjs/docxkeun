@@ -12,6 +12,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 
 - `--instructions <file>` gives the AI your own instructions, from a text or Markdown file of up to 4000 characters. They are added after the server's own instructions, and the AI app decides how to use them (Claude Code adds them to its system prompt). A file that is missing, unreadable or too long stops the server with one line saying why; edits to the file apply after the app reconnects.
 - `createServer()` takes `instructions` (the text itself), and `MAX_INSTRUCTIONS` and `instructionsSection` are exported.
+- A new `suggester` role (`--role suggester`, or `role: 'suggester'` in `createServer()`) for an AI whose every change a person reviews: it reads, comments, and changes text, lists and tables only as tracked changes signed with its author, whatever the document's own Track Changes setting. It cannot delete comments, accept or reject changes, switch tracking off, or use tools whose edits are never tracked (pictures, charts, shapes and other objects, footnotes, links, bookmarks, headers and footers). `SUGGESTER_OPERATIONS` and the `McpRole` type are exported.
 
 ## 0.4.0 (2026-11-24)
 

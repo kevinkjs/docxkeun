@@ -9,9 +9,11 @@ import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DocxDocument } from 'docxkeun';
+import { DocxEditor } from 'docxkeun/editor';
 import { isEncryptedPackage } from 'docxkeun/security';
 import { buildDocx, p } from '../../../test/helpers/docx.js';
 import { createServer, instructionsSection, type DocxMcpOptions } from '../src/index.js';
+import { SUGGESTER_OPERATIONS } from '../src/operations.js';
 
 const STYLES = `
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
@@ -711,6 +713,52 @@ describe('tracked changes', () => {
     const r = await call(editor, 'accept_revisions', { path: 'contract.docx', all: true });
     expect(r.isError).toBe(true);
     expect(r.text).toContain('cannot be accepted or rejected');
+  });
+});
+
+describe('suggester role', () => {
+  const toolNames = async (role: DocxMcpOptions['role']) => (await (await connect({ role })).listTools()).tools.map((t) => t.name).sort();
+  /** True when the server refuses the call, either as an error result or a protocol error. */
+  const refused = async (client: Client, name: string, args: Record<string, unknown>) => {
+    try {
+      return (await call(client, name, args)).isError;
+    } catch {
+      return true;
+    }
+  };
+
+  it('lists exactly the suggester tools', async () => {
+    const viewer = await toolNames('viewer');
+    expect(await toolNames('suggester')).toEqual([...viewer, ...SUGGESTER_OPERATIONS].sort());
+    expect([...SUGGESTER_OPERATIONS].sort()).toEqual(
+      ['add_comment', 'delete_paragraphs', 'edit_paragraph', 'edit_table', 'format_paragraph', 'format_text', 'insert_paragraphs', 'insert_table', 'replace_text', 'reply_to_comment', 'resolve_comment', 'set_list'],
+    );
+  });
+
+  it('records edits as tracked changes when the file has tracking off', async () => {
+    const file = await fixture();
+    const suggester = await connect({ role: 'suggester', author: 'Legal AI' });
+    await ok(suggester, 'replace_text', { path: 'contract.docx', find: '30 days', replace: '45 days' });
+    const listed = await ok(suggester, 'list_revisions', { path: 'contract.docx' });
+    expect(listed).toMatch(/Change \d+ \(deleted\) by Legal AI, .*paragraph 4: "30 days"/);
+    expect(listed).toMatch(/Change \d+ \(inserted\) by Legal AI, .*paragraph 4: "45 days"/);
+    const saved = await DocxDocument.open(new Uint8Array(await readFile(file)));
+    expect(new DocxEditor(saved).trackChanges).toBe(false);
+  });
+
+  it('refuses tools outside the suggester set', async () => {
+    const file = await fixture();
+    const suggester = await connect({ role: 'suggester', author: 'Legal AI' });
+    const before = await readFile(file);
+    expect(await refused(suggester, 'accept_revisions', { path: 'contract.docx', all: true })).toBe(true);
+    expect(await refused(suggester, 'reject_revisions', { path: 'contract.docx', all: true })).toBe(true);
+    expect(await refused(suggester, 'set_track_changes', { path: 'contract.docx', on: false })).toBe(true);
+    expect(await refused(suggester, 'delete_comment', { path: 'contract.docx', commentId: '0' })).toBe(true);
+    expect(Buffer.compare(await readFile(file), before)).toBe(0);
+  });
+
+  it('names suggester in the unknown-role error', async () => {
+    await expect(connect({ role: 'nope' as DocxMcpOptions['role'] })).rejects.toThrow('suggester');
   });
 });
 

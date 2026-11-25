@@ -6,7 +6,7 @@
  */
 import { parseArgs } from 'node:util';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
-import type { Role } from 'docxkeun/security';
+import type { McpRole } from './operations.js';
 import { parseColors, startPreview, type PreviewOptions } from './preview.js';
 import { MAX_INSTRUCTIONS } from './instructions.js';
 import { readInstructionsFile } from './instructions-file.js';
@@ -23,6 +23,8 @@ Options:
   --role <role>      What the AI may do (default: editor)
                        viewer     read and export PDFs
                        commenter  viewer + add, reply to and resolve comments
+                       suggester  commenter, but cannot delete comments, + change text, lists
+                                  and tables as tracked changes only (cannot accept or reject them)
                        editor     commenter + change text, formatting, links and bookmarks
                        owner      editor + locks, document protection and passwords
   --author <name>    Name on comments the AI adds and on its caret in the live preview
@@ -71,7 +73,7 @@ async function main(): Promise<void> {
     process.stdout.write(`${VERSION}\n`);
     return;
   }
-  const role = (values.role ?? 'editor') as Role;
+  const role = (values.role ?? 'editor') as McpRole;
   if (!ROLES.includes(role)) throw new Error(`Unknown role "${values.role}" (use ${ROLES.join(', ')})`);
   const folders = positionals.length ? positionals : [process.cwd()];
   let previewPort: number | undefined;

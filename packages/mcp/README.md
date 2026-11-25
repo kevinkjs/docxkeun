@@ -2,7 +2,7 @@
 
 An [MCP](https://modelcontextprotocol.io) server for Word documents. It lets Claude (Claude Code, Claude Desktop) and other MCP clients read, edit, comment on, protect and convert `.docx` files to PDF.
 
-It is built on [docxkeun](https://github.com/kevinkjs/docxkeun), so it needs no Word, no LibreOffice and no cloud service: the documents are opened, changed and converted on your machine. It only touches files in the folders you give it, and the AI's role (viewer, commenter, editor or owner) is enforced along with the document's own protection and locked regions.
+It is built on [docxkeun](https://github.com/kevinkjs/docxkeun), so it needs no Word, no LibreOffice and no cloud service: the documents are opened, changed and converted on your machine. It only touches files in the folders you give it, and the AI's role (viewer, commenter, suggester, editor or owner) is enforced along with the document's own protection and locked regions.
 
 ![An AI assistant edits a Word document through docxkeun-mcp while the live preview shows each change: it rewrites a summary, adds a column chart from a table, makes tracked edits, comments on a table cell and exports a PDF](https://raw.githubusercontent.com/kevinkjs/docxkeun/main/.github/assets/docxkeun-mcp-demo.gif)
 
@@ -65,7 +65,7 @@ docxkeun-mcp [options] [folder ...]
 | Option | Meaning |
 |---|---|
 | `folder ...` | The folders the server may read and write (default: the current folder). Subfolders are included. |
-| `--role <role>` | What the AI may do: `viewer`, `commenter`, `editor` (default) or `owner`. |
+| `--role <role>` | What the AI may do: `viewer`, `commenter`, `suggester` (tracked edits only, see below), `editor` (default) or `owner`. |
 | `--author <name>` | The name on comments the AI adds, and on its caret in the live preview (default "AI assistant"). |
 | `--ai-color <color>` | The colour of the AI's caret, shimmer and change marks in the live preview: a CSS colour, or two separated by a comma for a gradient (`"#0b57d0"` or `"#0b57d0,#1e8e3e"`). |
 | `--fonts <folder>` | Extra `.ttf`/`.otf` fonts for page counts and PDF export, e.g. Microsoft Office's fonts for exact Calibri layout. Repeatable. |
@@ -137,6 +137,8 @@ Each role gets only the tools it may use.
 | `protect_document` | Word's editing restrictions: read-only, comments only, tracked changes only, forms only | owner |
 | `set_open_password` | Encrypt with a password to open (AES-256), or remove it | owner |
 
+The `suggester` role is for an AI whose every change a person reviews. It gets the viewer's tools, `add_comment`, `reply_to_comment` and `resolve_comment`, and the edits docxkeun records as tracked changes: `replace_text`, `edit_paragraph`, `insert_paragraphs`, `delete_paragraphs`, `format_text`, `format_paragraph`, `set_list`, `insert_table` and `edit_table`. Every one of those edits is a tracked change signed with `--author`, whatever the document's own Track Changes setting. It cannot delete comments, accept or reject changes, switch tracking off, or use the tools whose edits are never tracked (pictures, charts, shapes and other objects, footnotes, links, bookmarks, headers and footers).
+
 `read_document` shows text formatting as tags: text formatted differently from the rest of its paragraph is wrapped in `<b>`, `<i>`, `<u>`, `<s>`, `<sup>` or `<sub>`, and a paragraph's alignment and whole-paragraph formatting are in its description (`[1] (centered; bold, underlined) AGREEMENT`). `edit_paragraph`, `insert_paragraphs`, `create_document` and `replace_text` take the same tags, so an AI that rewrites or translates a paragraph keeps its bold, underlined and other formatted words; each tagged part copies the font, size and colour of the matching phrase. Searches ignore the tags.
 
 Objects (pictures, charts, shapes, text boxes) have numbers in `read_document` and `list_objects`, which the object tools take. The paragraphs of a text box are numbered in line, right after the paragraph holding the box, so the paragraph tools edit them; numbers after a box shift when one with text is added, moved or deleted, so read the document again.
@@ -146,7 +148,7 @@ Editing tools save to the file straight away; every one of them takes `output` t
 ## Safety
 
 - **Folders.** Paths outside the given folders are refused, including through symlinks and `..`. Only Word documents (`.docx`, `.docm`, `.dotx`, `.dotm`) and PDFs (for export) are read or written. The server refuses to run with the whole file system as its folder.
-- **Roles and protection.** Every change goes through docxkeun's `AccessPolicy`. A commenter cannot change text; only an owner can lock regions, change protection or set passwords. A document's own protection (for example "comments only") applies to every role except owner, and locked regions apply to everyone.
+- **Roles and protection.** Every change goes through docxkeun's `AccessPolicy`. A commenter cannot change text; a suggester changes text only as tracked changes it cannot accept or reject; only an owner can lock regions, change protection or set passwords. A document's own protection (for example "comments only") applies to every role except owner, and locked regions apply to everyone.
 - **Writes.** Files are written to a temporary file and renamed, so a failed write never leaves a half-written document. Keep backups or use version control for documents you let an AI edit, and close a document in Word before an AI edits it, since Word does not notice changes made to an open file.
 - **Your data and the AI.** The server itself sends nothing over the network, but your MCP client passes tool results (document text, comments) to its AI model. Passwords you give the AI to open a document are part of that conversation.
 - **Approval.** MCP clients such as Claude Code and Claude Desktop ask before running a tool unless you allow it; tools that change files are marked as such.

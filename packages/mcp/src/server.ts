@@ -21,7 +21,7 @@ import {
   type Role,
 } from 'docxkeun/security';
 import { fontsFor } from './fonts.js';
-import { activityLabel, describeOperation, newParagraph, numberedObjects, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext } from './operations.js';
+import { activityLabel, describeOperation, newParagraph, numberedObjects, operationsFor, plural, tagParagraph, targetParagraphs, writeTagged, type DocContext, type McpRole } from './operations.js';
 import { MAX_INSTRUCTIONS, instructionsSection } from './instructions.js';
 import { parseMarkup } from './markup.js';
 import { commentThreads, listParagraphs, locksByParagraph, paragraphStyles, quote, readNumbersByView, readNumbersWithChanges, readParagraphs, renumberSelection, resolveStyle, tableCount, viewerParagraphs, wordCount } from './outline.js';
@@ -31,13 +31,14 @@ import { Queue, Workspace, WorkspaceError } from './workspace.js';
 /** This package's version, read from its package.json (one level above src/ and dist/). */
 export const VERSION: string = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 
-export const ROLES: Role[] = ['viewer', 'commenter', 'editor', 'owner'];
+/** Ranked: each role may use what the roles before it may, except that suggester sees only its own list. */
+export const ROLES: McpRole[] = ['viewer', 'commenter', 'suggester', 'editor', 'owner'];
 
 export interface DocxMcpOptions {
   /** Folders the server may read and write. */
   folders: string[];
   /** What the AI may do (default 'editor'). Document protection and locked regions apply on top. */
-  role?: Role;
+  role?: McpRole;
   /** Author name on comments the AI adds (default "AI assistant"). */
   author?: string;
   /** Extra font folders (.ttf/.otf) for page counts and PDF export, e.g. Microsoft Office's fonts. */
@@ -48,9 +49,10 @@ export interface DocxMcpOptions {
   instructions?: string;
 }
 
-const ROLE_SUMMARY: Record<Role, string> = {
+const ROLE_SUMMARY: Record<McpRole, string> = {
   viewer: 'read documents and export PDFs',
   commenter: 'read documents, export PDFs, and add, reply to and resolve comments',
+  suggester: 'read documents, add, reply to and resolve comments, and change text, lists and tables as tracked changes that a person accepts or rejects',
   editor: 'read, edit, comment on and export documents',
   owner: 'do everything an editor can, and also lock regions, change document protection and set passwords',
 };
@@ -94,7 +96,10 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
   const queue = new Queue();
   const user = { id: 'docxkeun-mcp', name: author };
   const rank = ROLES.indexOf(role);
-  const allows = (minimum: Role): boolean => rank >= ROLES.indexOf(minimum);
+  const allows = (minimum: McpRole): boolean => rank >= ROLES.indexOf(minimum);
+  // docxkeun's own policy knows four roles: a suggester edits as an editor whose every change is tracked.
+  const policyRole: Role = role === 'suggester' ? 'editor' : role;
+  const editorOptions = role === 'suggester' ? { author, trackChanges: true } : { author };
   const preview = options.preview;
 
   const server = new McpServer(
@@ -110,6 +115,9 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
              'Charts: insert_chart adds one; read_chart shows its data as a table, and update_chart changes it (give the full new table of categories and series).',
              'Shapes and text boxes: insert_shape adds one; the text inside a box is numbered right after the paragraph holding it, and every text tool works there (edit_paragraph, replace_text, format_text, comments).',
              'Objects (pictures, charts, shapes, text boxes): list_objects numbers them (\"object 2\", also shown in read_document); edit_object resizes, moves, repositions or describes one, and delete_object removes it.']
+          : []),
+        ...(role === 'suggester'
+          ? ['Every change you make is recorded as a tracked change signed with your name, for a person to accept or reject. You cannot accept or reject changes or switch tracking off; explain each change with a comment.']
           : []),
         'Changes are saved to the file straight away; pass `output` to write a copy instead.',
         `Your role is ${role}: you may ${ROLE_SUMMARY[role]}. Comments you add are signed "${author}".`,
@@ -154,10 +162,10 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
   async function open(file: string, pass: string | undefined): Promise<Session> {
     const real = await ws.resolve(file, 'document', true);
     const doc = await DocxDocument.open(await ws.read(real), pass ? { password: pass } : {});
-    const policy = new AccessPolicy(doc, { user, role });
+    const policy = new AccessPolicy(doc, { user, role: policyRole });
     return {
       doc,
-      editor: new DocxEditor(doc, policy, { author }),
+      editor: new DocxEditor(doc, policy, editorOptions),
       policy,
       path: real,
       name: ws.display(real),
@@ -447,7 +455,7 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
           const dest = await ws.resolve(args.path, 'document', false);
           if (!args.overwrite && (await ws.exists(dest))) throw new Error(`${ws.display(dest)} already exists; pass overwrite: true to replace it`);
           const doc = await DocxDocument.create();
-          const editor = new DocxEditor(doc, new AccessPolicy(doc, { user, role }));
+          const editor = new DocxEditor(doc, new AccessPolicy(doc, { user, role: policyRole }));
           const styles = args.paragraphs.map((p) => (p.style ? resolveStyle(doc, p.style) : undefined));
           const first = listParagraphs(doc)[0]!.para.el;
           let prev = first;
