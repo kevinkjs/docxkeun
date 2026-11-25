@@ -743,6 +743,25 @@ describe('suggester role', () => {
     );
   });
 
+  it('does not tell the suggester about an output option its tools lack', async () => {
+    const instructions = (await connect({ role: 'suggester' })).getInstructions() ?? '';
+    expect(instructions).toContain('Changes are saved to the file straight away.');
+    expect(instructions).not.toContain('`output`');
+  });
+
+  it('still tells an editor it can write a copy with output', async () => {
+    expect((await connect({ role: 'editor' })).getInstructions()).toContain('Changes are saved to the file straight away; pass `output` to write a copy instead.');
+  });
+
+  it('tells the suggester to keep formatting tags and how its table tools work', async () => {
+    const instructions = (await connect({ role: 'suggester' })).getInstructions() ?? '';
+    expect(instructions).toContain('Keep those tags when you rewrite or translate a paragraph with edit_paragraph');
+    expect(instructions).toContain('insert_table makes one and edit_table adds or deletes rows');
+    // Tools a suggester does not have stay out of its instructions.
+    expect(instructions).not.toContain('copy_document');
+    expect(instructions).not.toContain('insert_chart');
+  });
+
   it('records edits as tracked changes when the file has tracking off', async () => {
     const file = await fixture();
     const suggester = await connect({ role: 'suggester', author: 'Legal AI' });

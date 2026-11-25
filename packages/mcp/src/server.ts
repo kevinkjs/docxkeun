@@ -57,6 +57,10 @@ const ROLE_SUMMARY: Record<McpRole, string> = {
   owner: 'do everything an editor can, and also lock regions, change document protection and set passwords',
 };
 
+/** For every role that rewrites paragraphs: keep inline formatting through edit_paragraph. */
+const FORMATTING_TAGS =
+  'read_document shows text formatted differently from the rest of its paragraph with <b>, <i>, <u>, <s>, <sup> and <sub> tags, and formatting of the whole paragraph in its description. Keep those tags when you rewrite or translate a paragraph with edit_paragraph, so the bold, underlined and other text stays where it was; the paragraph’s own formatting stays by itself.';
+
 const READ: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
 const ADD: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 const CHANGE: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
@@ -111,15 +115,18 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
         'Numbers shift after insert_paragraphs, delete_paragraphs, copy_paragraphs, table changes, insert_shape with text, delete_object of a text box and edit_object moving a text box, so read the document again before reusing numbers from earlier.',
         ...(role === 'editor' || role === 'owner'
           ? ['Tables: insert_table makes one and edit_table adds or deletes rows; cells are paragraphs, so edit their text like any paragraph. To duplicate content with its formatting, lists and tables (for example to translate a document onto a new page), use copy_paragraphs and then change the copies\u2019 text, rather than retyping it with insert_paragraphs. For a copy or new version of a whole document in another file (for example a translation), use copy_document and then change the copy; create_document makes a blank document without the original\u2019s formatting.',
-             'read_document shows text formatted differently from the rest of its paragraph with <b>, <i>, <u>, <s>, <sup> and <sub> tags, and formatting of the whole paragraph in its description. Keep those tags when you rewrite or translate a paragraph with edit_paragraph, so the bold, underlined and other text stays where it was; the paragraph\u2019s own formatting stays by itself.',
+             FORMATTING_TAGS,
              'Charts: insert_chart adds one; read_chart shows its data as a table, and update_chart changes it (give the full new table of categories and series).',
              'Shapes and text boxes: insert_shape adds one; the text inside a box is numbered right after the paragraph holding it, and every text tool works there (edit_paragraph, replace_text, format_text, comments).',
              'Objects (pictures, charts, shapes, text boxes): list_objects numbers them (\"object 2\", also shown in read_document); edit_object resizes, moves, repositions or describes one, and delete_object removes it.']
           : []),
         ...(role === 'suggester'
-          ? ['Every change you make is recorded as a tracked change signed with your name, for a person to accept or reject. You cannot accept or reject changes or switch tracking off; explain each change with a comment.']
+          ? ['Tables: insert_table makes one and edit_table adds or deletes rows; cells are paragraphs, so edit their text like any paragraph.',
+             FORMATTING_TAGS,
+             'Every change you make is recorded as a tracked change signed with your name, for a person to accept or reject. You cannot accept or reject changes or switch tracking off; explain each change with a comment.']
           : []),
-        'Changes are saved to the file straight away; pass `output` to write a copy instead.',
+        // A suggester's tools take no `output`: it only changes the document it was asked about.
+        role === 'suggester' ? 'Changes are saved to the file straight away.' : 'Changes are saved to the file straight away; pass `output` to write a copy instead.',
         `Your role is ${role}: you may ${ROLE_SUMMARY[role]}. Comments you add are signed "${author}".`,
         "Locked regions and the document's own protection are enforced. If an edit is refused, tell the user rather than working around it.",
         ...(preview
