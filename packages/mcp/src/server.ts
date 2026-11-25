@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { McpServer, type CallToolResult, type ToolAnnotations } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { DocxDocument, layoutDocument } from 'docxkeun';
+import { DocxDocument, layoutDocument, type DocParagraph } from 'docxkeun';
 import { describeSelection, DocxEditor, LockedRegionError, paragraphsOf, selectionInfoFor } from 'docxkeun/editor';
 import { exportPdf } from 'docxkeun/pdf';
 import {
@@ -406,13 +406,33 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
       }),
   );
 
+  /**
+   * docxkeun records a formatting change once, keeping the oldest state, so formatting text that already carries
+   * someone else's pending formatting change would be signed with their name. A suggester refuses that instead.
+   */
+  function refuseFoldedFormatting(s: Session, name: string, args: Record<string, unknown>): void {
+    const formats = name === 'format_text' || name === 'format_paragraph' || name === 'set_list' || (name === 'edit_paragraph' && args.style !== undefined);
+    if (!formats) return;
+    for (const n of targetParagraphs(s.entries, name, args)) {
+      const el = s.entries.find((e) => e.n === n)?.para.el;
+      const other = el && otherAuthorsFormattingChange(el, author);
+      if (other) {
+        throw new Error(
+          `Paragraph ${n} carries ${other}'s pending formatting change, and formatting it now would be signed with their name. Leave its formatting and explain the change in a comment instead.`,
+        );
+      }
+    }
+  }
+
   // ==== the shared document operations (operations.ts), as far as the role allows ===================
 
   for (const op of operationsFor(role)) {
-    const inputSchema = z.object({ path, password, ...op.schema.shape, ...(op.kind === 'read' ? {} : saveFields) });
+    // A suggester only changes the document it was asked about: writing a copy elsewhere is not a tracked change.
+    const inputSchema = z.object({ path, password, ...op.schema.shape, ...(op.kind === 'read' || role === 'suggester' ? {} : saveFields) });
     const annotations = op.kind === 'read' ? READ : op.kind === 'add' ? ADD : CHANGE;
     type Args = Record<string, unknown> & { path: string; password?: string; output?: string; overwrite?: boolean };
     const run = async (s: Session, args: Args): Promise<string> => {
+      if (role === 'suggester') refuseFoldedFormatting(s, op.name, args);
       // The live preview shimmers the paragraphs the AI works on before the result comes in.
       if (preview) {
         const objects = args.object !== undefined ? numberedObjects(s.editor, s.entries) : undefined;
@@ -570,4 +590,15 @@ export async function createServer(options: DocxMcpOptions): Promise<McpServer> 
   }
 
   return server;
+}
+
+/** The author of the first pending formatting change (run or paragraph) in `el` not made by `author`. */
+function otherAuthorsFormattingChange(el: DocParagraph['el'], author: string): string | undefined {
+  for (const c of el.children) {
+    if (c.type !== 'element') continue;
+    if ((c.name === 'w:rPrChange' || c.name === 'w:pPrChange') && c.attrs['w:author'] !== author) return c.attrs['w:author'] ?? 'another author';
+    const inner = otherAuthorsFormattingChange(c, author);
+    if (inner) return inner;
+  }
+  return undefined;
 }
