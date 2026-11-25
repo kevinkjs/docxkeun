@@ -551,6 +551,8 @@ export class AiActivity {
   private shimmers: HTMLElement[] = [];
   private marks: Mark[] = [];
   private markEls: HTMLElement[] = [];
+  /** Page positions during a drawing pass (see `pass`). */
+  private pagePositions: Map<number, { left: number; top: number }> | undefined;
   /** Letters coloured by the marks, the passing flash of a change, and the working shimmer (later wins). */
   private readonly markPaint: GlyphPaint;
   private readonly flashPaint: GlyphPaint;
@@ -702,10 +704,30 @@ export class AiActivity {
 
   /** Where a page point is in the scroll container. */
   private at(page: number, x: number, y: number): { left: number; top: number } | undefined {
-    const el = this.viewer.pageElement(page);
-    if (!el) return undefined;
+    let pos = this.pagePositions?.get(page);
+    if (!pos) {
+      const el = this.viewer.pageElement(page);
+      if (!el) return undefined;
+      pos = { left: el.offsetLeft, top: el.offsetTop };
+      this.pagePositions?.set(page, pos);
+    }
     const s = this.viewer.scale;
-    return { left: el.offsetLeft + x * s, top: el.offsetTop + y * s };
+    return { left: pos.left + x * s, top: pos.top + y * s };
+  }
+
+  /**
+   * Draw as one pass: each page's position is read once and reused. Reading offsetTop right after
+   * adding an element makes the browser lay out the whole page again, so reading it per mark costs
+   * one full layout per mark (a long AI review froze the page). Marks never move the pages.
+   */
+  private pass<T>(draw: () => T): T {
+    if (this.pagePositions) return draw();
+    this.pagePositions = new Map();
+    try {
+      return draw();
+    } finally {
+      this.pagePositions = undefined;
+    }
   }
 
   private lineRects(el: XmlElement): Array<{ page: Page } & Rect> {
@@ -876,20 +898,22 @@ export class AiActivity {
   }
 
   private drawWorking(scroll: boolean): void {
-    this.clearWorking();
-    const w = this.working;
-    if (!w) return;
-    const all = this.paragraphs();
-    const paras = w.paras.map((n) => all[n - 1]).filter((p): p is DocParagraph => !!p);
-    // The lines of each paragraph being worked on.
-    const groups = paras.map((p) => this.lineRects(p.el));
-    const first = groups.flat()[0];
-    this.drawStyle(groups, first, paras);
-    this.label.textContent = this.workingText(w);
-    if (first) {
-      this.moveCaret(first.page, first.x, first.y, first.h, true);
-      if (scroll) this.ensureVisible(first);
-    } else if (w.mode === 'read') this.parkCaret();
+    this.pass(() => {
+      this.clearWorking();
+      const w = this.working;
+      if (!w) return;
+      const all = this.paragraphs();
+      const paras = w.paras.map((n) => all[n - 1]).filter((p): p is DocParagraph => !!p);
+      // The lines of each paragraph being worked on.
+      const groups = paras.map((p) => this.lineRects(p.el));
+      const first = groups.flat()[0];
+      this.drawStyle(groups, first, paras);
+      this.label.textContent = this.workingText(w);
+      if (first) {
+        this.moveCaret(first.page, first.x, first.y, first.h, true);
+        if (scroll) this.ensureVisible(first);
+      } else if (w.mode === 'read') this.parkCaret();
+    });
   }
 
   /** The working effect of the current style over each paragraph's lines. */
@@ -1023,74 +1047,76 @@ export class AiActivity {
       diff.changes.sort((x, y) => x.para - y.para);
     }
     if (!this.on) return diff;
-    this.working = undefined;
-    this.clearWorking();
-    // The marks of earlier changes stay (following their paragraphs); this change's join them.
-    this.marks = this.mergeMarks(diff, after);
-    this.drawMarks(new Set(diff.changes.map((c) => c.para)));
-    // A style with its own mark lets the mark fade in; the others get the passing glow. The word
-    // shimmer never tints the paper: without marks, the changed letters light up for a moment.
-    const glow = !(OWN_MARK.has(this.aiStyle) && this.keepMarks) && this.aiStyle !== 'words';
-    if (this.aiStyle === 'words' && !this.keepMarks) this.flash(diff, paras);
+    return this.pass(() => {
+      this.working = undefined;
+      this.clearWorking();
+      // The marks of earlier changes stay (following their paragraphs); this change's join them.
+      this.marks = this.mergeMarks(diff, after);
+      this.drawMarks(new Set(diff.changes.map((c) => c.para)));
+      // A style with its own mark lets the mark fade in; the others get the passing glow. The word
+      // shimmer never tints the paper: without marks, the changed letters light up for a moment.
+      const glow = !(OWN_MARK.has(this.aiStyle) && this.keepMarks) && this.aiStyle !== 'words';
+      if (this.aiStyle === 'words' && !this.keepMarks) this.flash(diff, paras);
 
-    // Ink in the new text, line after line, as if written (about 2.5 s at most).
-    const pieces: Array<{ r: { page: Page } & Rect; para: number }> = [];
-    for (const c of diff.changes) {
-      const para = paras[c.para];
-      if (!para) continue;
-      for (const [from, to] of c.ranges) for (const r of this.charRects(para, from, to)) pieces.push({ r, para: c.para });
-      if (!c.ranges.length && !c.cuts.length) for (const r of this.lineRects(para.el)) pieces.push({ r, para: c.para });
-    }
-    const total = pieces.reduce((s, p) => s + p.r.w, 0);
-    const speed = Math.max(500, total / 2.4); // points per second
-    let t = 0;
-    for (const { r } of pieces) {
-      const d = Math.min(900, Math.max(140, (r.w / speed) * 1000));
-      const vars = { '--d': `${d}ms`, '--t': `${t}ms`, '--w': `${r.w * this.viewer.scale}px` };
-      if (glow) this.add('docxkeun-ai-glow', r, 1, vars, t + d + 2600);
-      this.add('docxkeun-ai-ink', r, 0.5, vars, t + d);
-      const pen = this.add('docxkeun-ai-pen', { ...r, w: 0, h: 0, y: r.y + r.h / 2 }, 0, vars, t + d);
-      if (pen) pen.style.width = pen.style.height = '9px';
-      t += d * 0.85;
-    }
-    // Cuts: a red tick where words were removed.
-    for (const c of diff.changes) {
-      const para = paras[c.para];
-      if (!para) continue;
-      for (const at of c.cuts) {
-        const r = this.charRects(para, Math.max(0, at - 1), at)[0] ?? this.charRects(para, at, at + 1)[0];
-        if (r) this.add('docxkeun-ai-cut', { ...r, x: at > 0 ? r.x + r.w : r.x, w: 0 }, 1, {}, 1800);
+      // Ink in the new text, line after line, as if written (about 2.5 s at most).
+      const pieces: Array<{ r: { page: Page } & Rect; para: number }> = [];
+      for (const c of diff.changes) {
+        const para = paras[c.para];
+        if (!para) continue;
+        for (const [from, to] of c.ranges) for (const r of this.charRects(para, from, to)) pieces.push({ r, para: c.para });
+        if (!c.ranges.length && !c.cuts.length) for (const r of this.lineRects(para.el)) pieces.push({ r, para: c.para });
       }
-    }
-    // Removed paragraphs float away where they were.
-    for (const d of diff.deleted) {
-      const next = paras[d.at];
-      const line = next ? this.lineRects(next.el)[0] : undefined;
-      const prev = !line && d.at > 0 ? this.lineRects(paras[d.at - 1]!.el).pop() : undefined;
-      const r = line ?? (prev ? { ...prev, y: prev.y + prev.h } : undefined);
-      if (!r) continue;
-      const el = this.add('docxkeun-ai-ghost', { ...r, y: r.y - 9, h: 16, w: Math.min(r.page.content.w, 360) }, 0, {}, 2200);
-      if (el) {
-        el.textContent = d.text.replace(/￼/g, '').slice(0, 160) || '(empty paragraph)';
-        el.style.height = 'auto';
+      const total = pieces.reduce((s, p) => s + p.r.w, 0);
+      const speed = Math.max(500, total / 2.4); // points per second
+      let t = 0;
+      for (const { r } of pieces) {
+        const d = Math.min(900, Math.max(140, (r.w / speed) * 1000));
+        const vars = { '--d': `${d}ms`, '--t': `${t}ms`, '--w': `${r.w * this.viewer.scale}px` };
+        if (glow) this.add('docxkeun-ai-glow', r, 1, vars, t + d + 2600);
+        this.add('docxkeun-ai-ink', r, 0.5, vars, t + d);
+        const pen = this.add('docxkeun-ai-pen', { ...r, w: 0, h: 0, y: r.y + r.h / 2 }, 0, vars, t + d);
+        if (pen) pen.style.width = pen.style.height = '9px';
+        t += d * 0.85;
       }
-    }
-    // The caret ends after the last change, then fades.
-    const lastChange = diff.changes[diff.changes.length - 1];
-    const end = lastChange ? (lastChange.ranges.length ? this.charRects(paras[lastChange.para]!, lastChange.ranges[lastChange.ranges.length - 1]![0], lastChange.ranges[lastChange.ranges.length - 1]![1]).pop() : this.lineRects(paras[lastChange.para]!.el).pop()) : undefined;
-    if (end) {
-      setTimeout(() => this.moveCaret(end.page, end.x + end.w, end.y, end.h, false), Math.min(t, 2400));
-      if (options.scroll ?? true) {
-        const firstChange = diff.changes[0];
-        const first = firstChange ? this.lineRects(paras[firstChange.para]!.el)[0] : undefined;
-        if (first) this.ensureVisible(first);
+      // Cuts: a red tick where words were removed.
+      for (const c of diff.changes) {
+        const para = paras[c.para];
+        if (!para) continue;
+        for (const at of c.cuts) {
+          const r = this.charRects(para, Math.max(0, at - 1), at)[0] ?? this.charRects(para, at, at + 1)[0];
+          if (r) this.add('docxkeun-ai-cut', { ...r, x: at > 0 ? r.x + r.w : r.x, w: 0 }, 1, {}, 1800);
+        }
       }
-    }
-    this.caret.classList.remove('working');
-    this.label.textContent = this.name;
-    clearTimeout(this.hideTimer);
-    this.hideTimer = setTimeout(() => (this.caret.style.opacity = '0'), Math.min(t, 2400) + 2500);
-    return diff;
+      // Removed paragraphs float away where they were.
+      for (const d of diff.deleted) {
+        const next = paras[d.at];
+        const line = next ? this.lineRects(next.el)[0] : undefined;
+        const prev = !line && d.at > 0 ? this.lineRects(paras[d.at - 1]!.el).pop() : undefined;
+        const r = line ?? (prev ? { ...prev, y: prev.y + prev.h } : undefined);
+        if (!r) continue;
+        const el = this.add('docxkeun-ai-ghost', { ...r, y: r.y - 9, h: 16, w: Math.min(r.page.content.w, 360) }, 0, {}, 2200);
+        if (el) {
+          el.textContent = d.text.replace(/￼/g, '').slice(0, 160) || '(empty paragraph)';
+          el.style.height = 'auto';
+        }
+      }
+      // The caret ends after the last change, then fades.
+      const lastChange = diff.changes[diff.changes.length - 1];
+      const end = lastChange ? (lastChange.ranges.length ? this.charRects(paras[lastChange.para]!, lastChange.ranges[lastChange.ranges.length - 1]![0], lastChange.ranges[lastChange.ranges.length - 1]![1]).pop() : this.lineRects(paras[lastChange.para]!.el).pop()) : undefined;
+      if (end) {
+        setTimeout(() => this.moveCaret(end.page, end.x + end.w, end.y, end.h, false), Math.min(t, 2400));
+        if (options.scroll ?? true) {
+          const firstChange = diff.changes[0];
+          const first = firstChange ? this.lineRects(paras[firstChange.para]!.el)[0] : undefined;
+          if (first) this.ensureVisible(first);
+        }
+      }
+      this.caret.classList.remove('working');
+      this.label.textContent = this.name;
+      clearTimeout(this.hideTimer);
+      this.hideTimer = setTimeout(() => (this.caret.style.opacity = '0'), Math.min(t, 2400) + 2500);
+      return diff;
+    });
   }
 
   /**
@@ -1142,77 +1168,79 @@ export class AiActivity {
 
   /** Draw the marks; those of the paragraphs in `fresh` (just changed) appear with a short animation. */
   private drawMarks(fresh: ReadonlySet<number> = new Set()): void {
-    for (const el of this.markEls) el.remove();
-    this.markEls = [];
-    const paras = this.paragraphs();
-    const painted: PaintGroup[] = [];
-    let n = 0;
-    let animate = false;
-    // Marks of the style's own kind fade (or draw) in one after another.
-    const intro = (el: HTMLElement | undefined) => {
-      if (!el) return;
-      if (animate) {
-        el.classList.add('docxkeun-ai-intro');
-        el.style.setProperty('--t', `${Math.min(n++ * 90, 1500)}ms`);
-      }
-      this.markEls.push(el);
-    };
-    for (const m of this.keepMarks ? this.marks : []) {
-      animate = fresh.has(m.para);
-      const para = paras[m.para];
-      if (!para) continue;
-      const lines = this.lineRects(para.el);
-      const style = this.aiStyle;
-      if (style === 'highlight') {
-        // The changed paragraph keeps a still tint.
-        for (const r of lines) intro(this.add('docxkeun-ai-mark-tint', r, 1.5));
-        continue;
-      }
-      if (style === 'words') {
-        // The changed words' letters keep the colours (the whole paragraph when only its formatting changed).
-        const glyphs = m.ranges.length ? this.glyphs(para, m.ranges) : m.formatting ? this.glyphs(para) : [];
-        // Decide now: the gradients are written after the loop, when `animate` holds the last mark's value.
-        const cls = animate ? 'docxkeun-ai-in' : undefined;
-        for (const g of glyphs) {
-          const delay = `${Math.min(n++ * 90, 1500)}ms`;
-          painted.push({ glyphs: [g], gradient: (id) => spanGradient(id, 'docxkeun-ai-mark-words', g, cls, delay) });
+    this.pass(() => {
+      for (const el of this.markEls) el.remove();
+      this.markEls = [];
+      const paras = this.paragraphs();
+      const painted: PaintGroup[] = [];
+      let n = 0;
+      let animate = false;
+      // Marks of the style's own kind fade (or draw) in one after another.
+      const intro = (el: HTMLElement | undefined) => {
+        if (!el) return;
+        if (animate) {
+          el.classList.add('docxkeun-ai-intro');
+          el.style.setProperty('--t', `${Math.min(n++ * 90, 1500)}ms`);
         }
-        if (glyphs.length) continue;
-        // Only deletions in this paragraph: nothing to colour, so the margin bar marks it.
-      }
-      if (style === 'underline') {
-        // The changed words; the whole paragraph when only its formatting changed.
-        const rects = m.ranges.length ? m.ranges.flatMap(([from, to]) => this.charRects(para, from, to)) : m.formatting ? lines : [];
-        for (const r of rects) intro(this.add('docxkeun-ai-mark-underline', { ...r, y: r.y + r.h - 0.2, h: 1.4 }));
-        if (rects.length) continue;
-        // Only deletions in this paragraph: nothing to underline, so the margin bar marks it.
-      }
-      // One bar per page the paragraph is on, in the left margin.
-      const byPage = new Map<Page, Array<{ page: Page } & Rect>>();
-      for (const l of lines) byPage.set(l.page, [...(byPage.get(l.page) ?? []), l]);
-      let firstBar = true;
-      for (const [page, ls] of byPage) {
-        const top = Math.min(...ls.map((l) => l.y));
-        const bottom = Math.max(...ls.map((l) => l.y + l.h));
-        const x = Math.max(4, page.content.x - 12);
-        const bar = this.add('docxkeun-ai-bar', { page, x, y: top, w: 3, h: bottom - top });
-        if (!bar) continue;
-        if (!animate) bar.style.animation = 'none';
-        bar.title = this.markTitle(m);
-        this.markEls.push(bar);
-        if (firstBar && animate) {
-          const spark = this.add('docxkeun-ai-spark', { page, x: x + 1.5, y: top, w: 0, h: 0 });
-          if (spark) {
-            spark.textContent = '✦';
-            spark.style.width = spark.style.height = '12px';
-            this.markEls.push(spark);
+        this.markEls.push(el);
+      };
+      for (const m of this.keepMarks ? this.marks : []) {
+        animate = fresh.has(m.para);
+        const para = paras[m.para];
+        if (!para) continue;
+        const lines = this.lineRects(para.el);
+        const style = this.aiStyle;
+        if (style === 'highlight') {
+          // The changed paragraph keeps a still tint.
+          for (const r of lines) intro(this.add('docxkeun-ai-mark-tint', r, 1.5));
+          continue;
+        }
+        if (style === 'words') {
+          // The changed words' letters keep the colours (the whole paragraph when only its formatting changed).
+          const glyphs = m.ranges.length ? this.glyphs(para, m.ranges) : m.formatting ? this.glyphs(para) : [];
+          // Decide now: the gradients are written after the loop, when `animate` holds the last mark's value.
+          const cls = animate ? 'docxkeun-ai-in' : undefined;
+          for (const g of glyphs) {
+            const delay = `${Math.min(n++ * 90, 1500)}ms`;
+            painted.push({ glyphs: [g], gradient: (id) => spanGradient(id, 'docxkeun-ai-mark-words', g, cls, delay) });
           }
+          if (glyphs.length) continue;
+          // Only deletions in this paragraph: nothing to colour, so the margin bar marks it.
         }
-        firstBar = false;
+        if (style === 'underline') {
+          // The changed words; the whole paragraph when only its formatting changed.
+          const rects = m.ranges.length ? m.ranges.flatMap(([from, to]) => this.charRects(para, from, to)) : m.formatting ? lines : [];
+          for (const r of rects) intro(this.add('docxkeun-ai-mark-underline', { ...r, y: r.y + r.h - 0.2, h: 1.4 }));
+          if (rects.length) continue;
+          // Only deletions in this paragraph: nothing to underline, so the margin bar marks it.
+        }
+        // One bar per page the paragraph is on, in the left margin.
+        const byPage = new Map<Page, Array<{ page: Page } & Rect>>();
+        for (const l of lines) byPage.set(l.page, [...(byPage.get(l.page) ?? []), l]);
+        let firstBar = true;
+        for (const [page, ls] of byPage) {
+          const top = Math.min(...ls.map((l) => l.y));
+          const bottom = Math.max(...ls.map((l) => l.y + l.h));
+          const x = Math.max(4, page.content.x - 12);
+          const bar = this.add('docxkeun-ai-bar', { page, x, y: top, w: 3, h: bottom - top });
+          if (!bar) continue;
+          if (!animate) bar.style.animation = 'none';
+          bar.title = this.markTitle(m);
+          this.markEls.push(bar);
+          if (firstBar && animate) {
+            const spark = this.add('docxkeun-ai-spark', { page, x: x + 1.5, y: top, w: 0, h: 0 });
+            if (spark) {
+              spark.textContent = '✦';
+              spark.style.width = spark.style.height = '12px';
+              this.markEls.push(spark);
+            }
+          }
+          firstBar = false;
+        }
       }
-    }
-    this.markPaint.paint(painted);
-    this.drawMap();
+      this.markPaint.paint(painted);
+      this.drawMap();
+    });
   }
 
   /** The changed letters light up in the AI's colours for a moment (the word shimmer without marks). */
@@ -1236,9 +1264,11 @@ export class AiActivity {
   /** Ticks on the right edge for every change, scaled to the scroll height; click to jump. */
   private drawMap(): void {
     const root = this.viewer.root;
+    // Read the sizes once: reading them after adding a tick would lay out the page again per tick.
+    const viewport = root.clientHeight;
     this.map.replaceChildren();
-    this.map.style.height = `${root.clientHeight}px`;
-    this.map.style.marginBottom = `-${root.clientHeight}px`;
+    this.map.style.height = `${viewport}px`;
+    this.map.style.marginBottom = `-${viewport}px`;
     if (!this.marks.length || !this.keepMarks) return;
     const paras = this.paragraphs();
     const height = Math.max(root.scrollHeight, 1);
@@ -1248,7 +1278,7 @@ export class AiActivity {
       const p = r && this.at(r.page.index, r.x, r.y);
       if (!r || !p) continue;
       const tick = document.createElement('i');
-      tick.style.top = `${(p.top / height) * root.clientHeight}px`;
+      tick.style.top = `${(p.top / height) * viewport}px`;
       tick.title = this.markTitle(m);
       tick.addEventListener('click', () => root.scrollTo({ top: Math.max(0, p.top - root.clientHeight / 3), behavior: reducedMotion() ? 'auto' : 'smooth' }));
       this.map.appendChild(tick);
@@ -1264,13 +1294,15 @@ export class AiActivity {
   }
 
   private redraw(): void {
-    // Transient animations are tied to the old positions: drop them; redraw what lasts.
-    for (const el of [...this.layer.children]) {
-      if (el !== this.caret && !this.markEls.includes(el as HTMLElement) && !this.shimmers.includes(el as HTMLElement)) el.remove();
-    }
-    this.flashPaint.clear();
-    this.drawMarks();
-    if (this.working) this.drawWorking(false);
+    this.pass(() => {
+      // Transient animations are tied to the old positions: drop them; redraw what lasts.
+      for (const el of [...this.layer.children]) {
+        if (el !== this.caret && !this.markEls.includes(el as HTMLElement) && !this.shimmers.includes(el as HTMLElement)) el.remove();
+      }
+      this.flashPaint.clear();
+      this.drawMarks();
+      if (this.working) this.drawWorking(false);
+    });
   }
 
   destroy(): void {

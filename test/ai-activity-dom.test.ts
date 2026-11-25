@@ -367,6 +367,60 @@ describe('AI activity: marks over a run of changes', () => {
     await change(t, activity, (e) => e.replaceAll('Two', 'Second'));
     expect([...t.root.querySelectorAll<HTMLElement>('.docxkeun-ai-bar')].map(lineOf)).toEqual([1]);
   });
+
+  // Reading a page's offsetTop right after adding a mark makes the browser lay out the whole page again:
+  // with a mark per changed line that is one full layout per mark, and a long AI review freezes the page.
+  describe('reads page positions once per drawing pass', () => {
+    const WORDS = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
+    /** Count reads of the page element's position from now on. */
+    function countReads(t: Awaited<ReturnType<typeof laidOut>>): { reads: number } {
+      const counter = { reads: 0 };
+      const pageEl = t.viewer.pageElement(0)!;
+      for (const name of ['offsetTop', 'offsetLeft'] as const) {
+        Object.defineProperty(pageEl, name, { configurable: true, get: () => (counter.reads++, 0) });
+      }
+      return counter;
+    }
+
+    it('when the marks are redrawn', async () => {
+      const t = await laidOut(WORDS.map((w) => `The ${w} clause.`));
+      const activity = new AiActivity(t.viewer, { style: 'highlight', animate: false });
+      await change(t, activity, (e) => WORDS.forEach((w) => e.replaceAll(w, w.toUpperCase())));
+      expect(count(t.root, 'docxkeun-ai-mark-tint')).toBe(5);
+      const counter = countReads(t);
+      activity.rowsBuilt();
+      await new Promise((ok) => requestAnimationFrame(() => ok(undefined)));
+      // Five tints and five ticks on the change map, all on page 0: its offsetLeft and offsetTop, once each.
+      expect(count(t.root, 'docxkeun-ai-mark-tint')).toBe(5);
+      expect(t.root.querySelectorAll('.docxkeun-ai-map i')).toHaveLength(5);
+      expect(counter.reads).toBe(2);
+    });
+
+    it("and the viewer's size once when the change map is drawn", async () => {
+      const t = await laidOut(WORDS.map((w) => `The ${w} clause.`));
+      const activity = new AiActivity(t.viewer, { style: 'highlight', animate: false });
+      await change(t, activity, (e) => WORDS.forEach((w) => e.replaceAll(w, w.toUpperCase())));
+      const reads: Record<string, number> = { clientHeight: 0, scrollHeight: 0 };
+      for (const name of Object.keys(reads)) {
+        Object.defineProperty(t.root, name, { configurable: true, get: () => (reads[name]!++, 1000) });
+      }
+      activity.rowsBuilt();
+      await new Promise((ok) => requestAnimationFrame(() => ok(undefined)));
+      expect(t.root.querySelectorAll('.docxkeun-ai-map i')).toHaveLength(5);
+      expect(reads).toEqual({ clientHeight: 1, scrollHeight: 1 });
+    });
+
+    it('when a change is revealed', async () => {
+      const t = await laidOut(WORDS.map((w) => `The ${w} clause.`));
+      const activity = new AiActivity(t.viewer, { style: 'highlight' });
+      const counter = countReads(t);
+      await change(t, activity, (e) => WORDS.forEach((w) => e.replaceAll(w, w.toUpperCase())));
+      // Ink, glow and pen for every changed word, the tints and the map: still one read of each.
+      expect(count(t.root, 'docxkeun-ai-ink')).toBeGreaterThan(0);
+      expect(count(t.root, 'docxkeun-ai-mark-tint')).toBe(5);
+      expect(counter.reads).toBe(2);
+    });
+  });
 });
 
 describe('AI activity: changed objects', () => {

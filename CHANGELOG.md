@@ -6,6 +6,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 
 ### docxkeun
 
+- The AI's marks (`viewer.activity`) no longer slow the viewer down as they build up. Drawing them read each page's position, and the viewer's height for the change map, once per mark, right after adding the previous one, so the browser laid out the whole page again for every mark. In a long AI review (a 30-page contract with about 60 changes) redrawing the marks took about 110 ms after every change and kept growing until the page froze; it now reads each position once per pass and takes about 6 ms.
 - Deleting a paragraph with Track Changes on now removes it outright only when its author inserted both the paragraph and all of its text. A paragraph someone else typed into is deleted as a tracked change, so rejecting the deletion brings their text back. Before, it disappeared without a trace whenever the paragraph mark was the author's own insertion.
 
 ### docxkeun chat
