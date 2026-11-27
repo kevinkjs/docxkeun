@@ -29,11 +29,21 @@ function lastToolResult(messages: BetaMessageParam[]): string | undefined {
   return typeof r.content === 'string' ? r.content : '';
 }
 
+/** With two documents open, the one the request names (the first one otherwise), as Claude would pass it. */
+function documentFor(request: string): string | undefined {
+  const open = /\[Open documents: (.+?) and (.+?)\. Name the one/.exec(request);
+  if (!open) return undefined;
+  const words = request.slice(request.lastIndexOf(']') + 1).toLowerCase();
+  return [open[1]!, open[2]!].find((n) => words.includes(n.toLowerCase())) ?? open[1]!;
+}
+
 /** Pick the next scripted step from the conversation so far. */
 function script(messages: BetaMessageParam[]): Block[] {
-  const request = lastUserText(messages).toLowerCase();
+  const asked = lastUserText(messages);
+  const request = asked.toLowerCase();
   const result = lastToolResult(messages);
-  const tool = (name: string, input: Record<string, unknown>): Block => ({ type: 'tool_use', id: `toolu_mock_${++ids}`, name, input });
+  const doc = documentFor(asked);
+  const tool = (name: string, input: Record<string, unknown>): Block => ({ type: 'tool_use', id: `toolu_mock_${++ids}`, name, input: doc ? { document: doc, ...input } : input });
   if (result === undefined) return [{ type: 'text', text: 'Let me read the document first.' }, tool('read_document', {})];
   if (result.includes(': ') && /paragraphs?, \d+ tables?/.test(result)) {
     const listItems = [...result.matchAll(/^\[(\d+)\] \((?:list item|bullet)[^)]*\)/gm)].map((m) => Number(m[1]));

@@ -11,14 +11,7 @@
   <body>
     <header class="bar">
       <h1>docxkeun chat</h1>
-      <label class="button" title="Open a Word document">
-        Open .docx<input type="file" id="file" accept=".docx,.docm,.dotx" hidden />
-      </label>
-      <button type="button" id="sample">Sample</button>
-      <span id="docname" class="docname"></span>
       <span class="spacer"></span>
-      <button type="button" id="download" disabled>Download .docx</button>
-      <button type="button" id="pdf" disabled>Export PDF</button>
       <select id="model" aria-label="Model"></select>
       <select id="effects" aria-label="AI effects" title="How Claude's work shows in the document: shimmer, caret and change marks">
         <option value="animated">Effects: animated</option>
@@ -42,11 +35,46 @@
           </div>
         </form>
       </section>
-      <section class="document" aria-label="Document">
-        <div id="viewer" class="viewer"></div>
-        <div id="empty" class="empty">
-          <p><strong>Open a .docx</strong> or try the <button type="button" class="link" id="sample2">sample</button>.</p>
-          <p>Claude's edits appear here as they happen.</p>
+      <section class="documents" aria-label="Documents">
+        <div class="pane" data-pane="0" aria-label="First document">
+          <div class="pane-bar">
+            <label class="button" title="Open a Word document here">
+              Open<input type="file" class="pane-file" accept=".docx,.docm,.dotx" hidden />
+            </label>
+            <button type="button" class="pane-sample" title="Open the sample document here">Sample</button>
+            <span class="docname"></span>
+            <span class="spacer"></span>
+            <button type="button" class="pane-download" title="Download this document as .docx" disabled>Download</button>
+            <button type="button" class="pane-pdf" title="Export this document as PDF" disabled>PDF</button>
+            <button type="button" class="pane-add" title="Open a second document beside this one">+ Second</button>
+          </div>
+          <div class="pane-body">
+            <div class="viewer"></div>
+            <div class="empty">
+              <p><strong>Open a .docx</strong> or try the <button type="button" class="link pane-sample">sample</button>.</p>
+              <p>Claude's edits appear here as they happen.</p>
+            </div>
+          </div>
+        </div>
+        <div class="pane" data-pane="1" aria-label="Second document" hidden>
+          <div class="pane-bar">
+            <label class="button" title="Open a Word document here">
+              Open<input type="file" class="pane-file" accept=".docx,.docm,.dotx" hidden />
+            </label>
+            <button type="button" class="pane-sample" title="Open the sample document here">Sample</button>
+            <span class="docname"></span>
+            <span class="spacer"></span>
+            <button type="button" class="pane-download" title="Download this document as .docx" disabled>Download</button>
+            <button type="button" class="pane-pdf" title="Export this document as PDF" disabled>PDF</button>
+            <button type="button" class="pane-close" title="Close this document" aria-label="Close the second document">×</button>
+          </div>
+          <div class="pane-body">
+            <div class="viewer"></div>
+            <div class="empty">
+              <p><strong>Open a second .docx</strong> to work on both, or try the <button type="button" class="link pane-sample">sample</button>.</p>
+              <p>Claude can read one and change the other, or compare them.</p>
+            </div>
+          </div>
         </div>
       </section>
     </main>

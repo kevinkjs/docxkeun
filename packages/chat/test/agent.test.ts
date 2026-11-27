@@ -45,7 +45,7 @@ const text = (t: string): Block => ({ type: 'text', text: t });
 async function setup() {
   const doc = await DocxDocument.open(await buildDocx({ body: p('Hello world') + p('Second paragraph') }));
   let open: OpenDocument | undefined = { doc, name: 'letter.docx' };
-  const toolbox = createToolbox(() => open);
+  const toolbox = createToolbox(() => (open ? [open] : []));
   const messages: BetaMessageParam[] = [{ role: 'user', content: 'Make it bold' }];
   const seen: Array<{ name: string; content: string; isError: boolean }> = [];
   const notices: string[] = [];
@@ -59,6 +59,14 @@ async function setup() {
 }
 
 const texts = (doc: DocxDocument) => listParagraphs(doc).map((e) => e.text);
+
+describe('the built-in prompt', () => {
+  it('tells Claude how to work with two documents open', () => {
+    expect(SYSTEM_PROMPT).toContain('Two documents can be open side by side');
+    expect(SYSTEM_PROMPT).toContain('pass its file name as `document` in every tool call');
+    expect(SYSTEM_PROMPT).toContain('Paragraph numbers belong to one document');
+  });
+});
 
 describe('runTurn', () => {
   it('reports tool calls while they are written and before they run (for the viewer animation)', async () => {

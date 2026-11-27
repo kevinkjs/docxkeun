@@ -18,7 +18,7 @@ const live = process.env.DOCXKEUN_LIVE === '1' && !!process.env.ANTHROPIC_API_KE
 describe.skipIf(!live)('live Claude API', () => {
   it('edits a document through the tools', { timeout: 180_000 }, async () => {
     const doc = await DocxDocument.open(await buildDocx({ body: p('Payment is due within 30 days.') + p('Supplier: ACME Ltd.') }));
-    const toolbox = createToolbox(() => ({ doc, name: 'live.docx' }));
+    const toolbox = createToolbox(() => [{ doc, name: 'live.docx' }]);
     const messages: BetaMessageParam[] = [{ role: 'user', content: '[Open document: live.docx]\n\nReplace "ACME Ltd." with "Contoso GmbH", then tell me in one sentence what you did.' }];
     const tools: string[] = [];
     let text = '';

@@ -11,6 +11,7 @@ All notable changes to docxkeun and docxkeun-fonts. Versions follow [semantic ve
 
 ### docxkeun chat
 
+- **Two documents at once:** "+ Second" opens a second `.docx` beside the first (dropping two files opens both), each pane with its own Open, Download and PDF buttons. Claude's tools take the document's file name (`document`), which Claude must give when two are open; a call without it is refused and changes nothing. Claude's shimmer, marks and new comments show in the document it works on, the tool lines and the selection chip name the document, and "Undo Claude's changes" restores every document the reply changed. Opening, replacing or closing a document no longer clears the conversation: Claude is told what changed. The Open, Sample, Download and PDF buttons moved from the top bar into each document's own bar.
 - **Instructions:** a new button opens a box for your own instructions to Claude (up to 4000 characters, for example "You are a legal assistant that helps me check documents for my clients."). They are added after the built-in instructions for every message, apply from your next message, and are remembered in the browser; opening another document keeps them. Locked regions and the document's protection still apply.
 
 ### docxkeun-mcp

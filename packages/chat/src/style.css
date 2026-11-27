@@ -29,11 +29,22 @@ button.link { border: 0; padding: 0; background: none; color: var(--accent); tex
 .bar { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .bar h1 { font-size: 15px; margin: 0 6px 0 0; }
 .bar .spacer { flex: 1; }
-.docname { color: var(--muted); max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docname { color: var(--muted); min-width: 0; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); }
 .chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--bg); }
-.document { position: relative; min-height: 0; min-width: 0; overflow: hidden; background: #e8eaed; }
+/* One or two documents side by side, each with its own bar. */
+.documents { display: flex; min-height: 0; min-width: 0; background: #e8eaed; }
+.pane { position: relative; flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.pane[hidden] { display: none; }
+.pane + .pane { border-left: 1px solid var(--line); }
+.pane-bar { display: flex; gap: 6px; align-items: center; padding: 6px 10px; background: var(--bg); border-bottom: 1px solid var(--line); white-space: nowrap; }
+.pane-bar > * { flex: none; }
+.pane-bar .docname { flex: 0 1 auto; }
+.pane-bar .spacer { flex: 1; }
+.pane-bar [hidden] { display: none; }
+.pane-close { padding: 2px 9px; font-size: 16px; line-height: 1; }
+.pane-body { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .viewer { height: 100%; }
 .empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 24px; }
 .empty[hidden] { display: none; }
@@ -57,6 +68,7 @@ button.link { border: 0; padding: 0; background: none; color: var(--accent); tex
 .tool.change { color: var(--text); }
 .tool.error { color: var(--danger); border-color: #f4c7c3; background: #fce8e6; }
 .tool .icon { flex: none; }
+.tool .tool-doc { margin-left: auto; padding-left: 8px; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .notice { font-size: 13px; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 6px 10px; }
 .notice.error { background: #fce8e6; border-color: #f4c7c3; color: var(--danger); }
 .turn-actions { display: flex; gap: 6px; margin-top: 6px; }
@@ -120,7 +132,8 @@ button.link { border: 0; padding: 0; background: none; color: var(--accent); tex
 
 @media (max-width: 860px) {
   .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: 45vh minmax(0, 1fr); }
-  .document { order: -1; border-bottom: 1px solid var(--line); }
+  .documents { order: -1; border-bottom: 1px solid var(--line); flex-direction: column; }
+  .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
   .chat { border-right: 0; }
   .docname { max-width: 50vw; }
 }

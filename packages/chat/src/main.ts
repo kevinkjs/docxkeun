@@ -50,10 +50,8 @@ let stream: StreamFactory | undefined;
 // An earlier version kept the key in the browser: remove anything it left behind.
 for (const store of [session, local]) for (const name of ['docxkeun-chat.key', 'docxkeun-chat.auth']) write(store, name, undefined);
 let model: ModelChoice = MODELS.find((m) => m.id === read(local, MODEL)) ?? MODELS[0]!;
-let current: OpenDocument | undefined;
 let conversation: BetaMessageParam[] = [];
 let busy: AbortController | undefined;
-let selection: SelectionInfo | undefined;
 const notes: string[] = [];
 /** The user's own instructions for Claude (Instructions dialog); sent with every turn. */
 let instructions = '';
@@ -62,24 +60,45 @@ const fonts = new FontRegistry();
 const fontsReady = loadBundledFonts(fonts, { baseUrl: new URL(import.meta.env.BASE_URL, location.href) }).catch((e: unknown) => {
   console.warn('Bundled fonts unavailable; using system font metrics', e);
 });
-const viewer = new DocxViewer($('viewer'), {
-  fonts,
-  showComments: true,
-  editable: true,
-  navigation: { collapsed: true },
-  comments: { mode: 'auto' },
-  contextMenu: {
-    items: (at, defaults) => [...defaults, '-', { label: 'Ask Claude about this', icon: '✦', run: () => putSelectionInComposer(at.selection) }],
-  },
-});
-const toolbox = createToolbox(() => current);
 
-// How Claude's work shows in the document; remembered in this browser.
+/** A document pane: its own viewer, bar and file. The second one shows once the user asks for it. */
+interface Pane {
+  index: number;
+  el: HTMLElement;
+  viewer: DocxViewer;
+  open: OpenDocument | undefined;
+}
+
+const panes: Pane[] = [...document.querySelectorAll<HTMLElement>('.pane')].map((el, index) => {
+  const pane: Pane = { index, el, open: undefined } as Pane;
+  pane.viewer = new DocxViewer(el.querySelector<HTMLElement>('.viewer')!, {
+    fonts,
+    showComments: true,
+    editable: true,
+    navigation: { collapsed: true },
+    comments: { mode: 'auto' },
+    contextMenu: {
+      items: (at, defaults) => [...defaults, '-', { label: 'Ask Claude about this', icon: '✦', run: () => putSelectionInComposer(at.selection, pane) }],
+    },
+  });
+  return pane;
+});
+/** The open documents, in pane order: what Claude's tools can work on. */
+const openDocuments = (): OpenDocument[] => panes.flatMap((p) => (p.open ? [p.open] : []));
+const paneOf = (open: OpenDocument | undefined): Pane | undefined => (open ? panes.find((p) => p.open === open) : undefined);
+const toolbox = createToolbox(openDocuments);
+
+/** What the user selected, and in which pane. */
+let selection: { info: SelectionInfo; pane: Pane } | undefined;
+
+// How Claude's work shows in the documents; remembered in this browser.
 {
   const effects = $('effects') as HTMLSelectElement;
   const apply = (value: string) => {
-    viewer.activity.enabled = value !== 'off';
-    viewer.activity.animate = value === 'animated';
+    for (const { viewer } of panes) {
+      viewer.activity.enabled = value !== 'off';
+      viewer.activity.animate = value === 'animated';
+    }
   };
   try {
     const saved = localStorage.getItem('docxkeun-ai-effects');
@@ -130,10 +149,13 @@ const toolbox = createToolbox(() => current);
   };
   let look = saved() ?? DEFAULT_LOOK;
   const apply = () => {
-    viewer.activity.name = look.name.trim() || DEFAULT_LOOK.name;
-    viewer.activity.color = look.color;
-    viewer.activity.style = look.style;
-    viewer.activity.marksShown = look.marks;
+    for (const { viewer } of panes) {
+      viewer.activity.name = look.name.trim() || DEFAULT_LOOK.name;
+      viewer.activity.color = look.color;
+      viewer.activity.style = look.style;
+      viewer.activity.marksShown = look.marks;
+    }
+    const viewer = panes[0]!.viewer;
     // The dialog's sample uses the same colours and effect, and the label text colour the viewer picked.
     sample.style.setProperty('--look-1', look.color[0]);
     sample.style.setProperty('--look-2', look.color[1]);
@@ -239,27 +261,27 @@ const toolbox = createToolbox(() => current);
   apply();
 }
 
-/** Keep the page, and its comment column when there are comments, inside the document panel. */
-function fitToPanel(): void {
+/** Keep a pane's page, and its comment column when there are comments, inside the pane. */
+function fitToPanel(viewer: DocxViewer): void {
   const layout = viewer.layout;
-  if (!layout || layout.pages.length === 0) return;
+  if (!layout || layout.pages.length === 0 || !viewer.root.clientWidth) return;
   const pageWidth = (Math.max(...layout.pages.map((p) => p.width)) * 96) / 72;
   // Row padding (32), the comment column as the viewer sized it (0 without comments) and a scrollbar (16).
   const extra = 32 + viewer.comments.width + 16;
-  const zoom = Math.max(0.3, Math.min(1, ((viewer.root.clientWidth || $('viewer').clientWidth) - extra) / pageWidth));
+  const zoom = Math.max(0.3, Math.min(1, (viewer.root.clientWidth - extra) / pageWidth));
   if (Math.abs(viewer.zoom - zoom) > 0.01) viewer.zoom = zoom;
 }
-viewer.on('layout', fitToPanel);
-viewer.on('chromechange', ({ part }) => {
-  if (part === 'comments') fitToPanel();
-});
-// Refit whenever the document's room changes: the window, and the navigation panel opening or
-// folding beside it. Only real width changes count (a scrollbar coming and going does not).
-{
+for (const { viewer } of panes) {
+  viewer.on('layout', () => fitToPanel(viewer));
+  viewer.on('chromechange', ({ part }) => {
+    if (part === 'comments') fitToPanel(viewer);
+  });
+  // Refit whenever the pane's room changes: the window, the other pane opening or closing, and the
+  // navigation panel opening or folding. Only real width changes count (not a scrollbar).
   let timer: ReturnType<typeof setTimeout> | undefined;
   const refit = () => {
     clearTimeout(timer);
-    timer = setTimeout(fitToPanel, 50);
+    timer = setTimeout(() => fitToPanel(viewer), 50);
   };
   if (typeof ResizeObserver === 'undefined') window.addEventListener('resize', refit);
   else {
@@ -388,19 +410,24 @@ function notice(text: string, error = false): void {
 }
 
 const SUGGESTIONS = ['Summarise this document', 'Find anything risky and comment on it', 'Fix spelling and grammar mistakes', 'Turn the lettered lists into numbered lists'];
+const SUGGESTIONS_FOR_TWO = ['Compare the two documents and list the differences', 'Summarise both documents', 'Comment on the second document where it differs from the first'];
 
 function welcome(): void {
   messagesEl.replaceChildren();
   const el = addMessage('welcome');
   const p = document.createElement('p');
-  p.textContent = current
-    ? `${current.name} is open. Ask Claude anything about it, or tell it what to change. Select text in the document to point at it.`
-    : 'Open a .docx (or the sample). Claude can read it, edit it, comment on it and fix lists and formatting while you watch.';
+  const open = openDocuments();
+  p.textContent =
+    open.length === 2
+      ? `${open[0]!.name} and ${open[1]!.name} are open side by side. Ask Claude about either or both, and say which one you mean. Select text in a document to point at it.`
+      : open.length === 1
+        ? `${open[0]!.name} is open. Ask Claude anything about it, or tell it what to change. Select text in the document to point at it. Use “+ Second” to work on two documents at once.`
+        : 'Open a .docx (or the sample). Claude can read it, edit it, comment on it and fix lists and formatting while you watch.';
   el.append(p);
-  if (current) {
+  if (open.length) {
     const box = document.createElement('div');
     box.className = 'suggestions';
-    for (const s of SUGGESTIONS) {
+    for (const s of open.length === 2 ? SUGGESTIONS_FOR_TWO : SUGGESTIONS) {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = s;
@@ -432,6 +459,13 @@ function toolLine(container: HTMLElement, name: string, input: unknown, outcome:
       ? label((input ?? {}) as Record<string, unknown>)
       : outcome.content.split('\n')[0]!;
   line.append(icon, text);
+  // With two documents open, say which one the call was about.
+  if (outcome.document && openDocuments().length > 1) {
+    const doc = document.createElement('span');
+    doc.className = 'tool-doc';
+    doc.textContent = outcome.document.name;
+    line.append(doc);
+  }
   container.append(line);
 }
 
@@ -439,29 +473,33 @@ function toolLine(container: HTMLElement, name: string, input: unknown, outcome:
 
 // What is selected (or where the caret is) goes to Claude with the next message, like an editor
 // sharing the selected lines with a coding agent. The chip shows it; × leaves it out.
-viewer.on('selectioninfo', ({ selection: info }) => {
-  if (info) showSelection(info);
-});
+for (const pane of panes) {
+  pane.viewer.on('selectioninfo', ({ selection: info }) => {
+    if (info) showSelection(info, pane);
+  });
+}
 
-function showSelection(info: SelectionInfo): void {
-  if (!viewer.document) return;
+function showSelection(info: SelectionInfo, pane: Pane): void {
+  if (!pane.viewer.document || !pane.open) return;
   // Claude's tools number paragraphs as read_document does, text boxes included; the viewer doesn't.
-  if (current) info = renumberSelection(info, readNumbersByView(listParagraphs(current.doc)));
-  selection = info;
+  info = renumberSelection(info, readNumbersByView(listParagraphs(pane.open.doc)));
+  selection = { info, pane };
   const box = $('selection');
   box.hidden = false;
   box.querySelector('span')?.remove();
   const span = document.createElement('span');
   const where = info.start.paragraph === info.end.paragraph ? `paragraph ${info.start.paragraph}` : `paragraphs ${info.start.paragraph}–${info.end.paragraph}`;
   const story = info.story === 'body' ? '' : ` of the ${info.story}`;
+  // With two documents open, the chip says which one.
+  const doc = openDocuments().length > 1 ? ` of ${pane.open.name}` : '';
   const text = info.text.replace(/\s+/g, ' ').trim();
-  span.textContent = info.collapsed || !text ? `Cursor in ${where}${story}` : `Selected in ${where}${story}: “${text.length > 80 ? `${text.slice(0, 79)}…` : text}”`;
+  span.textContent = info.collapsed || !text ? `Cursor in ${where}${story}${doc}` : `Selected in ${where}${story}${doc}: “${text.length > 80 ? `${text.slice(0, 79)}…` : text}”`;
   box.prepend(span);
 }
 
 /** "Ask Claude about this": put the clicked selection in the chip and move on to the message box. */
-function putSelectionInComposer(info: SelectionInfo | undefined): void {
-  if (info) showSelection(info);
+function putSelectionInComposer(info: SelectionInfo | undefined, pane: Pane): void {
+  if (info) showSelection(info, pane);
   $<HTMLTextAreaElement>('prompt').focus();
 }
 
@@ -481,7 +519,31 @@ function clearSelection(): void {
 
 // ---- documents --------------------------------------------------------------------------------------
 
-async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
+const paneEl = <T extends HTMLElement>(pane: Pane, selector: string) => pane.el.querySelector<T>(selector)!;
+
+/** Claude tells the documents apart by name: a second file with the same name gets " (2)". */
+function uniqueName(name: string, pane: Pane): string {
+  const taken = (n: string) => panes.some((p) => p !== pane && p.open?.name.toLowerCase() === n.toLowerCase());
+  if (!taken(name)) return name;
+  const dot = name.lastIndexOf('.');
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+  for (let i = 2; ; i++) if (!taken(`${stem} (${i})${ext}`)) return `${stem} (${i})${ext}`;
+}
+
+/** Show a pane's file, or its empty state, in its bar; and the "+ Second document" button while there is room. */
+function showPaneState(pane: Pane): void {
+  const name = pane.open?.name ?? '';
+  paneEl(pane, '.docname').textContent = name;
+  paneEl(pane, '.docname').title = name;
+  paneEl(pane, '.empty').hidden = !!pane.open;
+  // The bar's Sample button is for an empty pane (the empty state has its own link too).
+  paneEl(pane, '.pane-bar .pane-sample').hidden = !!pane.open;
+  paneEl<HTMLButtonElement>(pane, '.pane-download').disabled = !pane.open;
+  paneEl<HTMLButtonElement>(pane, '.pane-pdf').disabled = !pane.open;
+  paneEl(panes[0]!, '.pane-add').hidden = !panes[1]!.el.hidden;
+}
+
+async function openBytes(bytes: Uint8Array, name: string, pane: Pane): Promise<void> {
   let doc: DocxDocument;
   try {
     doc = await DocxDocument.open(bytes);
@@ -497,42 +559,51 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     }
   }
   await fontsReady;
+  const previous = pane.open;
+  name = uniqueName(name, pane);
+  pane.el.hidden = false;
   // Marks belong to the document Claude changed.
-  viewer.activity.clearMarks();
-  await viewer.load(doc);
-  current = { doc, name };
-  conversation = [];
-  notes.length = 0;
-  clearSelection();
-  $('docname').textContent = name;
-  $('docname').title = name;
-  $('empty').hidden = true;
-  $<HTMLButtonElement>('download').disabled = false;
-  $<HTMLButtonElement>('pdf').disabled = false;
-  welcome();
+  pane.viewer.activity.clearMarks();
+  await pane.viewer.load(doc);
+  pane.open = { doc, name };
+  if (selection?.pane === pane) clearSelection();
+  showPaneState(pane);
+  // A conversation under way carries on: Claude hears what changed. Before the first message, the welcome shows what is open.
+  if (!conversation.length) welcome();
+  else {
+    const other = panes.find((p) => p !== pane && p.open)?.open;
+    notes.push(
+      previous
+        ? `The user replaced ${previous.name} with ${name}. Paragraph numbers you saw in ${previous.name} no longer apply; read ${name} before working on it.`
+        : `The user opened ${name}${other ? ` beside ${other.name}` : ''}. Read it before working on it.`,
+    );
+    notice(previous ? `${name} replaced ${previous.name}.` : `${name} is open${other ? ` beside ${other.name}` : ''}.`);
+  }
 }
 
-async function openFile(file: File): Promise<void> {
+async function openFile(file: File, pane: Pane): Promise<void> {
   try {
-    await openBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+    await openBytes(new Uint8Array(await file.arrayBuffer()), file.name, pane);
   } catch (err) {
     notice(`Could not open ${file.name}: ${(err as Error).message}`, true);
   }
 }
 
-$<HTMLInputElement>('file').addEventListener('change', (e) => {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = '';
-  if (file) void openFile(file);
-});
-for (const id of ['sample', 'sample2']) $(id).addEventListener('click', async () => openBytes(await sampleDocx(), 'sample.docx'));
-document.addEventListener('dragover', (e) => e.preventDefault());
-document.addEventListener('drop', (e) => {
-  e.preventDefault();
-  const file = e.dataTransfer?.files[0];
-  if (file) void openFile(file);
-});
+/** Close the second document: Claude can no longer change it, and hears so. */
+function closePane(pane: Pane): void {
+  const closed = pane.open;
+  pane.open = undefined;
+  pane.viewer.activity.clearMarks();
+  pane.el.hidden = true;
+  if (selection?.pane === pane) clearSelection();
+  showPaneState(pane);
+  if (!closed) return;
+  if (!conversation.length) welcome();
+  else {
+    notes.push(`The user closed ${closed.name}; only ${openDocuments().map((d) => d.name).join(' and ') || 'no document'} is open now.`);
+    notice(`${closed.name} is closed.`);
+  }
+}
 
 function download(bytes: Uint8Array, name: string, type: string): void {
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
@@ -543,15 +614,45 @@ function download(bytes: Uint8Array, name: string, type: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-$('download').addEventListener('click', async () => {
-  if (!current) return;
-  download(await current.doc.save({ modified: new Date() }), current.name, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+for (const pane of panes) {
+  paneEl<HTMLInputElement>(pane, '.pane-file').addEventListener('change', (e) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (file) void openFile(file, pane);
+  });
+  for (const b of pane.el.querySelectorAll('.pane-sample')) b.addEventListener('click', async () => openBytes(await sampleDocx(), 'sample.docx', pane));
+  paneEl(pane, '.pane-download').addEventListener('click', async () => {
+    if (!pane.open) return;
+    download(await pane.open.doc.save({ modified: new Date() }), pane.open.name, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  });
+  paneEl(pane, '.pane-pdf').addEventListener('click', async () => {
+    if (!pane.open) return;
+    await fontsReady;
+    const pdf = await exportPdf(pane.open.doc, { fonts, ...(pane.viewer.layout ? { layout: pane.viewer.layout } : {}) });
+    download(pdf, pane.open.name.replace(/\.[^.]+$/, '') + '.pdf', 'application/pdf');
+  });
+}
+// "+ Second document" shows the second pane, ready for a file; × closes it again.
+paneEl(panes[0]!, '.pane-add').addEventListener('click', () => {
+  panes[1]!.el.hidden = false;
+  showPaneState(panes[1]!);
+  paneEl<HTMLInputElement>(panes[1]!, '.pane-file').click();
 });
-$('pdf').addEventListener('click', async () => {
-  if (!current) return;
-  await fontsReady;
-  const pdf = await exportPdf(current.doc, { fonts, ...(viewer.layout ? { layout: viewer.layout } : {}) });
-  download(pdf, current.name.replace(/\.[^.]+$/, '') + '.pdf', 'application/pdf');
+paneEl(panes[1]!, '.pane-close').addEventListener('click', () => closePane(panes[1]!));
+for (const pane of panes) showPaneState(pane);
+
+// Drop a file on a pane to open it there; drop two files to open them side by side.
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const files = [...(e.dataTransfer?.files ?? [])].slice(0, 2);
+  if (files.length === 2) {
+    void openFile(files[0]!, panes[0]!).then(() => openFile(files[1]!, panes[1]!));
+    return;
+  }
+  const on = panes.find((p) => !p.el.hidden && p.el.contains(e.target as Node));
+  if (files[0]) void openFile(files[0], on ?? panes[0]!);
 });
 
 // ---- sending ----------------------------------------------------------------------------------------
@@ -573,18 +674,26 @@ async function send(text: string): Promise<void> {
   }
   prompt.value = '';
 
-  // What Claude should know besides the words: the open document and the user's selection.
+  // What Claude should know besides the words: the open documents and the user's selection.
+  const open = openDocuments();
   const context: string[] = [];
-  context.push(current ? `[Open document: ${current.name}]` : '[No document is open.]');
-  if (selection && current) context.push(`[${describeSelection(selection, { document: current.name })}]`);
+  context.push(
+    open.length === 2
+      ? `[Open documents: ${open[0]!.name} and ${open[1]!.name}. Name the one you work on as \`document\` in every tool call.]`
+      : open.length === 1
+        ? `[Open document: ${open[0]!.name}]`
+        : '[No document is open.]',
+  );
+  const selected = selection?.pane.open ? { info: selection.info, name: selection.pane.open.name } : undefined;
+  if (selected) context.push(`[${describeSelection(selected.info, { document: selected.name })}]`);
   for (const n of notes.splice(0)) context.push(`[${n}]`);
   conversation.push({ role: 'user', content: `${context.join('\n')}\n\n${text}` });
 
   const user = addMessage('user');
-  if (selection && current && selection.text.trim()) {
+  if (selected && selected.info.text.trim()) {
     const q = document.createElement('span');
     q.className = 'quote';
-    q.textContent = selection.text;
+    q.textContent = selected.info.text;
     user.append(q);
   }
   user.append(text);
@@ -596,9 +705,9 @@ async function send(text: string): Promise<void> {
   waiting.textContent = 'Thinking';
   reply.append(waiting);
 
-  const doc = current?.doc;
-  const before = doc ? await doc.save() : undefined;
-  let changed = false;
+  // Each open document as it was before this reply, for "Undo Claude's changes".
+  const before = new Map<OpenDocument, Uint8Array>(await Promise.all(open.map(async (d) => [d, await d.doc.save()] as const)));
+  const changed = new Set<OpenDocument>();
   let textEl: HTMLDivElement | undefined;
   let raw = '';
   let frame = 0;
@@ -610,8 +719,14 @@ async function send(text: string): Promise<void> {
 
   let drafted = '';
   let lastDraft = 0;
-  let beforeTexts: ReturnType<typeof viewer.activity.snapshot> | undefined;
-  viewer.activity.clearMarks();
+  /** The pane Claude is working in (its shimmer shows there), and its text before the call runs. */
+  let working: Pane | undefined;
+  let beforeTexts: { pane: Pane; snapshot: ReturnType<DocxViewer['activity']['snapshot']> } | undefined;
+  const workIn = (pane: Pane | undefined) => {
+    if (working && working !== pane) working.viewer.activity.idle();
+    working = pane;
+  };
+  for (const p of panes) p.viewer.activity.clearMarks();
   const controller = new AbortController();
   setBusy(controller);
   try {
@@ -629,25 +744,30 @@ async function send(text: string): Promise<void> {
           drafted = '';
         },
         toolDraft(name, input) {
-          // Show where Claude is working while it is still writing the call.
+          // Show where Claude is working while it is still writing the call: in the document it names
+          // (with two open, nothing shows until the call says which).
           const kind = toolbox.kind(name);
-          if (!kind || !current || Date.now() - lastDraft < 120) return;
+          const target = toolbox.target(input);
+          const pane = paneOf(target);
+          if (!kind || !target || !pane || Date.now() - lastDraft < 120) return;
           lastDraft = Date.now();
           // Claude's numbers count text box paragraphs; the viewer's don't.
-          const entries = listParagraphs(current.doc);
+          const entries = listParagraphs(target.doc);
           const args = (input ?? {}) as Record<string, unknown>;
-          const objects = args.object !== undefined ? numberedObjects(new DocxEditor(current.doc), entries) : undefined;
+          const objects = args.object !== undefined ? numberedObjects(new DocxEditor(target.doc), entries) : undefined;
           const paragraphs = viewerParagraphs(entries, targetParagraphs(entries, name, args, objects));
-          const key = `${name}:${paragraphs.join(',')}`;
+          const key = `${name}:${pane.index}:${paragraphs.join(',')}`;
           if (key === drafted) return;
           drafted = key;
-          if (kind === 'read' && !paragraphs.length) viewer.activity.work([], { mode: 'read', label: activityLabel(name) });
-          else viewer.activity.work(paragraphs, { mode: kind === 'read' ? 'read' : 'edit', label: activityLabel(name) });
+          workIn(pane);
+          if (kind === 'read' && !paragraphs.length) pane.viewer.activity.work([], { mode: 'read', label: activityLabel(name) });
+          else pane.viewer.activity.work(paragraphs, { mode: kind === 'read' ? 'read' : 'edit', label: activityLabel(name) });
         },
         toolStart(name, input) {
           if (!drafted.startsWith(`${name}:`)) this.toolDraft?.(name, input);
           drafted = '';
-          beforeTexts = viewer.document ? viewer.activity.snapshot() : undefined;
+          const pane = paneOf(toolbox.target(input));
+          beforeTexts = pane?.viewer.document ? { pane, snapshot: pane.viewer.activity.snapshot() } : undefined;
         },
         text(delta) {
           waiting.remove();
@@ -665,15 +785,19 @@ async function send(text: string): Promise<void> {
           textEl = undefined;
           raw = '';
           toolLine(reply, name, input, outcome);
-          if (!outcome.isError && outcome.kind !== 'read') changed = true;
-          // Animate what this call changed (ink, glow, change bars), or just stop the shimmer.
-          if (!outcome.isError && outcome.kind !== 'read' && beforeTexts) void viewer.activity.reveal(beforeTexts);
-          else viewer.activity.idle();
+          const pane = paneOf(outcome.document);
+          const wrote = !outcome.isError && outcome.kind !== 'read' && outcome.document;
+          if (wrote) changed.add(outcome.document!);
+          // Animate what this call changed (ink, glow, change bars) where it changed, or just stop the shimmer.
+          workIn(pane);
+          if (wrote && pane && beforeTexts?.pane === pane) void pane.viewer.activity.reveal(beforeTexts.snapshot);
+          else pane?.viewer.activity.idle();
+          working = undefined;
           beforeTexts = undefined;
-          if (outcome.comment) {
+          if (outcome.comment && pane) {
             const id = outcome.comment;
             // The viewer redraws on the next frame; then show the new comment.
-            requestAnimationFrame(() => requestAnimationFrame(() => viewer.scrollToComment(id)));
+            requestAnimationFrame(() => requestAnimationFrame(() => pane.viewer.scrollToComment(id)));
           }
           scrollDown();
         },
@@ -709,26 +833,38 @@ async function send(text: string): Promise<void> {
     if (frame) render();
     waiting.remove();
     setBusy(undefined);
-    if (!changed) viewer.activity.idle();
+    for (const p of panes) if (![...changed].some((d) => p.open === d)) p.viewer.activity.idle();
   }
 
-  if (changed && before && current?.doc === doc) {
-    // One click takes the document back to how it was before this reply.
+  // The documents this reply changed that are still open where they were.
+  const undoable = [...changed].filter((d) => paneOf(d) && before.has(d));
+  if (undoable.length) {
+    // One click takes them back to how they were before this reply.
     for (const old of messagesEl.querySelectorAll('.turn-actions')) old.remove();
     const actions = document.createElement('div');
     actions.className = 'turn-actions';
     const undo = document.createElement('button');
     undo.type = 'button';
     undo.textContent = "Undo Claude's changes";
-    undo.title = 'Puts the document back to how it was before this reply (also undoes your own typing since then)';
+    const names = undoable.map((d) => d.name).join(' and ');
+    undo.title = `Puts ${names} back to how ${undoable.length > 1 ? 'they were' : 'it was'} before this reply (also undoes your own typing since then)`;
     undo.addEventListener('click', async () => {
-      if (!current) return;
-      const restored = await DocxDocument.open(before);
-      // The changes are gone, and so are their marks.
-      viewer.activity.clearMarks();
-      await viewer.load(restored);
-      current = { doc: restored, name: current.name };
-      notes.push('The user undid all changes from your previous reply; the document is back to how it was before that reply. Read it again before relying on paragraph numbers.');
+      const restoredNames: string[] = [];
+      for (const d of undoable) {
+        const pane = paneOf(d);
+        if (!pane) continue; // Closed or replaced since: nothing to put back there.
+        const restored = await DocxDocument.open(before.get(d)!);
+        // The changes are gone, and so are their marks.
+        pane.viewer.activity.clearMarks();
+        await pane.viewer.load(restored);
+        pane.open = { doc: restored, name: d.name };
+        if (selection?.pane === pane) clearSelection();
+        restoredNames.push(d.name);
+      }
+      if (restoredNames.length) {
+        const list = restoredNames.join(' and ');
+        notes.push(`The user undid all changes from your previous reply to ${list}; ${restoredNames.length > 1 ? 'they are' : 'it is'} back to how ${restoredNames.length > 1 ? 'they were' : 'it was'} before that reply. Read again before relying on paragraph numbers.`);
+      }
       actions.replaceChildren(Object.assign(document.createElement('span'), { className: 'thinking-done', textContent: 'Changes undone.' }));
     });
     actions.append(undo);
